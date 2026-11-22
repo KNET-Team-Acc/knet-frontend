@@ -47,11 +47,12 @@ export function setUserId(id) {
   } catch { /* almacenamiento bloqueado */ }
 }
 
-async function request(method, path, body) {
+/** opts.userId: envía la petición como esa cuenta (consentimientos pendientes, borrado diferido) */
+async function request(method, path, body, { userId } = {}) {
   if (!apiEnabled) throw new ApiOffline("API desactivada (VITE_API_URL vacía)");
   const headers = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const uid = getUserId();
+  const uid = userId && UUID.test(userId) ? userId : getUserId();
   if (uid) headers["X-User-Id"] = uid;
 
   const ctrl = new AbortController();
@@ -85,10 +86,12 @@ export const api = {
   // Perfil
   getMe: () => request("GET", "/api/me"),
   updateMe: (patch) => request("PATCH", "/api/me", patch),
+  // Supresión: borra perfil y progreso; los consentimientos se conservan. 403 demo_account en cuentas demo.
+  deleteMe: (userId) => request("DELETE", "/api/me", undefined, { userId }),
 
   // Consentimientos (cadena SHA-256 de solo inserción en PostgreSQL)
   listConsents: () => request("GET", "/api/me/consents"),
-  addConsent: (body) => request("POST", "/api/me/consents", body),
+  addConsent: (body, userId) => request("POST", "/api/me/consents", body, { userId }),
 
   // Eventos e inscripciones
   listEvents: (params = {}) => {

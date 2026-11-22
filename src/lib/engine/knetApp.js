@@ -14,7 +14,7 @@ import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
 import { AV_SKIN, AV_HAIRC, AV_OUT, AV_HAIR, AV_ACC, AV_XHAIR, AV_XACC, AV_GENDER } from "@/data/avatar.js";
 import { SV_ASPECTS, SV_BEST, SV_FACES } from "@/data/survey.js";
 import { PDF_MAP, PDF_FONTS } from "@/data/pdf-fonts.js";
-import { api, ApiError, isOffline, getUserId } from "@/services/api.js";
+import { api, ApiError, isOffline, getUserId, setUserId } from "@/services/api.js";
 
 /**
  * Arranca KNET sobre el DOM renderizado por React. Llamar una sola vez.
@@ -606,7 +606,8 @@ export function bootKnetApp() {
     apiSyncing = (async () => {
       try {
         const evs = await api.listEvents(); mergeEvents(evs.events);
-        flushConsents(); // la API respondió: sube los consentimientos que quedaron pendientes
+        await flushConsents(); // la API respondió: sube los consentimientos que quedaron pendientes
+        await flushPendingErase(); // y después los borrados que no llegaron al servidor
         if (A.connected && A.profile) {
           if (!A.apiLinked) await linkLocalToApi(); else await flushOutbox();
           const [me, ms, ck, cn, ds] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers()]);
@@ -3004,7 +3005,7 @@ export function bootKnetApp() {
 <tr><td><code>knet-theme</code></td><td>Preferencia (opcional)</td><td>Recordar si usas el modo claro u oscuro.</td><td>Hasta que lo rechaces o borres los datos</td></tr>
       </tbody></table></div>
       <h4>3. Recursos de terceros</h4>
-      <p>Para mostrar la página se descargan fuentes de Google Fonts y estilos de Tailwind CSS. Esos servidores reciben tu dirección IP. La plataforma claude.ai, donde se publica KNET, puede usar sus propias cookies de sesión según su propia política.</p>
+      <p>Para mostrar la página se descargan fuentes de Google Fonts y estilos de Tailwind CSS. Esos servidores reciben tu dirección IP. El servidor de KNET también la recibe cuando la app sincroniza tus datos.</p>
       <h4>4. ¿Necesitamos tu consentimiento?</h4>
       <p>En Colombia no existe una ley específica de cookies: cuando una cookie o un almacenamiento recoge datos personales se aplica la Ley 1581 de 2012, que exige autorización previa. Por eso: lo necesario para que la app funcione se usa solo cuando tú creas tu perfil, ya con tu autorización; las preferencias (idioma) solo se guardan si las aceptas en el aviso. Puedes cambiar tu elección en «Configurar almacenamiento», al final de la página.</p>` },
     reembolsos: { title: "Política de reembolsos", short: "Reembolsos", html: () => `
@@ -3038,7 +3039,7 @@ export function bootKnetApp() {
   const docRef = (id) => ({ documento: DOCS[id].title, version: LEGAL.version, vigencia: LEGAL.vigencia, huellaSHA256: DOC_HASH[id] || "calculando" });
   const CHECK_TXT = {
     terminos: `Acepto los Términos y condiciones de uso (versión ${LEGAL.version}).`,
-    privacidad: `Autorizo el tratamiento de mis datos personales según la Política de tratamiento de datos personales (versión ${LEGAL.version}), incluida su transferencia a Estados Unidos.`
+    privacidad: `Autorizo el tratamiento de mis datos personales según la Política de tratamiento de datos personales (versión ${LEGAL.version}).`
   };
   const legalChecks = (prefix) => `<div class="lg-checks" role="group" aria-label="Aceptación de documentos">
       <div class="lg-check"><input type="checkbox" id="${prefix}-tyc"><label for="${prefix}-tyc">${CHECK_TXT.terminos}</label><a href="#terminos" data-legal="terminos" class="lg-link">Leer términos ${svg("arrow")}</a></div>
@@ -3095,7 +3096,7 @@ export function bootKnetApp() {
   }
   async function sendConsent(r) {
     try {
-      const { consent } = await api.addConsent(consentToApi(r));
+      const { consent } = await api.addConsent(consentToApi(r), r.cuentaId);
       r.api = { estado: "guardado", id: consent.id, hash: consent.hash }; r.almacenamiento = "servidor"; delete r.errorServidor;
     } catch (e) {
       if (isOffline(e)) throw e;
@@ -3433,12 +3434,43 @@ export function bootKnetApp() {
     toast(`<b>¡Hola de nuevo, ${esc(first(A.profile.name))}!</b><div class="text-[13px] text-mute">Recuperamos tu progreso: ${fmt(A.xp)} XP.</div>`, "check");
     showTab(tab || curTab || "perfil");
   }
+  /* ---- Supresión en el servidor (DELETE /api/me) ----
+     Si la API no responde, el UUID queda en ERASE_KEY y se reintenta en el próximo sync, después de
+     subir los consentimientos pendientes (así la revocación llega antes que la supresión). */
+  const ERASE_KEY = "knet-pending-erase";
+  const readErase = () => { try { return JSON.parse(localStorage.getItem(ERASE_KEY) || "[]"); } catch (e) { return []; } };
+  const writeErase = (ids) => { try { if (ids.length) localStorage.setItem(ERASE_KEY, JSON.stringify(ids)); else localStorage.removeItem(ERASE_KEY); } catch (e) {} };
+  async function eraseOnServer(uid) {
+    try { await api.deleteMe(uid); return "ok"; }
+    catch (e) {
+      if (isOffline(e)) return "offline";
+      if (e instanceof ApiError && e.status === 403 && e.code === "demo_account") return "demo";
+      if (e instanceof ApiError && e.status === 404) return "ok"; // ya no existe en el servidor
+      apiLog("el servidor rechazó el borrado", e); return "error";
+    }
+  }
+  async function flushPendingErase() {
+    const left = [];
+    for (const uid of readErase()) if ((await eraseOnServer(uid)) === "offline") left.push(uid);
+    writeErase(left);
+  }
   /* Revocar la autorización y borrar los datos (derecho del titular, Ley 1581) */
-  function revokeAndErase() {
-    logConsent({ tipo: "revocacion", formulario: "Panel · Tus autorizaciones", metodo: "Clic del titular en «Revocar y borrar mis datos» y confirmación", titular: (A.profile && A.profile.name) || "—", detalle: "Revoca la autorización y borra su perfil y progreso de este navegador. El registro de consentimientos se conserva como prueba (Ley 1581 de 2012, art. 17)." });
+  async function revokeAndErase() {
+    const uid = getUserId(); // sin X-User-Id el backend usa la cuenta demo compartida, que no se borra
+    const revoked = logConsent({ tipo: "revocacion", formulario: "Panel · Tus autorizaciones", metodo: "Clic del titular en «Revocar y borrar mis datos» y confirmación", titular: (A.profile && A.profile.name) || "—", detalle: "Revoca la autorización y pide borrar su perfil y progreso de este navegador y del servidor de KNET. El registro de consentimientos se conserva como prueba (Ley 1581 de 2012, art. 17)." });
     runId++; A = fresh(A.ind); editField = null; applyProfile(); try { localStorage.removeItem(KEY); } catch (e) {}
     toast("<b>Autorización revocada.</b> Borramos tu perfil y tu progreso de este navegador.", "shield");
     showLanding();
+    await revoked.catch(() => {}); // la revocación queda en la cadena antes que la supresión
+    const r = uid ? await eraseOnServer(uid) : "demo";
+    if (uid && r === "offline") writeErase(uniq(readErase().concat(uid)));
+    if (uid && r !== "error") setUserId(null); // no reutilizar una cuenta borrada (o por borrar)
+    toast({
+      ok: "<b>Datos borrados del servidor de KNET.</b> Conservamos solo el registro de tus consentimientos, como exige la ley.",
+      offline: "<b>Sin conexión con el servidor.</b> Borraremos tus datos del servidor de KNET cuando vuelva la conexión.",
+      demo: "<b>Cuenta demo compartida.</b> El servidor de KNET no la borra; tus datos se borraron de este navegador.",
+      error: "<b>El servidor no pudo borrar tus datos.</b> Escríbenos al correo de la política de privacidad para completar la supresión.",
+    }[r], "shield");
   }
   const onAct = async (b) => {
     const a = b.dataset.act, v = b.dataset.v;
