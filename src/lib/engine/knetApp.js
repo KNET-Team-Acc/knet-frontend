@@ -442,20 +442,26 @@ export function bootKnetApp() {
 
   /* ---- Backend (API): sincronización progresiva con fallback silencioso a lo local ----
      - XP híbrida: A.xp = XP del servidor + A.xpLocal (XP de flujos que la API aún no conoce:
-       check-ins, grafo, conexiones, experiencias, onboarding…). Cuando la API confirma una
-       misión, su XP pasa de A.xpLocal al servidor; el total visible no cambia.
-     - A.doneSynced: misiones cuya XP ya cuenta el servidor (evita restarla dos veces).
-     - A.outbox: misiones e inscripciones hechas sin conexión; se reenvían al volver la API.
-     - A.apiLinked: false = el navegador manda en el próximo sync (sube perfil, inscripciones y
-       misiones locales); true = el servidor manda (se baja su estado al arrancar).
+       grafo, cafés, experiencias, onboarding…). Cuando la API confirma una misión, un check-in o
+       una conexión aceptada, su XP pasa de A.xpLocal al servidor; el total visible no cambia.
+     - A.xpSynced: claves ("mission:c3", "checkin:bog:0:2", "conn:Laura M.") cuya XP ya cuenta el
+       servidor (evita restarla dos veces).
+     - A.outbox: acciones hechas sin conexión; se reenvían en orden al volver la API.
+     - A.apiLinked: false = el navegador manda en el próximo sync (sube perfil, inscripciones,
+       misiones, check-ins, conexiones y dossier locales); true = el servidor manda al arrancar.
      - A.regLocal: inscripciones que el servidor aún rechaza por nivel (su XP es menor); se conservan. */
   const API_FIELD = { name: "name", role: "role", company: "company", ind: "industry", seniority: "seniority", interests: "interests", location: "location" };
   const API_SRC = ["mcp", "manual", "edited"];
+  const CHECKIN_XP = 40, CONN_XP = 100; // iguales a XP_REWARDS del backend
   if (typeof A.xpLocal !== "number") A.xpLocal = A.xp || 0;
+  if (!Array.isArray(A.xpSynced)) A.xpSynced = (A.doneSynced || []).map(c => "mission:" + c); // migra el formato anterior
+  delete A.doneSynced;
   let apiSyncing = null, apiSyncAgain = false;
+  let connIndex = null; // nombre del contacto → { id, status } en el servidor (solo en memoria)
   const apiLog = (msg, e) => { try { console.info(`[KNET API] ${msg}`, (e && e.message) || ""); } catch (err) {} };
   const outbox = () => (A.outbox ||= []);
   const uniq = (arr) => [...new Set(arr)];
+  const synced = (key) => (A.xpSynced ||= []).includes(key);
   function queueOp(op) { A.outbox = outbox().filter(o => !(o.t === op.t && o.id === op.id)).concat([op]); save(); }
 
   function profileToApi(fields) {
@@ -470,10 +476,11 @@ export function bootKnetApp() {
     if (Object.keys(src).length) body.fieldSources = src;
     return Object.keys(body).length ? body : null;
   }
-  /* Cambia de industria conservando perfil, avatar, XP, inscripciones y el estado de sincronización */
+  /* Cambia de industria conservando perfil, avatar, XP, inscripciones, check-ins y el estado de sincronización
+     (el servidor los guarda igual; los matches, la red y las misiones sí se rehacen para la nueva industria) */
   function switchIndustry(ni) {
     const keep = { profile: { ...A.profile, src: { ...A.profile.src } }, avatar: A.avatar, scopes: A.scopes, xp: A.xp, xpLocal: A.xpLocal, events: A.events,
-      outbox: A.outbox, apiLinked: A.apiLinked, doneSynced: A.doneSynced, regLocal: A.regLocal };
+      attended: A.attended, outbox: A.outbox, apiLinked: A.apiLinked, xpSynced: A.xpSynced, regLocal: A.regLocal };
     A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true; editField = null;
   }
   function applyServerUser(u) {
@@ -495,16 +502,60 @@ export function bootKnetApp() {
       if (s.kind === "real") Object.assign(ev, { real: true, org: s.organizer || ev.org, url: s.sourceUrl || ev.url });
     });
   }
-  /* La misión `code` ya cuenta en el servidor: su XP sale de xpLocal. serverXp = total real si se conoce. */
-  function moveXp(code, serverXp) {
-    if ((A.doneSynced ||= []).includes(code)) return;
-    const m = missionPool().find(x => x.id === code);
-    A.doneSynced.push(code); A.xpLocal = Math.max(0, A.xpLocal - (m ? m.xp : 0));
+  /* La acción `key` ya cuenta en el servidor: sus `amount` XP salen de xpLocal (una sola vez).
+     serverXp = total real del servidor si se conoce; si no, el próximo sync lo corrige. */
+  function moveXp(key, amount, serverXp) {
+    if (!synced(key)) { A.xpSynced.push(key); A.xpLocal = Math.max(0, A.xpLocal - amount); }
     if (typeof serverXp === "number") A.xp = serverXp + A.xpLocal;
   }
+  /* El servidor ya tenía la acción: si también es local, su XP local sobra; si no, solo se marca */
+  function adoptServerAction(key, amount, isLocal) { if (isLocal) moveXp(key, amount, null); else if (!synced(key)) A.xpSynced.push(key); }
+  const missionXp = (code) => { const m = missionPool().find(x => x.id === code); return m ? m.xp : 0; };
   async function sendMission(code) {
-    try { const r = await api.completeMission(code); moveXp(code, r.xp); return "ok"; }
-    catch (e) { if (e instanceof ApiError && e.status === 409) { moveXp(code, null); return "resync"; } throw e; }
+    try { const r = await api.completeMission(code); moveXp("mission:" + code, missionXp(code), r.xp); return "ok"; }
+    catch (e) { if (e instanceof ApiError && e.status === 409) { moveXp("mission:" + code, missionXp(code), null); return "resync"; } throw e; }
+  }
+  async function sendCheckin(code) {
+    try { const r = await api.checkin(code, "qr"); moveXp("checkin:" + code, CHECKIN_XP, r.xp); return "ok"; }
+    catch (e) {
+      if (e instanceof ApiError && e.status === 409) { moveXp("checkin:" + code, CHECKIN_XP, null); return "resync"; }
+      if (e instanceof ApiError && e.status === 403) { apiLog(`el check-in ${code} queda local: el servidor no tiene tu inscripción a ese evento`, e); return "ok"; }
+      throw e;
+    }
+  }
+  async function loadConnIndex() {
+    const r = await api.listConnections();
+    connIndex = new Map((r.connections || []).map(c => [c.contact.name, { id: c.id, status: c.status }]));
+    return connIndex;
+  }
+  /* Lleva la conexión con `op.id` (nombre) al estado `op.state`: pending | accepted | removed */
+  async function sendConnection(op, retried = false) {
+    const idx = connIndex || await loadConnIndex();
+    let cur = idx.get(op.id);
+    if (op.state === "removed") {
+      if (cur) { try { await api.deleteConnection(cur.id); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) throw e; } idx.delete(op.id); }
+      return "ok";
+    }
+    let serverXp = null;
+    if (!cur) {
+      try {
+        const r = await api.createConnection({ name: op.id, source: op.source || "request", context: op.context || undefined, eventId: op.eventId || undefined });
+        cur = { id: r.connection.id, status: r.connection.status }; idx.set(op.id, cur); serverXp = r.xp;
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409 && !retried) { await loadConnIndex(); return sendConnection(op, true); }
+        throw e;
+      }
+    }
+    if (op.state === "accepted") {
+      if (cur.status !== "accepted") { const r = await api.acceptConnection(cur.id); cur.status = "accepted"; serverXp = r.xp; }
+      moveXp("conn:" + op.id, CONN_XP, serverXp);
+    }
+    return "ok";
+  }
+  async function sendDossier(eventId, body) {
+    try { await api.saveDossier(eventId, body); }
+    catch (e) { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { apiLog(`el dossier de ${eventId} queda local`, e); return "ok"; } throw e; }
+    return "ok";
   }
   async function sendRegistration(id, on) {
     if (!on) {
@@ -519,7 +570,14 @@ export function bootKnetApp() {
     }
     return "ok";
   }
-  const sendOp = (op) => (op.t === "mission" ? sendMission(op.id) : sendRegistration(op.id, op.on));
+  const SEND = {
+    mission: (op) => sendMission(op.id),
+    reg: (op) => sendRegistration(op.id, op.on),
+    checkin: (op) => sendCheckin(op.id),
+    conn: (op) => sendConnection(op),
+    dossier: (op) => sendDossier(op.id, op.body),
+  };
+  const sendOp = (op) => (SEND[op.t] ? SEND[op.t](op) : Promise.resolve("ok"));
   async function flushOutbox() {
     for (const op of outbox().slice()) {
       try { await sendOp(op); }
@@ -534,7 +592,11 @@ export function bootKnetApp() {
     const me = await api.getMe(), srv = new Set(me.registrations || []);
     for (const id of A.events) if (!srv.has(id)) queueOp({ t: "reg", id, on: true });
     for (const id of srv) if (!A.events.includes(id)) queueOp({ t: "reg", id, on: false });
-    for (const code of A.done) if (!(A.doneSynced || []).includes(code)) queueOp({ t: "mission", id: code });
+    for (const code of A.done) if (!synced("mission:" + code)) queueOp({ t: "mission", id: code });
+    for (const code of A.attended) if (!synced("checkin:" + code)) queueOp({ t: "checkin", id: code });
+    Object.entries(A.requests || {}).forEach(([n, r]) => { if (r.status === "pending" && !A.connections.includes(n)) queueOp({ t: "conn", id: n, state: "pending", source: "request" }); });
+    for (const n of A.connections) if (!synced("conn:" + n)) queueOp({ t: "conn", id: n, state: "accepted", source: qrPerson(n) ? "qr" : "request" });
+    if (A.dossierAt) { const body = dossierPayload(); for (const id of myEvIds()) queueOp({ t: "dossier", id, body }); }
     await flushOutbox();
     A.apiLinked = true; save();
   }
@@ -546,12 +608,24 @@ export function bootKnetApp() {
         const evs = await api.listEvents(); mergeEvents(evs.events);
         if (A.connected && A.profile) {
           if (!A.apiLinked) await linkLocalToApi(); else await flushOutbox();
-          const [me, ms] = await Promise.all([api.getMe(), api.listMissions()]);
+          const [me, ms, ck, cn, ds] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers()]);
           applyServerUser(me.user); applyProfile();
           const regs = (me.registrations || []).filter(id => EVENTS.some(e => e.id === id));
           A.events = uniq(regs.concat(A.regLocal || []));
-          const doneSrv = (ms.missions || []).filter(m => m.completed).map(m => m.code);
-          A.done = uniq(A.done.concat(doneSrv)); A.doneSynced = uniq((A.doneSynced || []).concat(doneSrv));
+          // Misiones y check-ins: unión de lo local y lo del servidor, sin contar dos veces la XP
+          (ms.missions || []).filter(m => m.completed).forEach(m => {
+            adoptServerAction("mission:" + m.code, m.xp, A.done.includes(m.code)); if (!A.done.includes(m.code)) A.done.push(m.code); });
+          (ck.checkins || []).forEach(c => {
+            adoptServerAction("checkin:" + c.sessionCode, CHECKIN_XP, A.attended.includes(c.sessionCode)); if (!A.attended.includes(c.sessionCode)) A.attended.push(c.sessionCode); });
+          // Conexiones aceptadas en el servidor: solo se suman las que esta industria sabe mostrar
+          connIndex = new Map((cn.connections || []).map(c => [c.contact.name, { id: c.id, status: c.status }]));
+          (cn.connections || []).filter(c => c.status === "accepted").forEach(c => {
+            const n = c.contact.name, local = A.connections.includes(n);
+            if (!local && !IND[A.ind].matches.some(m => m[1] === n) && !qrPerson(n)) return;
+            adoptServerAction("conn:" + n, CONN_XP, local); if (!local) A.connections.push(n); });
+          // Dossier: recupera la fecha si este navegador la perdió
+          const lastDossier = (ds.dossiers || []).map(d => d.generatedAt).sort().pop();
+          if (!A.dossierAt && lastDossier) A.dossierAt = lastDossier;
           A.xp = me.user.xp + A.xpLocal;
         }
         save(); refresh();
@@ -563,7 +637,8 @@ export function bootKnetApp() {
   /* Envía una acción del usuario; si la API no responde, queda en la cola */
   function apiRun(op) {
     if (!A.connected) return;
-    if (!A.apiLinked) { syncFromApi(); return; } // la vinculación sube todo el estado local
+    // Sin vincular: se encola (así no se pierden las eliminaciones) y la vinculación sube el resto del estado local
+    if (!A.apiLinked) { queueOp(op); syncFromApi(); return; }
     const xpBefore = A.xp;
     sendOp(op)
       .then((r) => { save(); if (r === "resync" || outbox().length) syncFromApi(); else if (A.xp !== xpBefore) refresh(); })
@@ -583,6 +658,17 @@ export function bootKnetApp() {
     if (on) { A.events.push(id); notify("event", `Te inscribiste en ${ev.name}`, `${ev.city} · ${ev.when}`); toast(`<b>Te inscribiste en ${ev.name}</b><div class="text-[13px] text-mute">Lo encuentras en Mis eventos.</div>`, "calendar"); }
     else { A.events = A.events.filter(x => x !== id); toast(`<b>Cancelaste tu inscripción</b> · ${ev.name}`, "calendar"); }
     save(); apiRun({ t: "reg", id, on });
+  }
+  /* Conexión quitada o solicitud cancelada: si se vuelve a conectar, su XP local se vuelve a reconciliar */
+  function apiConnRemoved(n) { A.xpSynced = (A.xpSynced || []).filter(k => k !== "conn:" + n); save(); apiRun({ t: "conn", id: n, state: "removed" }); }
+  /* Lo que se guarda del dossier en el servidor, por evento */
+  function dossierPayload() {
+    const s = dossierData(), clip = (arr, max, len) => (arr || []).map(x => String(x).trim()).filter(Boolean).slice(0, max).map(x => x.slice(0, len));
+    return { ideas: clip(s.puntos, 20, 500), plan: clip(s.acciones, 30, 300), notes: String(s.resumen || "").slice(0, 5000) };
+  }
+  function apiSaveDossier() {
+    const rs = getSel("res"), ids = rs.ev === "all" ? myEvIds() : [rs.ev], body = dossierPayload();
+    ids.forEach(id => apiRun({ t: "dossier", id, body }));
   }
   const board = () => OTHERS.map(([n, x]) => ({ n, x })).concat([{ n: first(PERSONAS[A.ind].name) + " (tú)", x: A.xp, me: true }]).sort((a, b) => b.x - a.x);
   const rank = () => board().findIndex(r => r.me) + 1;
@@ -1059,7 +1145,8 @@ export function bootKnetApp() {
   const personOpenFor = (n) => !$("#m-person").hidden && $("#personName") && $("#personName").textContent === n;
   function resolveRequest(n, at) {
     const r = reqOf(n); if (!A.connected || !r || r.at !== at || r.status !== "pending") return;
-    award(() => { r.status = "accepted"; r.answered = Date.now(); if (!isConn(n)) A.connections.push(n); }, 100, `${n} aceptó tu solicitud de conexión`, "users", "conn");
+    award(() => { r.status = "accepted"; r.answered = Date.now(); if (!isConn(n)) A.connections.push(n); }, CONN_XP, `${n} aceptó tu solicitud de conexión`, "users", "conn");
+    apiRun({ t: "conn", id: n, state: "accepted", source: "request" });
     if (personOpenFor(n)) openPerson(n);
     if (!$("#m-dm").hidden && dmFor === n) renderDm();
   }
@@ -1076,8 +1163,9 @@ export function bootKnetApp() {
     A.requests[n] = { status: "pending", at, due: at + rnd(4500, 8000) };
     save(); toast(`<b>Solicitud enviada a ${esc(n)}</b><div class="text-[13px] text-mute">La conexión se crea cuando la apruebe. +100 XP al aceptar.</div>`, "users");
     refresh(); openPerson(n); scheduleResponses();
+    apiRun({ t: "conn", id: n, state: "pending", source: "request" });
   }
-  function cancelRequest(n) { if (!isPending(n)) return; delete A.requests[n]; save(); toast(`<b>Solicitud cancelada</b>`, "x"); refresh(); if (personOpenFor(n)) openPerson(n); }
+  function cancelRequest(n) { if (!isPending(n)) return; delete A.requests[n]; save(); apiConnRemoved(n); toast(`<b>Solicitud cancelada</b>`, "x"); refresh(); if (personOpenFor(n)) openPerson(n); }
   function proposeCoffee(n) {
     if (!isConn(n)) { toast("<b>Primero conecten</b><div class='text-[13px] text-mute'>Puedes proponer un café cuando acepte tu solicitud.</div>", "info"); return; }
     const c = coffeeOf(n); if (c && (c.status === "pending" || c.status === "accepted")) return;
@@ -1549,7 +1637,7 @@ export function bootKnetApp() {
     if (t.closest("#connsCard [data-cno]")) { connAsk = null; renderTab(false); return; }
     const yes = t.closest("#connsCard [data-cyes]"); if (yes) { const n = yes.dataset.cyes; connAsk = null;
       A.connections = A.connections.filter(x => x !== n); if (A.requests) delete A.requests[n]; if (A.coffees) delete A.coffees[n];
-      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); refresh();
+      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); apiConnRemoved(n); refresh();
       toast(`<b>Conexión removida</b><div class="text-[13px] text-mute">${esc(n)} ya no está en tu red.</div>`, "users"); return; }
     const mg = t.closest("#connsCard [data-cmsg]"); if (mg) { openChat(mg.dataset.cmsg); return; }
     const pf = t.closest("#connsCard [data-cprof]"); if (pf) { openPerson(pf.dataset.cprof); return; }
@@ -1562,7 +1650,7 @@ export function bootKnetApp() {
     if (t.closest("[data-cno]")) { connAsk = null; renderConns(); return; }
     const yes = t.closest("[data-cyes]"); if (yes) { const n = yes.dataset.cyes; connAsk = null;
       A.connections = A.connections.filter(x => x !== n); if (A.requests) delete A.requests[n]; if (A.coffees) delete A.coffees[n];
-      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); refresh(); renderConns();
+      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); apiConnRemoved(n); refresh(); renderConns();
       toast(`<b>Conexión removida</b><div class="text-[13px] text-mute">${esc(n)} ya no está en tu red.</div>`, "users"); return; }
     const mg = t.closest("[data-cmsg]"); if (mg) { closeModal($("#m-conns")); openChat(mg.dataset.cmsg); return; }
     const pf = t.closest("[data-cprof]"); if (pf) { closeModal($("#m-conns")); openPerson(pf.dataset.cprof); return; }
@@ -2614,7 +2702,8 @@ export function bootKnetApp() {
   }
   function acceptScan() {
     const c = scanCur; if (!c) return; scanCur = null;
-    award(() => { (A.qrConn = A.qrConn || []).push(c); if (!A.connections.includes(c.name)) A.connections.push(c.name); }, 100, `Conexión por QR con ${c.name}`, "qr", "conn");
+    award(() => { (A.qrConn = A.qrConn || []).push(c); if (!A.connections.includes(c.name)) A.connections.push(c.name); }, CONN_XP, `Conexión por QR con ${c.name}`, "qr", "conn");
+    apiRun({ t: "conn", id: c.name, state: "accepted", source: "qr", context: (c.interests || []).join(", ").slice(0, 280) });
     $("#qsBody").innerHTML = `
       <div class="mh"><div><span class="chip chip-emerald">${svg("check")}Conexión registrada</span><h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">¡Conexión lista con ${esc(first(c.name))}!</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
       <div class="qs-done reveal-in">
@@ -3317,7 +3406,7 @@ export function bootKnetApp() {
     if (a === "vnopen") { VN.ev = v; if (myEvIds().includes(v)) { A.sel = A.sel || {}; A.sel.main = { ev: v, day: (A.sel.main && A.sel.main.ev === v) ? A.sel.main.day : 0 }; save(); } meView = "venue"; showTab("miseventos"); return; }
     if (a === "ask") { ask(v); return; }
     if (a === "kvinfo") { const box = document.getElementById(v), open = box.hidden; box.hidden = !open; b.setAttribute("aria-expanded", String(open)); return; }
-    if (a === "attend") { const s = sessionById(v); if (!s || A.attended.includes(s.id) || isEnded("ev:" + s.ev)) return; award(() => A.attended.push(s.id), 40, `Check-in · ${s.ttl} (${evById(s.ev).city}, Día ${s.day + 1})`, "qr"); return; }
+    if (a === "attend") { const s = sessionById(v); if (!s || A.attended.includes(s.id) || isEnded("ev:" + s.ev)) return; award(() => A.attended.push(s.id), CHECKIN_XP, `Check-in · ${s.ttl} (${evById(s.ev).city}, Día ${s.day + 1})`, "qr"); apiRun({ t: "checkin", id: s.id }); return; }
     if (a === "connect") { connectMatch(v); return; }
     if (a === "person") { openPerson(v); return; }
     if (a === "chat") { openChat(v); return; }
@@ -3358,7 +3447,7 @@ export function bootKnetApp() {
     if (a === "evsave") { const ev = EVENTS.find(e => e.id === v); if (!ev) return; if (isLockedEv(ev)) { toast(`<b>Evento exclusivo del nivel ${ev.lvl}</b><div class="text-[13px] text-mute">Gana más XP para desbloquearlo.</div>`, "lock"); return; } toggleRegistration(ev); refresh(); return; }
     if (a === "gen") { b.disabled = true; b.innerHTML = `${svg("spark")}<span>Generando…</span>`; b.classList.add("shimmer"); await sleep(1300);
       if (!A.dossierAt) award(() => { A.dossierAt = new Date().toISOString(); }, 0, "Dossier generado", "file"); else { A.dossierAt = new Date().toISOString(); save(); toast("<b>Dossier actualizado</b>", "file"); refresh(); }
-      downloadDossier(); return; }
+      apiSaveDossier(); downloadDossier(); return; }
     if (a === "dospdf") { downloadDossier(); return; }
     if (a === "copy") { const txt = summaryText();
       const fallback = () => { const box = $("#copyFallback"); box.hidden = false; box.innerHTML = `<label for="copyTa" class="text-[13px] text-mute">Tu navegador bloqueó el portapapeles. Selecciona y copia el texto:</label><textarea id="copyTa" class="select" rows="8" readonly style="margin-top:8px;font-family:var(--f-mono);font-size:12px"></textarea>`; const ta = $("#copyTa"); ta.value = txt; ta.focus(); ta.select(); };

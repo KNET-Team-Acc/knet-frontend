@@ -98,4 +98,21 @@ export const api = {
   // Misiones y XP
   listMissions: () => request("GET", "/api/me/missions"),
   completeMission: (code) => request("POST", `/api/me/missions/${enc(code)}/complete`),
+
+  // Sesiones y check-ins. listSessions aún no pinta la agenda: el frontend conserva sus títulos personalizados.
+  listSessions: (eventId, day = 0) => request("GET", `/api/events/${enc(eventId)}/sessions?day=${Number(day) || 0}`),
+  listCheckins: (eventId) => request("GET", `/api/me/checkins${eventId ? `?eventId=${enc(eventId)}` : ""}`),
+  checkin: (sessionCode, method = "qr") => request("POST", "/api/me/checkins", { sessionCode, method }),
+
+  // Red de contactos
+  listContacts: (industry) => request("GET", `/api/contacts${industry ? `?industry=${enc(industry)}` : ""}`),
+  listConnections: (status) => request("GET", `/api/me/connections${status ? `?status=${enc(status)}` : ""}`),
+  createConnection: (body) => request("POST", "/api/me/connections", body),
+  acceptConnection: (id) => request("PATCH", `/api/me/connections/${enc(id)}`, { status: "accepted" }),
+  deleteConnection: (id) => request("DELETE", `/api/me/connections/${enc(id)}`),
+
+  // Dossiers
+  listDossiers: () => request("GET", "/api/me/dossiers"),
+  getDossier: (eventId) => request("GET", `/api/me/dossiers/${enc(eventId)}`),
+  saveDossier: (eventId, body) => request("POST", `/api/me/dossiers/${enc(eventId)}`, body),
 };
