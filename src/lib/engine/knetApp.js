@@ -14,6 +14,7 @@ import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
 import { AV_SKIN, AV_HAIRC, AV_OUT, AV_HAIR, AV_ACC, AV_XHAIR, AV_XACC, AV_GENDER } from "@/data/avatar.js";
 import { SV_ASPECTS, SV_BEST, SV_FACES } from "@/data/survey.js";
 import { PDF_MAP, PDF_FONTS } from "@/data/pdf-fonts.js";
+import { api, ApiError, isOffline } from "@/services/api.js";
 
 /**
  * Arranca KNET sobre el DOM renderizado por React. Llamar una sola vez.
@@ -438,6 +439,151 @@ export function bootKnetApp() {
   const missionPool = () => IND[A.ind].missions.map((m, i) => ({ id: A.ind + "-m" + i, icon: m[0], title: m[1], sub: m[2], xp: m[3] }))
     .concat(COMMON_M.map((m, i) => ({ id: "c" + i, icon: m[0], title: m[1], sub: m[2], xp: m[3] })));
   const activeMissions = () => missionPool().filter(m => !A.done.includes(m.id)).slice(0, 3);
+
+  /* ---- Backend (API): sincronización progresiva con fallback silencioso a lo local ----
+     - XP híbrida: A.xp = XP del servidor + A.xpLocal (XP de flujos que la API aún no conoce:
+       check-ins, grafo, conexiones, experiencias, onboarding…). Cuando la API confirma una
+       misión, su XP pasa de A.xpLocal al servidor; el total visible no cambia.
+     - A.doneSynced: misiones cuya XP ya cuenta el servidor (evita restarla dos veces).
+     - A.outbox: misiones e inscripciones hechas sin conexión; se reenvían al volver la API.
+     - A.apiLinked: false = el navegador manda en el próximo sync (sube perfil, inscripciones y
+       misiones locales); true = el servidor manda (se baja su estado al arrancar).
+     - A.regLocal: inscripciones que el servidor aún rechaza por nivel (su XP es menor); se conservan. */
+  const API_FIELD = { name: "name", role: "role", company: "company", ind: "industry", seniority: "seniority", interests: "interests", location: "location" };
+  const API_SRC = ["mcp", "manual", "edited"];
+  if (typeof A.xpLocal !== "number") A.xpLocal = A.xp || 0;
+  let apiSyncing = null, apiSyncAgain = false;
+  const apiLog = (msg, e) => { try { console.info(`[KNET API] ${msg}`, (e && e.message) || ""); } catch (err) {} };
+  const outbox = () => (A.outbox ||= []);
+  const uniq = (arr) => [...new Set(arr)];
+  function queueOp(op) { A.outbox = outbox().filter(o => !(o.t === op.t && o.id === op.id)).concat([op]); save(); }
+
+  function profileToApi(fields) {
+    const pr = A.profile; if (!pr) return null;
+    const body = {}, src = {};
+    (fields || Object.keys(API_FIELD)).forEach(f => {
+      const v = f === "ind" ? A.ind : pr[f];
+      if (v === undefined || v === null || v === "") return;
+      body[API_FIELD[f]] = Array.isArray(v) ? v.slice(0, 12) : v;
+      if (pr.src && API_SRC.includes(pr.src[f])) src[f] = pr.src[f];
+    });
+    if (Object.keys(src).length) body.fieldSources = src;
+    return Object.keys(body).length ? body : null;
+  }
+  /* Cambia de industria conservando perfil, avatar, XP, inscripciones y el estado de sincronización */
+  function switchIndustry(ni) {
+    const keep = { profile: { ...A.profile, src: { ...A.profile.src } }, avatar: A.avatar, scopes: A.scopes, xp: A.xp, xpLocal: A.xpLocal, events: A.events,
+      outbox: A.outbox, apiLinked: A.apiLinked, doneSynced: A.doneSynced, regLocal: A.regLocal };
+    A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true; editField = null;
+  }
+  function applyServerUser(u) {
+    if (!A.profile || !u) return;
+    if (u.industry && u.industry !== A.ind && IND[u.industry]) switchIndustry(u.industry);
+    const pr = A.profile;
+    ["name", "role", "company", "seniority", "location"].forEach(f => { if (typeof u[f] === "string" && u[f]) pr[f] = u[f]; });
+    if (Array.isArray(u.interests) && u.interests.length) pr.interests = u.interests.slice();
+    if (u.fieldSources) pr.src = { ...pr.src, ...u.fieldSources };
+  }
+  /* Actualiza en su sitio los eventos conocidos (el mapa y el recinto 3D guardan referencias a estos objetos) */
+  function mergeEvents(list) {
+    (list || []).forEach(s => {
+      const ev = EVENTS.find(e => e.id === s.id); if (!ev) return; // eventos sin recinto/ficha local: más adelante
+      Object.assign(ev, { name: s.name || ev.name, city: s.city || ev.city, venue: s.venueName || ev.venue, date: s.dateLabel || ev.date,
+        lat: s.lat ?? ev.lat, lon: s.lon ?? ev.lon, tags: s.tags && s.tags.length ? s.tags : ev.tags, ind: s.industries && s.industries.length ? s.industries : ev.ind, desc: s.description || ev.desc });
+      if (s.days && s.days.length) ev.days = s.days.slice();
+      if (s.minLevel > 1) ev.lvl = s.minLevel; else delete ev.lvl;
+      if (s.kind === "real") Object.assign(ev, { real: true, org: s.organizer || ev.org, url: s.sourceUrl || ev.url });
+    });
+  }
+  /* La misión `code` ya cuenta en el servidor: su XP sale de xpLocal. serverXp = total real si se conoce. */
+  function moveXp(code, serverXp) {
+    if ((A.doneSynced ||= []).includes(code)) return;
+    const m = missionPool().find(x => x.id === code);
+    A.doneSynced.push(code); A.xpLocal = Math.max(0, A.xpLocal - (m ? m.xp : 0));
+    if (typeof serverXp === "number") A.xp = serverXp + A.xpLocal;
+  }
+  async function sendMission(code) {
+    try { const r = await api.completeMission(code); moveXp(code, r.xp); return "ok"; }
+    catch (e) { if (e instanceof ApiError && e.status === 409) { moveXp(code, null); return "resync"; } throw e; }
+  }
+  async function sendRegistration(id, on) {
+    if (!on) {
+      A.regLocal = (A.regLocal || []).filter(x => x !== id);
+      try { await api.unregister(id); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) throw e; }
+      return "ok";
+    }
+    try { await api.register(id); A.regLocal = (A.regLocal || []).filter(x => x !== id); }
+    catch (e) {
+      if (!(e instanceof ApiError && e.status === 403)) throw e;
+      A.regLocal = uniq((A.regLocal || []).concat(id)); apiLog(`el servidor aún no habilita ${id} por nivel; la inscripción queda local`, e);
+    }
+    return "ok";
+  }
+  const sendOp = (op) => (op.t === "mission" ? sendMission(op.id) : sendRegistration(op.id, op.on));
+  async function flushOutbox() {
+    for (const op of outbox().slice()) {
+      try { await sendOp(op); }
+      catch (e) { if (isOffline(e)) throw e; apiLog(`operación descartada (${op.t} ${op.id})`, e); }
+      A.outbox = outbox().filter(o => o !== op); save();
+    }
+  }
+  /* Primera vinculación de esta sesión local con la API: el navegador manda */
+  async function linkLocalToApi() {
+    const body = profileToApi();
+    if (body) { try { await api.updateMe(body); } catch (e) { if (isOffline(e)) throw e; apiLog("el servidor rechazó el perfil local", e); } }
+    const me = await api.getMe(), srv = new Set(me.registrations || []);
+    for (const id of A.events) if (!srv.has(id)) queueOp({ t: "reg", id, on: true });
+    for (const id of srv) if (!A.events.includes(id)) queueOp({ t: "reg", id, on: false });
+    for (const code of A.done) if (!(A.doneSynced || []).includes(code)) queueOp({ t: "mission", id: code });
+    await flushOutbox();
+    A.apiLinked = true; save();
+  }
+  /* Sincronización completa. Sin backend no muestra nada: el panel sigue con los datos locales. */
+  function syncFromApi() {
+    if (apiSyncing) { apiSyncAgain = true; return apiSyncing; } // ya hay uno en curso: repetir al terminar
+    apiSyncing = (async () => {
+      try {
+        const evs = await api.listEvents(); mergeEvents(evs.events);
+        if (A.connected && A.profile) {
+          if (!A.apiLinked) await linkLocalToApi(); else await flushOutbox();
+          const [me, ms] = await Promise.all([api.getMe(), api.listMissions()]);
+          applyServerUser(me.user); applyProfile();
+          const regs = (me.registrations || []).filter(id => EVENTS.some(e => e.id === id));
+          A.events = uniq(regs.concat(A.regLocal || []));
+          const doneSrv = (ms.missions || []).filter(m => m.completed).map(m => m.code);
+          A.done = uniq(A.done.concat(doneSrv)); A.doneSynced = uniq((A.doneSynced || []).concat(doneSrv));
+          A.xp = me.user.xp + A.xpLocal;
+        }
+        save(); refresh();
+      } catch (e) { apiLog(isOffline(e) ? "sin backend; se usan los datos locales" : "no se pudo sincronizar", e); }
+      finally { apiSyncing = null; if (apiSyncAgain) { apiSyncAgain = false; syncFromApi(); } }
+    })();
+    return apiSyncing;
+  }
+  /* Envía una acción del usuario; si la API no responde, queda en la cola */
+  function apiRun(op) {
+    if (!A.connected) return;
+    if (!A.apiLinked) { syncFromApi(); return; } // la vinculación sube todo el estado local
+    const xpBefore = A.xp;
+    sendOp(op)
+      .then((r) => { save(); if (r === "resync" || outbox().length) syncFromApi(); else if (A.xp !== xpBefore) refresh(); })
+      .catch((e) => { if (isOffline(e)) { queueOp(op); apiLog(`sin backend; ${op.t} ${op.id} se enviará al reconectar`, e); } else apiLog(`el servidor rechazó ${op.t} ${op.id}`, e); });
+  }
+  function apiPatchProfile(fields) {
+    if (!A.connected) return;
+    if (!A.apiLinked) { syncFromApi(); return; }
+    const body = profileToApi(fields); if (!body) return;
+    api.updateMe(body).catch((e) => {
+      if (isOffline(e)) { A.apiLinked = false; save(); apiLog("perfil guardado solo en local; se subirá al reconectar", e); }
+      else apiLog("el servidor rechazó el cambio de perfil", e);
+    });
+  }
+  function toggleRegistration(ev) {
+    const id = ev.id, on = !A.events.includes(id);
+    if (on) { A.events.push(id); notify("event", `Te inscribiste en ${ev.name}`, `${ev.city} · ${ev.when}`); toast(`<b>Te inscribiste en ${ev.name}</b><div class="text-[13px] text-mute">Lo encuentras en Mis eventos.</div>`, "calendar"); }
+    else { A.events = A.events.filter(x => x !== id); toast(`<b>Cancelaste tu inscripción</b> · ${ev.name}`, "calendar"); }
+    save(); apiRun({ t: "reg", id, on });
+  }
   const board = () => OTHERS.map(([n, x]) => ({ n, x })).concat([{ n: first(PERSONAS[A.ind].name) + " (tú)", x: A.xp, me: true }]).sort((a, b) => b.x - a.x);
   const rank = () => board().findIndex(r => r.me) + 1;
   const insights = (sess) => { const out = [], seen = new Set();
@@ -470,7 +616,7 @@ export function bootKnetApp() {
 
   function award(mut, xp, msg, icon = "check", kind = "xp") {
     const before = badgeNames(), lv = lvl();
-    mut(); A.xp += xp;
+    mut(); A.xp += xp; A.xpLocal = (A.xpLocal || 0) + xp; // XP híbrida: queda local hasta que la API la confirme
     if (kind === "conn") notify("conn", msg.replace(/<[^>]+>/g, ""), xp ? `Nueva conexión · +${xp} XP` : "Nueva conexión");
     else if (xp) notify("xp", `+${xp} XP · ${msg.replace(/<[^>]+>/g, "")}`, "Puntos sumados a tu marcador");
     if (lvl() > lv) { notify("level", `¡Subiste a nivel ${lvl()}!`, `Ahora eres ${lvlName()}`);
@@ -1267,7 +1413,7 @@ export function bootKnetApp() {
   $("#m-event").addEventListener("click", (e) => {
     const b = e.target.closest("[data-eact]"); if (!b) return; const id = b.dataset.v;
     if (b.dataset.eact === "map") { closeModal($("#m-event")); selEvent = id; refresh(); const m = $(".map-card"); if (m) { scrollToEl(m); flash(m); } return; }
-    if (b.dataset.eact === "save") { const ev = EVENTS.find(x => x.id === id); if (isLockedEv(ev)) return; if (A.events.includes(id)) { A.events = A.events.filter(x => x !== id); toast(`<b>Cancelaste tu inscripción</b> · ${ev.name}`, "calendar"); } else { A.events.push(id); notify("event", `Te inscribiste en ${ev.name}`, `${ev.city} · ${ev.when}`); toast(`<b>Te inscribiste en ${ev.name}</b><div class="text-[13px] text-mute">Lo encuentras en Mis eventos.</div>`, "calendar"); } save(); refresh(); openEvent(id); }
+    if (b.dataset.eact === "save") { const ev = EVENTS.find(x => x.id === id); if (!ev || isLockedEv(ev)) return; toggleRegistration(ev); refresh(); openEvent(id); }
   });
 
   /* =================== AVATAR =================== */
@@ -3092,11 +3238,12 @@ export function bootKnetApp() {
   }
   function finalize(ind, profile, via) {
     const modal = $("#m-mcp"), reset = !A.connected || ind !== A.ind;
-    if (reset) { const keepAv = A.connected ? A.avatar : null; A = fresh(ind); A.connected = true; A.xp = 100; A.avatar = keepAv; selEvent = null; graphIntro = true; }
+    if (reset) { const keepAv = A.connected ? A.avatar : null; A = fresh(ind); A.connected = true; A.xp = 100; A.xpLocal = 100; A.avatar = keepAv; selEvent = null; graphIntro = true; }
     A.profile = profile; editField = null; applyProfile();
+    A.apiLinked = false; // el perfil recién importado o escrito manda: el próximo sync lo sube a la API
     const p = PERSONAS[ind], d = IND[ind];
     if (reset) A.chat.push({ who: "ai", html: `Hola, ${esc(first(p.name))}. Configuré tu Summit para ${esc(d.role)} en ${d.label}: 4 sesiones, 3 matches y 3 misiones activas. ¿En qué te ayudo?` });
-    save(); consentGiven = null; closeModal(modal);
+    save(); syncFromApi(); consentGiven = null; closeModal(modal);
     const msg = { mcp: "Perfil importado vía MCP", manual: "Perfil creado manualmente", mixed: "Perfil completado: LinkedIn + datos tuyos" }[via];
     if (reset) { notify("xp", `+100 XP · ${msg}`, "¡Bienvenido a KNET!"); toast(`<b>${msg}</b>${xpLine(100)}`, via === "mcp" ? "link" : "pen"); } else toast(`<b>${msg}</b>`, "link");
     showTab("perfil");
@@ -3121,16 +3268,15 @@ export function bootKnetApp() {
       A.profile.interests = ints;
     } else if (field === "ind") {
       const ni = $("#pfe").value;
-      if (ni !== A.ind) { const keep = { profile: { ...A.profile, src: { ...A.profile.src, ind: "edited" } }, avatar: A.avatar, scopes: A.scopes, xp: A.xp };
-        A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true;
-        editField = null; applyProfile(); A.chat.push({ who: "ai", html: `Actualicé tu industria a ${IND[ni].label} y rehíce tu agenda, tus matches y tus misiones.` }); save();
+      if (ni !== A.ind) { A.profile.src = { ...A.profile.src, ind: "edited" }; switchIndustry(ni);
+        applyProfile(); A.chat.push({ who: "ai", html: `Actualicé tu industria a ${IND[ni].label} y rehíce tu agenda, tus matches y tus misiones.` }); save(); apiPatchProfile(["ind"]);
         toast(`<b>Industria actualizada</b><div class="text-[13px] text-mute">Tu agenda y tus matches se recalcularon.</div>`, "pen"); refresh(); return; }
     } else {
       const v = $("#pfe").value.trim();
       if (!v) return fail("Este dato no puede quedar vacío.");
       A.profile[field] = v;
     }
-    A.profile.src[field] = "edited"; editField = null; applyProfile(); save();
+    A.profile.src[field] = "edited"; editField = null; applyProfile(); save(); apiPatchProfile([field]);
     toast("<b>Dato actualizado</b> · KNET usará este valor", "pen"); refresh();
   }
   panel.addEventListener("keydown", (e) => {
@@ -3154,7 +3300,7 @@ export function bootKnetApp() {
   /* Volver a entrar con la sesión guardada */
   const hasSaved = () => !A.connected && !!A.profile;
   function resumeSession(tab) {
-    A.connected = true; save(); applyProfile();
+    A.connected = true; save(); applyProfile(); syncFromApi();
     toast(`<b>¡Hola de nuevo, ${esc(first(A.profile.name))}!</b><div class="text-[13px] text-mute">Recuperamos tu progreso: ${fmt(A.xp)} XP.</div>`, "check");
     showTab(tab || curTab || "perfil");
   }
@@ -3195,7 +3341,7 @@ export function bootKnetApp() {
     if (a === "frameclaim") { const f = FRAMES.find(x => x.id === v); if (!f || A.xp < f.xp) return; A.frames = (A.frames || []).concat(v); A.frame = v; save(); toast(`<b>¡Recompensa reclamada!</b><div class="text-[13px] text-mute">${f.name} ya está en tu avatar.</div>`, "trophy"); refresh(); const c = $("#rewardsCard"); if (c) flash(c); return; }
     if (a === "frameon") { A.frame = v; save(); toast(`<b>Marco equipado</b>`, "star"); refresh(); return; }
     if (a === "frameoff") { A.frame = null; save(); refresh(); return; }
-    if (a === "complete") { const m = missionPool().find(x => x.id === v); if (!m || A.done.includes(v)) return; award(() => A.done.push(v), m.xp, `Misión completada · ${m.title}`); return; }
+    if (a === "complete") { const m = missionPool().find(x => x.id === v); if (!m || A.done.includes(v)) return; award(() => A.done.push(v), m.xp, `Misión completada · ${m.title}`); apiRun({ t: "mission", id: v }); return; }
     if (a === "nfc") { b.classList.remove("tapped"); void b.offsetWidth; b.classList.add("tapped"); setTimeout(() => award(() => {}, 25, "Toque NFC registrado", "nfc"), 120); return; }
     if (a === "flip") { b.classList.toggle("flipped"); return; }
     if (a === "avedit") { openAvatar(); return; }
@@ -3209,7 +3355,7 @@ export function bootKnetApp() {
     if (a === "resync") { connectFlow($("#personaSel").value); return; }
     if (a === "evinfo") { openEvent(v); return; }
     if (a === "evselect") { const c = (EVENTS.find(e => e.id === v) || {}).city, cur = selEvent && (EVENTS.find(e => e.id === selEvent) || {}).city; selEvent = cur === c ? null : v; refresh(); if (!selEvent) return; const el = $("#ev-" + v); if (el && window.matchMedia("(max-width: 1023px)").matches) scrollToEl(el); if (el) flash(el); return; }
-    if (a === "evsave") { const ev = EVENTS.find(e => e.id === v); if (isLockedEv(ev)) { toast(`<b>Evento exclusivo del nivel ${ev.lvl}</b><div class="text-[13px] text-mute">Gana más XP para desbloquearlo.</div>`, "lock"); return; } if (A.events.includes(v)) { A.events = A.events.filter(x => x !== v); save(); toast(`<b>Cancelaste tu inscripción</b> · ${ev.name}`, "calendar"); refresh(); } else { A.events.push(v); notify("event", `Te inscribiste en ${ev.name}`, `${ev.city} · ${ev.when}`); save(); toast(`<b>Te inscribiste en ${ev.name}</b><div class="text-[13px] text-mute">Lo encuentras en Mis eventos.</div>`, "calendar"); refresh(); } return; }
+    if (a === "evsave") { const ev = EVENTS.find(e => e.id === v); if (!ev) return; if (isLockedEv(ev)) { toast(`<b>Evento exclusivo del nivel ${ev.lvl}</b><div class="text-[13px] text-mute">Gana más XP para desbloquearlo.</div>`, "lock"); return; } toggleRegistration(ev); refresh(); return; }
     if (a === "gen") { b.disabled = true; b.innerHTML = `${svg("spark")}<span>Generando…</span>`; b.classList.add("shimmer"); await sleep(1300);
       if (!A.dossierAt) award(() => { A.dossierAt = new Date().toISOString(); }, 0, "Dossier generado", "file"); else { A.dossierAt = new Date().toISOString(); save(); toast("<b>Dossier actualizado</b>", "file"); refresh(); }
       downloadDossier(); return; }
@@ -3349,4 +3495,8 @@ export function bootKnetApp() {
     const io = new IntersectionObserver((e) => { if (e[0].isIntersecting) { if (!timer) next(); } else { clearTimeout(timer); timer = null; k = -1; } }, { threshold: .2 });
     io.observe(st);
   })();
+
+  /* Backend: sincroniza al arrancar (sin bloquear la landing ni el 3D) y al recuperar la red */
+  syncFromApi();
+  window.addEventListener("online", () => syncFromApi());
 }
