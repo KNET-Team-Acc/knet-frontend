@@ -14,6 +14,7 @@ import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
 import { AV_SKIN, AV_HAIRC, AV_OUT, AV_HAIR, AV_ACC, AV_XHAIR, AV_XACC, AV_GENDER } from "@/data/avatar.js";
 import { SV_ASPECTS, SV_BEST, SV_FACES } from "@/data/survey.js";
 import { PDF_MAP, PDF_FONTS } from "@/data/pdf-fonts.js";
+import { api, ApiError, isOffline, getUserId, setUserId } from "@/services/api.js";
 
 /**
  * Arranca KNET sobre el DOM renderizado por React. Llamar una sola vez.
@@ -438,6 +439,239 @@ export function bootKnetApp() {
   const missionPool = () => IND[A.ind].missions.map((m, i) => ({ id: A.ind + "-m" + i, icon: m[0], title: m[1], sub: m[2], xp: m[3] }))
     .concat(COMMON_M.map((m, i) => ({ id: "c" + i, icon: m[0], title: m[1], sub: m[2], xp: m[3] })));
   const activeMissions = () => missionPool().filter(m => !A.done.includes(m.id)).slice(0, 3);
+
+  /* ---- Backend (API): sincronización progresiva con fallback silencioso a lo local ----
+     - XP híbrida: A.xp = XP del servidor + A.xpLocal (XP de flujos que la API aún no conoce:
+       grafo, cafés, experiencias, onboarding…). Cuando la API confirma una misión, un check-in o
+       una conexión aceptada, su XP pasa de A.xpLocal al servidor; el total visible no cambia.
+     - A.xpSynced: claves ("mission:c3", "checkin:bog:0:2", "conn:Laura M.") cuya XP ya cuenta el
+       servidor (evita restarla dos veces).
+     - A.outbox: acciones hechas sin conexión; se reenvían en orden al volver la API.
+     - A.apiLinked: false = el navegador manda en el próximo sync (sube perfil, inscripciones,
+       misiones, check-ins, conexiones y dossier locales); true = el servidor manda al arrancar.
+     - A.regLocal: inscripciones que el servidor aún rechaza por nivel (su XP es menor); se conservan. */
+  const API_FIELD = { name: "name", role: "role", company: "company", ind: "industry", seniority: "seniority", interests: "interests", location: "location" };
+  const API_SRC = ["mcp", "manual", "edited"];
+  const CHECKIN_XP = 40, CONN_XP = 100; // iguales a XP_REWARDS del backend
+  if (typeof A.xpLocal !== "number") A.xpLocal = A.xp || 0;
+  if (!Array.isArray(A.xpSynced)) A.xpSynced = (A.doneSynced || []).map(c => "mission:" + c); // migra el formato anterior
+  delete A.doneSynced;
+  let apiSyncing = null, apiSyncAgain = false;
+  let connIndex = null; // nombre del contacto → { id, status } en el servidor (solo en memoria)
+  const apiLog = (msg, e) => { try { console.info(`[KNET API] ${msg}`, (e && e.message) || ""); } catch (err) {} };
+  const outbox = () => (A.outbox ||= []);
+  const uniq = (arr) => [...new Set(arr)];
+  const synced = (key) => (A.xpSynced ||= []).includes(key);
+  function queueOp(op) { A.outbox = outbox().filter(o => !(o.t === op.t && o.id === op.id)).concat([op]); save(); }
+
+  function profileToApi(fields) {
+    const pr = A.profile; if (!pr) return null;
+    const body = {}, src = {};
+    (fields || Object.keys(API_FIELD)).forEach(f => {
+      const v = f === "ind" ? A.ind : pr[f];
+      if (v === undefined || v === null || v === "") return;
+      body[API_FIELD[f]] = Array.isArray(v) ? v.slice(0, 12) : v;
+      if (pr.src && API_SRC.includes(pr.src[f])) src[f] = pr.src[f];
+    });
+    if (Object.keys(src).length) body.fieldSources = src;
+    return Object.keys(body).length ? body : null;
+  }
+  /* Cambia de industria conservando perfil, avatar, XP, inscripciones, check-ins y el estado de sincronización
+     (el servidor los guarda igual; los matches, la red y las misiones sí se rehacen para la nueva industria) */
+  function switchIndustry(ni) {
+    const keep = { profile: { ...A.profile, src: { ...A.profile.src } }, avatar: A.avatar, scopes: A.scopes, xp: A.xp, xpLocal: A.xpLocal, events: A.events,
+      attended: A.attended, outbox: A.outbox, apiLinked: A.apiLinked, xpSynced: A.xpSynced, regLocal: A.regLocal };
+    A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true; editField = null;
+  }
+  function applyServerUser(u) {
+    if (!A.profile || !u) return;
+    if (u.industry && u.industry !== A.ind && IND[u.industry]) switchIndustry(u.industry);
+    const pr = A.profile;
+    ["name", "role", "company", "seniority", "location"].forEach(f => { if (typeof u[f] === "string" && u[f]) pr[f] = u[f]; });
+    if (Array.isArray(u.interests) && u.interests.length) pr.interests = u.interests.slice();
+    if (u.fieldSources) pr.src = { ...pr.src, ...u.fieldSources };
+  }
+  /* Actualiza en su sitio los eventos conocidos (el mapa y el recinto 3D guardan referencias a estos objetos) */
+  function mergeEvents(list) {
+    (list || []).forEach(s => {
+      const ev = EVENTS.find(e => e.id === s.id); if (!ev) return; // eventos sin recinto/ficha local: más adelante
+      Object.assign(ev, { name: s.name || ev.name, city: s.city || ev.city, venue: s.venueName || ev.venue, date: s.dateLabel || ev.date,
+        lat: s.lat ?? ev.lat, lon: s.lon ?? ev.lon, tags: s.tags && s.tags.length ? s.tags : ev.tags, ind: s.industries && s.industries.length ? s.industries : ev.ind, desc: s.description || ev.desc });
+      if (s.days && s.days.length) ev.days = s.days.slice();
+      if (s.minLevel > 1) ev.lvl = s.minLevel; else delete ev.lvl;
+      if (s.kind === "real") Object.assign(ev, { real: true, org: s.organizer || ev.org, url: s.sourceUrl || ev.url });
+    });
+  }
+  /* La acción `key` ya cuenta en el servidor: sus `amount` XP salen de xpLocal (una sola vez).
+     serverXp = total real del servidor si se conoce; si no, el próximo sync lo corrige. */
+  function moveXp(key, amount, serverXp) {
+    if (!synced(key)) { A.xpSynced.push(key); A.xpLocal = Math.max(0, A.xpLocal - amount); }
+    if (typeof serverXp === "number") A.xp = serverXp + A.xpLocal;
+  }
+  /* El servidor ya tenía la acción: si también es local, su XP local sobra; si no, solo se marca */
+  function adoptServerAction(key, amount, isLocal) { if (isLocal) moveXp(key, amount, null); else if (!synced(key)) A.xpSynced.push(key); }
+  const missionXp = (code) => { const m = missionPool().find(x => x.id === code); return m ? m.xp : 0; };
+  async function sendMission(code) {
+    try { const r = await api.completeMission(code); moveXp("mission:" + code, missionXp(code), r.xp); return "ok"; }
+    catch (e) { if (e instanceof ApiError && e.status === 409) { moveXp("mission:" + code, missionXp(code), null); return "resync"; } throw e; }
+  }
+  async function sendCheckin(code) {
+    try { const r = await api.checkin(code, "qr"); moveXp("checkin:" + code, CHECKIN_XP, r.xp); return "ok"; }
+    catch (e) {
+      if (e instanceof ApiError && e.status === 409) { moveXp("checkin:" + code, CHECKIN_XP, null); return "resync"; }
+      if (e instanceof ApiError && e.status === 403) { apiLog(`el check-in ${code} queda local: el servidor no tiene tu inscripción a ese evento`, e); return "ok"; }
+      throw e;
+    }
+  }
+  async function loadConnIndex() {
+    const r = await api.listConnections();
+    connIndex = new Map((r.connections || []).map(c => [c.contact.name, { id: c.id, status: c.status }]));
+    return connIndex;
+  }
+  /* Lleva la conexión con `op.id` (nombre) al estado `op.state`: pending | accepted | removed */
+  async function sendConnection(op, retried = false) {
+    const idx = connIndex || await loadConnIndex();
+    let cur = idx.get(op.id);
+    if (op.state === "removed") {
+      if (cur) { try { await api.deleteConnection(cur.id); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) throw e; } idx.delete(op.id); }
+      return "ok";
+    }
+    let serverXp = null;
+    if (!cur) {
+      try {
+        const r = await api.createConnection({ name: op.id, source: op.source || "request", context: op.context || undefined, eventId: op.eventId || undefined });
+        cur = { id: r.connection.id, status: r.connection.status }; idx.set(op.id, cur); serverXp = r.xp;
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409 && !retried) { await loadConnIndex(); return sendConnection(op, true); }
+        throw e;
+      }
+    }
+    if (op.state === "accepted") {
+      if (cur.status !== "accepted") { const r = await api.acceptConnection(cur.id); cur.status = "accepted"; serverXp = r.xp; }
+      moveXp("conn:" + op.id, CONN_XP, serverXp);
+    }
+    return "ok";
+  }
+  async function sendDossier(eventId, body) {
+    try { await api.saveDossier(eventId, body); }
+    catch (e) { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { apiLog(`el dossier de ${eventId} queda local`, e); return "ok"; } throw e; }
+    return "ok";
+  }
+  async function sendRegistration(id, on) {
+    if (!on) {
+      A.regLocal = (A.regLocal || []).filter(x => x !== id);
+      try { await api.unregister(id); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) throw e; }
+      return "ok";
+    }
+    try { await api.register(id); A.regLocal = (A.regLocal || []).filter(x => x !== id); }
+    catch (e) {
+      if (!(e instanceof ApiError && e.status === 403)) throw e;
+      A.regLocal = uniq((A.regLocal || []).concat(id)); apiLog(`el servidor aún no habilita ${id} por nivel; la inscripción queda local`, e);
+    }
+    return "ok";
+  }
+  const SEND = {
+    mission: (op) => sendMission(op.id),
+    reg: (op) => sendRegistration(op.id, op.on),
+    checkin: (op) => sendCheckin(op.id),
+    conn: (op) => sendConnection(op),
+    dossier: (op) => sendDossier(op.id, op.body),
+  };
+  const sendOp = (op) => (SEND[op.t] ? SEND[op.t](op) : Promise.resolve("ok"));
+  async function flushOutbox() {
+    for (const op of outbox().slice()) {
+      try { await sendOp(op); }
+      catch (e) { if (isOffline(e)) throw e; apiLog(`operación descartada (${op.t} ${op.id})`, e); }
+      A.outbox = outbox().filter(o => o !== op); save();
+    }
+  }
+  /* Primera vinculación de esta sesión local con la API: el navegador manda */
+  async function linkLocalToApi() {
+    const body = profileToApi();
+    if (body) { try { await api.updateMe(body); } catch (e) { if (isOffline(e)) throw e; apiLog("el servidor rechazó el perfil local", e); } }
+    const me = await api.getMe(), srv = new Set(me.registrations || []);
+    for (const id of A.events) if (!srv.has(id)) queueOp({ t: "reg", id, on: true });
+    for (const id of srv) if (!A.events.includes(id)) queueOp({ t: "reg", id, on: false });
+    for (const code of A.done) if (!synced("mission:" + code)) queueOp({ t: "mission", id: code });
+    for (const code of A.attended) if (!synced("checkin:" + code)) queueOp({ t: "checkin", id: code });
+    Object.entries(A.requests || {}).forEach(([n, r]) => { if (r.status === "pending" && !A.connections.includes(n)) queueOp({ t: "conn", id: n, state: "pending", source: "request" }); });
+    for (const n of A.connections) if (!synced("conn:" + n)) queueOp({ t: "conn", id: n, state: "accepted", source: qrPerson(n) ? "qr" : "request" });
+    if (A.dossierAt) { const body = dossierPayload(); for (const id of myEvIds()) queueOp({ t: "dossier", id, body }); }
+    await flushOutbox();
+    A.apiLinked = true; save();
+  }
+  /* Sincronización completa. Sin backend no muestra nada: el panel sigue con los datos locales. */
+  function syncFromApi() {
+    if (apiSyncing) { apiSyncAgain = true; return apiSyncing; } // ya hay uno en curso: repetir al terminar
+    apiSyncing = (async () => {
+      try {
+        const evs = await api.listEvents(); mergeEvents(evs.events);
+        await flushConsents(); // la API respondió: sube los consentimientos que quedaron pendientes
+        await flushPendingErase(); // y después los borrados que no llegaron al servidor
+        if (A.connected && A.profile) {
+          if (!A.apiLinked) await linkLocalToApi(); else await flushOutbox();
+          const [me, ms, ck, cn, ds] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers()]);
+          applyServerUser(me.user); applyProfile();
+          const regs = (me.registrations || []).filter(id => EVENTS.some(e => e.id === id));
+          A.events = uniq(regs.concat(A.regLocal || []));
+          // Misiones y check-ins: unión de lo local y lo del servidor, sin contar dos veces la XP
+          (ms.missions || []).filter(m => m.completed).forEach(m => {
+            adoptServerAction("mission:" + m.code, m.xp, A.done.includes(m.code)); if (!A.done.includes(m.code)) A.done.push(m.code); });
+          (ck.checkins || []).forEach(c => {
+            adoptServerAction("checkin:" + c.sessionCode, CHECKIN_XP, A.attended.includes(c.sessionCode)); if (!A.attended.includes(c.sessionCode)) A.attended.push(c.sessionCode); });
+          // Conexiones aceptadas en el servidor: solo se suman las que esta industria sabe mostrar
+          connIndex = new Map((cn.connections || []).map(c => [c.contact.name, { id: c.id, status: c.status }]));
+          (cn.connections || []).filter(c => c.status === "accepted").forEach(c => {
+            const n = c.contact.name, local = A.connections.includes(n);
+            if (!local && !IND[A.ind].matches.some(m => m[1] === n) && !qrPerson(n)) return;
+            adoptServerAction("conn:" + n, CONN_XP, local); if (!local) A.connections.push(n); });
+          // Dossier: recupera la fecha si este navegador la perdió
+          const lastDossier = (ds.dossiers || []).map(d => d.generatedAt).sort().pop();
+          if (!A.dossierAt && lastDossier) A.dossierAt = lastDossier;
+          A.xp = me.user.xp + A.xpLocal;
+        }
+        save(); refresh();
+      } catch (e) { apiLog(isOffline(e) ? "sin backend; se usan los datos locales" : "no se pudo sincronizar", e); }
+      finally { apiSyncing = null; if (apiSyncAgain) { apiSyncAgain = false; syncFromApi(); } }
+    })();
+    return apiSyncing;
+  }
+  /* Envía una acción del usuario; si la API no responde, queda en la cola */
+  function apiRun(op) {
+    if (!A.connected) return;
+    // Sin vincular: se encola (así no se pierden las eliminaciones) y la vinculación sube el resto del estado local
+    if (!A.apiLinked) { queueOp(op); syncFromApi(); return; }
+    const xpBefore = A.xp;
+    sendOp(op)
+      .then((r) => { save(); if (r === "resync" || outbox().length) syncFromApi(); else if (A.xp !== xpBefore) refresh(); })
+      .catch((e) => { if (isOffline(e)) { queueOp(op); apiLog(`sin backend; ${op.t} ${op.id} se enviará al reconectar`, e); } else apiLog(`el servidor rechazó ${op.t} ${op.id}`, e); });
+  }
+  function apiPatchProfile(fields) {
+    if (!A.connected) return;
+    if (!A.apiLinked) { syncFromApi(); return; }
+    const body = profileToApi(fields); if (!body) return;
+    api.updateMe(body).catch((e) => {
+      if (isOffline(e)) { A.apiLinked = false; save(); apiLog("perfil guardado solo en local; se subirá al reconectar", e); }
+      else apiLog("el servidor rechazó el cambio de perfil", e);
+    });
+  }
+  function toggleRegistration(ev) {
+    const id = ev.id, on = !A.events.includes(id);
+    if (on) { A.events.push(id); notify("event", `Te inscribiste en ${ev.name}`, `${ev.city} · ${ev.when}`); toast(`<b>Te inscribiste en ${ev.name}</b><div class="text-[13px] text-mute">Lo encuentras en Mis eventos.</div>`, "calendar"); }
+    else { A.events = A.events.filter(x => x !== id); toast(`<b>Cancelaste tu inscripción</b> · ${ev.name}`, "calendar"); }
+    save(); apiRun({ t: "reg", id, on });
+  }
+  /* Conexión quitada o solicitud cancelada: si se vuelve a conectar, su XP local se vuelve a reconciliar */
+  function apiConnRemoved(n) { A.xpSynced = (A.xpSynced || []).filter(k => k !== "conn:" + n); save(); apiRun({ t: "conn", id: n, state: "removed" }); }
+  /* Lo que se guarda del dossier en el servidor, por evento */
+  function dossierPayload() {
+    const s = dossierData(), clip = (arr, max, len) => (arr || []).map(x => String(x).trim()).filter(Boolean).slice(0, max).map(x => x.slice(0, len));
+    return { ideas: clip(s.puntos, 20, 500), plan: clip(s.acciones, 30, 300), notes: String(s.resumen || "").slice(0, 5000) };
+  }
+  function apiSaveDossier() {
+    const rs = getSel("res"), ids = rs.ev === "all" ? myEvIds() : [rs.ev], body = dossierPayload();
+    ids.forEach(id => apiRun({ t: "dossier", id, body }));
+  }
   const board = () => OTHERS.map(([n, x]) => ({ n, x })).concat([{ n: first(PERSONAS[A.ind].name) + " (tú)", x: A.xp, me: true }]).sort((a, b) => b.x - a.x);
   const rank = () => board().findIndex(r => r.me) + 1;
   const insights = (sess) => { const out = [], seen = new Set();
@@ -470,7 +704,7 @@ export function bootKnetApp() {
 
   function award(mut, xp, msg, icon = "check", kind = "xp") {
     const before = badgeNames(), lv = lvl();
-    mut(); A.xp += xp;
+    mut(); A.xp += xp; A.xpLocal = (A.xpLocal || 0) + xp; // XP híbrida: queda local hasta que la API la confirme
     if (kind === "conn") notify("conn", msg.replace(/<[^>]+>/g, ""), xp ? `Nueva conexión · +${xp} XP` : "Nueva conexión");
     else if (xp) notify("xp", `+${xp} XP · ${msg.replace(/<[^>]+>/g, "")}`, "Puntos sumados a tu marcador");
     if (lvl() > lv) { notify("level", `¡Subiste a nivel ${lvl()}!`, `Ahora eres ${lvlName()}`);
@@ -913,7 +1147,8 @@ export function bootKnetApp() {
   const personOpenFor = (n) => !$("#m-person").hidden && $("#personName") && $("#personName").textContent === n;
   function resolveRequest(n, at) {
     const r = reqOf(n); if (!A.connected || !r || r.at !== at || r.status !== "pending") return;
-    award(() => { r.status = "accepted"; r.answered = Date.now(); if (!isConn(n)) A.connections.push(n); }, 100, `${n} aceptó tu solicitud de conexión`, "users", "conn");
+    award(() => { r.status = "accepted"; r.answered = Date.now(); if (!isConn(n)) A.connections.push(n); }, CONN_XP, `${n} aceptó tu solicitud de conexión`, "users", "conn");
+    apiRun({ t: "conn", id: n, state: "accepted", source: "request" });
     if (personOpenFor(n)) openPerson(n);
     if (!$("#m-dm").hidden && dmFor === n) renderDm();
   }
@@ -930,8 +1165,9 @@ export function bootKnetApp() {
     A.requests[n] = { status: "pending", at, due: at + rnd(4500, 8000) };
     save(); toast(`<b>Solicitud enviada a ${esc(n)}</b><div class="text-[13px] text-mute">La conexión se crea cuando la apruebe. +100 XP al aceptar.</div>`, "users");
     refresh(); openPerson(n); scheduleResponses();
+    apiRun({ t: "conn", id: n, state: "pending", source: "request" });
   }
-  function cancelRequest(n) { if (!isPending(n)) return; delete A.requests[n]; save(); toast(`<b>Solicitud cancelada</b>`, "x"); refresh(); if (personOpenFor(n)) openPerson(n); }
+  function cancelRequest(n) { if (!isPending(n)) return; delete A.requests[n]; save(); apiConnRemoved(n); toast(`<b>Solicitud cancelada</b>`, "x"); refresh(); if (personOpenFor(n)) openPerson(n); }
   function proposeCoffee(n) {
     if (!isConn(n)) { toast("<b>Primero conecten</b><div class='text-[13px] text-mute'>Puedes proponer un café cuando acepte tu solicitud.</div>", "info"); return; }
     const c = coffeeOf(n); if (c && (c.status === "pending" || c.status === "accepted")) return;
@@ -1267,7 +1503,7 @@ export function bootKnetApp() {
   $("#m-event").addEventListener("click", (e) => {
     const b = e.target.closest("[data-eact]"); if (!b) return; const id = b.dataset.v;
     if (b.dataset.eact === "map") { closeModal($("#m-event")); selEvent = id; refresh(); const m = $(".map-card"); if (m) { scrollToEl(m); flash(m); } return; }
-    if (b.dataset.eact === "save") { const ev = EVENTS.find(x => x.id === id); if (isLockedEv(ev)) return; if (A.events.includes(id)) { A.events = A.events.filter(x => x !== id); toast(`<b>Cancelaste tu inscripción</b> · ${ev.name}`, "calendar"); } else { A.events.push(id); notify("event", `Te inscribiste en ${ev.name}`, `${ev.city} · ${ev.when}`); toast(`<b>Te inscribiste en ${ev.name}</b><div class="text-[13px] text-mute">Lo encuentras en Mis eventos.</div>`, "calendar"); } save(); refresh(); openEvent(id); }
+    if (b.dataset.eact === "save") { const ev = EVENTS.find(x => x.id === id); if (!ev || isLockedEv(ev)) return; toggleRegistration(ev); refresh(); openEvent(id); }
   });
 
   /* =================== AVATAR =================== */
@@ -1403,7 +1639,7 @@ export function bootKnetApp() {
     if (t.closest("#connsCard [data-cno]")) { connAsk = null; renderTab(false); return; }
     const yes = t.closest("#connsCard [data-cyes]"); if (yes) { const n = yes.dataset.cyes; connAsk = null;
       A.connections = A.connections.filter(x => x !== n); if (A.requests) delete A.requests[n]; if (A.coffees) delete A.coffees[n];
-      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); refresh();
+      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); apiConnRemoved(n); refresh();
       toast(`<b>Conexión removida</b><div class="text-[13px] text-mute">${esc(n)} ya no está en tu red.</div>`, "users"); return; }
     const mg = t.closest("#connsCard [data-cmsg]"); if (mg) { openChat(mg.dataset.cmsg); return; }
     const pf = t.closest("#connsCard [data-cprof]"); if (pf) { openPerson(pf.dataset.cprof); return; }
@@ -1416,7 +1652,7 @@ export function bootKnetApp() {
     if (t.closest("[data-cno]")) { connAsk = null; renderConns(); return; }
     const yes = t.closest("[data-cyes]"); if (yes) { const n = yes.dataset.cyes; connAsk = null;
       A.connections = A.connections.filter(x => x !== n); if (A.requests) delete A.requests[n]; if (A.coffees) delete A.coffees[n];
-      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); refresh(); renderConns();
+      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); apiConnRemoved(n); refresh(); renderConns();
       toast(`<b>Conexión removida</b><div class="text-[13px] text-mute">${esc(n)} ya no está en tu red.</div>`, "users"); return; }
     const mg = t.closest("[data-cmsg]"); if (mg) { closeModal($("#m-conns")); openChat(mg.dataset.cmsg); return; }
     const pf = t.closest("[data-cprof]"); if (pf) { closeModal($("#m-conns")); openPerson(pf.dataset.cprof); return; }
@@ -2468,7 +2704,8 @@ export function bootKnetApp() {
   }
   function acceptScan() {
     const c = scanCur; if (!c) return; scanCur = null;
-    award(() => { (A.qrConn = A.qrConn || []).push(c); if (!A.connections.includes(c.name)) A.connections.push(c.name); }, 100, `Conexión por QR con ${c.name}`, "qr", "conn");
+    award(() => { (A.qrConn = A.qrConn || []).push(c); if (!A.connections.includes(c.name)) A.connections.push(c.name); }, CONN_XP, `Conexión por QR con ${c.name}`, "qr", "conn");
+    apiRun({ t: "conn", id: c.name, state: "accepted", source: "qr", context: (c.interests || []).join(", ").slice(0, 280) });
     $("#qsBody").innerHTML = `
       <div class="mh"><div><span class="chip chip-emerald">${svg("check")}Conexión registrada</span><h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">¡Conexión lista con ${esc(first(c.name))}!</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
       <div class="qs-done reveal-in">
@@ -2741,7 +2978,7 @@ export function bootKnetApp() {
       <h4>4. Autorización</h4>
       <p>Tratamos tus datos con tu autorización previa, expresa e informada, que das marcando la casilla de esta política. Puedes revocarla en cualquier momento con «Revocar y borrar mis datos», en tu panel, o escribiendo a ${L("correo")}.</p>
       <h4>5. Dónde se guardan</h4>
-      <p>Tu perfil y tu progreso se guardan en el almacenamiento de tu propio navegador. El registro de consentimientos se guarda en la base de datos de la plataforma claude.ai, operada por Anthropic, con servidores en Estados Unidos. Estados Unidos figura entre los países con nivel adecuado de protección según la Circular Externa 005 de 2017 de la SIC, y al aceptar autorizas expresamente esta transferencia. Las fuentes tipográficas (Google Fonts) y la hoja de estilos (Tailwind CSS) se descargan de servidores de terceros, que reciben tu dirección IP.</p>
+      <p>Tu perfil y tu progreso se guardan en el almacenamiento de tu propio navegador y, cuando la app está conectada al servidor de KNET, también en su base de datos. El registro de consentimientos se guarda en la base de datos PostgreSQL de KNET, administrada por el Responsable del tratamiento, y tu navegador conserva una copia. Si el servidor no está disponible, el registro queda en tu navegador y se envía al servidor cuando se restablece la conexión. Las fuentes tipográficas (Google Fonts) y la hoja de estilos (Tailwind CSS) se descargan de servidores de terceros, que reciben tu dirección IP.</p>
       <h4>6. Cuánto tiempo</h4>
       <p>Tu perfil y tu progreso: hasta que pulses «Revocar y borrar mis datos» o borres los datos de tu navegador. Cerrar sesión no los borra. El registro de consentimientos: ${L("retencionRegistro")}, para poder atender requerimientos de la Superintendencia de Industria y Comercio.</p>
       <h4>7. Tus derechos</h4>
@@ -2753,7 +2990,7 @@ export function bootKnetApp() {
         <li>Antes de acudir a la SIC debes haber agotado este trámite con nosotros.</li></ul>
       <p>Dentro de la app puedes ver tus datos, corregirlos con el lápiz, revisar tus aceptaciones y revocar permisos.</p>
       <h4>9. Seguridad</h4>
-      <p>Aplicamos medidas razonables: guardamos solo lo necesario, el registro de consentimientos no puede ser modificado por otras personas desde la app y cada evento lleva una huella SHA-256 encadenada que permite detectar alteraciones.</p>
+      <p>Aplicamos medidas razonables: guardamos solo lo necesario, la base de datos solo permite agregar registros de consentimiento (no modificarlos ni borrarlos) y cada evento lleva una huella SHA-256 encadenada que permite detectar alteraciones.</p>
       <h4>10. Cambios y vigencia</h4>
       <p>Si cambiamos esta política de forma sustancial te avisaremos y te pediremos aceptarla de nuevo.</p>` },
     cookies: { title: "Política de cookies y almacenamiento local", short: "Cookies", html: () => `
@@ -2768,7 +3005,7 @@ export function bootKnetApp() {
 <tr><td><code>knet-theme</code></td><td>Preferencia (opcional)</td><td>Recordar si usas el modo claro u oscuro.</td><td>Hasta que lo rechaces o borres los datos</td></tr>
       </tbody></table></div>
       <h4>3. Recursos de terceros</h4>
-      <p>Para mostrar la página se descargan fuentes de Google Fonts y estilos de Tailwind CSS. Esos servidores reciben tu dirección IP. La plataforma claude.ai, donde se publica KNET, puede usar sus propias cookies de sesión según su propia política.</p>
+      <p>Para mostrar la página se descargan fuentes de Google Fonts y estilos de Tailwind CSS. Esos servidores reciben tu dirección IP. El servidor de KNET también la recibe cuando la app sincroniza tus datos.</p>
       <h4>4. ¿Necesitamos tu consentimiento?</h4>
       <p>En Colombia no existe una ley específica de cookies: cuando una cookie o un almacenamiento recoge datos personales se aplica la Ley 1581 de 2012, que exige autorización previa. Por eso: lo necesario para que la app funcione se usa solo cuando tú creas tu perfil, ya con tu autorización; las preferencias (idioma) solo se guardan si las aceptas en el aviso. Puedes cambiar tu elección en «Configurar almacenamiento», al final de la página.</p>` },
     reembolsos: { title: "Política de reembolsos", short: "Reembolsos", html: () => `
@@ -2802,7 +3039,7 @@ export function bootKnetApp() {
   const docRef = (id) => ({ documento: DOCS[id].title, version: LEGAL.version, vigencia: LEGAL.vigencia, huellaSHA256: DOC_HASH[id] || "calculando" });
   const CHECK_TXT = {
     terminos: `Acepto los Términos y condiciones de uso (versión ${LEGAL.version}).`,
-    privacidad: `Autorizo el tratamiento de mis datos personales según la Política de tratamiento de datos personales (versión ${LEGAL.version}), incluida su transferencia a Estados Unidos.`
+    privacidad: `Autorizo el tratamiento de mis datos personales según la Política de tratamiento de datos personales (versión ${LEGAL.version}).`
   };
   const legalChecks = (prefix) => `<div class="lg-checks" role="group" aria-label="Aceptación de documentos">
       <div class="lg-check"><input type="checkbox" id="${prefix}-tyc"><label for="${prefix}-tyc">${CHECK_TXT.terminos}</label><a href="#terminos" data-legal="terminos" class="lg-link">Leer términos ${svg("arrow")}</a></div>
@@ -2837,14 +3074,44 @@ export function bootKnetApp() {
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#m-legal").hidden) { e.stopImmediatePropagation(); closeLegal(); } }, true);
 
-  /* ---- Registro trazable de consentimientos ---- */
-  
+  /* ---- Registro trazable de consentimientos ----
+     Cada evento se encadena en este navegador (SHA-256 del registro + hash anterior) y se envía a
+     POST /api/me/consents, que guarda su propia cadena en PostgreSQL (tabla de solo inserción).
+     rec.api = { estado: "pendiente" | "guardado" | "rechazado", id?, hash?, error? } se escribe
+     después de calcular la huella local, por eso verifyChain() la excluye. Los registros anteriores
+     a esta versión (sin rec.api) no se suben: se aceptaron con otro texto sobre dónde se guardan. */
   const readLocal = () => { try { return JSON.parse(localStorage.getItem(CONSENT_KEY) || "[]"); } catch (e) { return []; } };
   const writeLocal = (arr) => { try { localStorage.setItem(CONSENT_KEY, JSON.stringify(arr)); } catch (e) {} };
   const cUse = (n) => { try { return window.claude && typeof window.claude.use === "function" ? window.claude.use(n).catch(() => null) : Promise.resolve(null); } catch (e) { return Promise.resolve(null); } };
   const localStamp = (d) => { const off = -d.getTimezoneOffset(), s = off >= 0 ? "+" : "-", hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, "0"), mm = String(Math.abs(off) % 60).padStart(2, "0"); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${s}${hh}:${mm}`; };
   let consentQueue = Promise.resolve();
-  function logConsent(evt) { const run = consentQueue.then(() => logConsentNow(evt)); consentQueue = run.catch(() => {}); return run; }
+  const enqueueConsent = (fn) => { const run = consentQueue.then(fn); consentQueue = run.catch(() => {}); return run; };
+  function logConsent(evt) { return enqueueConsent(() => logConsentNow(evt)); }
+  const docIdOf = (d) => LEGAL_IDS.find(k => DOCS[k].title === d.documento) || String(d.documento || "").slice(0, 60);
+  function consentToApi(r) {
+    const { id, tipo, documentos, hash, hashAnterior, almacenamiento, errorServidor, api: _mark, ...rest } = r;
+    const body = { type: tipo, details: { ...rest, documentos, idLocal: id, hashLocal: hash } };
+    if (documentos && documentos.length) body.documents = documentos.map(d => ({ id: docIdOf(d), version: String(d.version || "").slice(0, 20), hash: String(d.huellaSHA256 || "").slice(0, 128) }));
+    return body;
+  }
+  async function sendConsent(r) {
+    try {
+      const { consent } = await api.addConsent(consentToApi(r), r.cuentaId);
+      r.api = { estado: "guardado", id: consent.id, hash: consent.hash }; r.almacenamiento = "servidor"; delete r.errorServidor;
+    } catch (e) {
+      if (isOffline(e)) throw e;
+      r.api = { estado: "rechazado", error: String(e.code || e.status || "desconocido") }; r.errorServidor = r.api.error;
+      apiLog(`el servidor rechazó el consentimiento ${r.id}`, e);
+    }
+  }
+  /* Sube en orden los pendientes de `local` (y lo guarda). Se detiene si la API no responde. */
+  async function sendPendingConsents(local) {
+    let changed = false;
+    try { for (const r of local) if (r.api && r.api.estado === "pendiente") { await sendConsent(r); changed = true; } }
+    catch (e) { apiLog("sin backend; los consentimientos se enviarán al reconectar", e); }
+    if (changed) writeLocal(local);
+  }
+  const flushConsents = () => enqueueConsent(() => sendPendingConsents(readLocal()));
   async function logConsentNow(evt) {
     await hashesReady;
     const now = new Date();
@@ -2853,24 +3120,27 @@ export function bootKnetApp() {
       navegador: navigator.userAgent.slice(0, 300), idiomaNavegador: navigator.language || "", aplicacion: APP_VERSION };
     if (rec.documentos) rec.documentos = rec.documentos.map(docRef);
     const local = readLocal();
-    let db = null, uid = null;
-    try { const [d, u] = await Promise.all([cUse("db"), cUse("user")]); db = d; uid = u ? await u.id() : null; } catch (e) {}
-    rec.cuentaId = uid || "sin-cuenta";
-    let prev = [];
-    if (db && uid) { try { const s = await db.doc("consents/" + uid).get(); prev = s.exists ? (s.data().eventos || []) : []; } catch (e) {} }
-    const chainFrom = prev.length ? prev : local;
-    rec.hashAnterior = chainFrom.length ? chainFrom[chainFrom.length - 1].hash : "inicio";
+    rec.cuentaId = getUserId() || "usuario-demo";
+    rec.hashAnterior = local.length ? local[local.length - 1].hash : "inicio";
     rec.hash = await sha256(JSON.stringify(rec));
     rec.almacenamiento = "solo-navegador";
-    if (db && uid) {
-      try { await db.doc("consents/" + uid).set({ cuentaId: uid, actualizado: rec.fechaUTC, eventos: prev.concat([{ ...rec, almacenamiento: "servidor" }]) }); rec.almacenamiento = "servidor"; }
-      catch (e) { rec.almacenamiento = "solo-navegador"; rec.errorServidor = e && e.code ? e.code : "desconocido"; }
-    }
-    local.push(rec); writeLocal(local);
+    rec.api = { estado: "pendiente" };
+    local.push(rec); writeLocal(local); // primero en local: si la API tarda o falla, la prueba no se pierde
+    await sendPendingConsents(local);
     return rec;
   }
-  async function verifyChain(evts) { let prevHash = null, ok = true; for (const r of evts) { const { hash, almacenamiento, errorServidor, _cuenta, ...rest } = r; const calc = await sha256(JSON.stringify(rest)); if (calc !== hash || (prevHash && r.hashAnterior !== prevHash)) ok = false; prevHash = hash; } return ok; }
-  
+  async function verifyChain(evts) { let prevHash = null, ok = true; for (const r of evts) { const { hash, almacenamiento, errorServidor, api: _mark, _cuenta, ...rest } = r; const calc = await sha256(JSON.stringify(rest)); if (calc !== hash || (prevHash && r.hashAnterior !== prevHash)) ok = false; prevHash = hash; } return ok; }
+  /* Registro del servidor → forma de las filas locales (los cambios de permiso que registra PATCH /api/me no traen details) */
+  function fromApiConsent(c) {
+    const p = c.payload || {}, d = p.details || {};
+    return { ...d, id: d.idLocal || "srv_" + c.id, tipo: c.type,
+      formulario: d.formulario || (p.scope ? "API · PATCH /api/me" : ""),
+      detalle: d.detalle || (p.scope ? `Permiso ${p.scope}: ${p.granted ? "concedido" : "retirado"}` : ""),
+      documentos: d.documentos || (p.documents || []).map(x => ({ documento: (DOCS[x.id] && DOCS[x.id].title) || x.id, version: x.version, vigencia: "", huellaSHA256: x.hash })),
+      fechaUTC: d.fechaUTC || c.createdAt, fechaLocal: d.fechaLocal || c.createdAt,
+      hashAnterior: c.prevHash, hash: c.hash, almacenamiento: "servidor", _cuenta: "Tu cuenta KNET" };
+  }
+
   const evtSummary = (r) => `${evtTypeLbl[r.tipo] || r.tipo} · ${r.formulario || ""}`;
 
   /* Vista del Responsable (dueño o editores del artifact) */
@@ -2878,15 +3148,15 @@ export function bootKnetApp() {
     const m = $("#m-registro"), body = $("#regBody");
     body.innerHTML = `<p class="text-mute">Cargando registro…</p>`;
     if (m.hidden) openModal("registro");
-    const [db, user] = await Promise.all([cUse("db"), cUse("user")]);
-    const admin = user ? (await user.isOwner()) || (await user.canEdit()) : false;
-    let rows = [], source = "navegador";
-    if (db && admin) { try { const snap = await db.collection("consents").get(); snap.docs.forEach((d, i) => { const data = d.data() || {}; (data.eventos || []).forEach(ev => rows.push({ ...ev, _cuenta: "Cuenta " + (i + 1) })); }); source = "servidor"; } catch (e) { source = "error"; } }
-    if (!rows.length && source !== "servidor") rows = readLocal().map(ev => ({ ...ev, _cuenta: "Este navegador" }));
+    await flushConsents(); // sube lo pendiente antes de leer
+    let rows = [], source = "navegador", chain = null;
+    try { const r = await api.listConsents(); rows = (r.consents || []).map(fromApiConsent); chain = r.chain; source = "servidor"; }
+    catch (e) { apiLog("no se pudo leer el registro del servidor", e); }
+    if (source !== "servidor") rows = readLocal().map(ev => ({ ...ev, _cuenta: "Este navegador" }));
     rows.sort((a, b) => String(b.fechaUTC).localeCompare(String(a.fechaUTC)));
-    window.__knetRegistro = rows;
+    window.__knetRegistro = rows; window.__knetRegistroSrc = source;
     body.innerHTML = `
-      <p class="text-[14px] text-mute">${source === "servidor" ? `Registro completo guardado en el servidor: ${rows.length} eventos. Solo lo ven el dueño y los editores de esta página; nadie puede modificar el registro de otra persona desde la app.` : `Estás viendo solo los eventos guardados en este navegador (${rows.length}). El registro completo del servidor lo ve el dueño de la página con su sesión de claude.ai.`}</p>
+      <p class="text-[14px] text-mute">${source === "servidor" ? `Registro de tu cuenta guardado en la base de datos PostgreSQL de KNET: ${rows.length} eventos. La base de datos solo permite agregar registros; ninguno se puede modificar ni borrar.${chain && !chain.valid ? " <b>Atención: la cadena de huellas del servidor no es válida.</b>" : ""}` : `Estás viendo solo los eventos guardados en este navegador (${rows.length}): el servidor de KNET no respondió. Los pendientes se enviarán cuando vuelva la conexión.`}</p>
       <div class="flex flex-wrap gap-2" style="margin-block:12px">
         <button type="button" class="btn btn-primary btn-sm" data-regcsv>${svg("file")}Descargar CSV</button>
         <button type="button" class="btn btn-ghost btn-sm" data-regjson>${svg("file")}Copiar JSON</button>
@@ -2894,7 +3164,7 @@ export function bootKnetApp() {
         <span class="text-[13px] text-mute" id="regMsg" role="status"></span>
       </div>
       ${rows.length ? `<div class="lg-table-wrap"><table class="lg-table reg-table"><thead><tr><th>Fecha y hora</th><th>Titular</th><th>Evento</th><th>Método</th><th>Documentos</th><th>Guardado en</th><th>Huella</th></tr></thead><tbody>
-        ${rows.map(r => `<tr><td class="tabular">${esc(r.fechaLocal || r.fechaUTC)}</td><td>${esc(r.titular || "—")}<div class="text-mute text-[11px]">${esc(r._cuenta)}</div></td><td>${esc(evtSummary(r))}</td><td>${esc(r.metodo || "—")}</td><td>${(r.documentos || []).map(d => `${esc(d.documento)} v${esc(d.version)}`).join("<br>") || "—"}${r.autorizacion ? `<div class="text-mute text-[11px]">${esc(r.autorizacion.texto || "")}</div>` : ""}</td><td>${r.almacenamiento === "servidor" ? "Servidor" : "Solo navegador"}</td><td><code>${esc(String(r.hash || "").slice(0, 12))}</code></td></tr>`).join("")}
+        ${rows.map(r => `<tr><td class="tabular">${esc(r.fechaLocal || r.fechaUTC)}</td><td>${esc(r.titular || "—")}<div class="text-mute text-[11px]">${esc(r._cuenta)}</div></td><td>${esc(evtSummary(r))}</td><td>${esc(r.metodo || "—")}</td><td>${(r.documentos || []).map(d => `${esc(d.documento)} v${esc(d.version)}`).join("<br>") || "—"}${r.autorizacion ? `<div class="text-mute text-[11px]">${esc(r.autorizacion.texto || "")}</div>` : ""}</td><td>${r.almacenamiento === "servidor" ? "Servidor" : "Solo navegador"}${r.api && r.api.estado !== "guardado" && r.almacenamiento !== "servidor" ? `<div class="text-mute text-[11px]">${r.api.estado === "pendiente" ? "Envío pendiente" : "Rechazado por el servidor"}</div>` : ""}</td><td><code>${esc(String(r.hash || "").slice(0, 12))}</code></td></tr>`).join("")}
       </tbody></table></div>` : `<div class="dempty">Todavía no hay aceptaciones registradas. Aparecerán aquí cuando alguien cree su perfil.</div>`}`;
   }
   const csvCell = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
@@ -2912,6 +3182,12 @@ export function bootKnetApp() {
     }
     if (e.target.closest("[data-regjson]")) { const txt = JSON.stringify(rows.map(({ _cuenta, ...r }) => r), null, 2); try { await navigator.clipboard.writeText(txt); msg.textContent = "JSON copiado."; } catch (err) { msg.textContent = "Tu navegador bloqueó el portapapeles."; } }
     if (e.target.closest("[data-regverify]")) {
+      // Registro del servidor: la cadena la recalcula el backend (GET /api/me/consents → chain)
+      if (window.__knetRegistroSrc === "servidor") {
+        try { const { chain } = await api.listConsents(); msg.textContent = chain.valid ? "Integridad verificada en el servidor: ninguna huella fue alterada." : `Atención: la cadena se rompe en el registro ${chain.brokenAt}.`; }
+        catch (err) { msg.textContent = "No se pudo contactar al servidor para verificar."; }
+        return;
+      }
       const byAcc = {}; rows.forEach(r => (byAcc[r._cuenta] = byAcc[r._cuenta] || []).push(r));
       let ok = true; for (const k of Object.keys(byAcc)) { const ev = byAcc[k].slice().sort((a, b) => String(a.fechaUTC).localeCompare(String(b.fechaUTC))); if (!(await verifyChain(ev))) ok = false; }
       msg.textContent = ok ? "Integridad verificada: ninguna huella fue alterada." : "Atención: hay eventos cuya huella no coincide.";
@@ -3092,11 +3368,12 @@ export function bootKnetApp() {
   }
   function finalize(ind, profile, via) {
     const modal = $("#m-mcp"), reset = !A.connected || ind !== A.ind;
-    if (reset) { const keepAv = A.connected ? A.avatar : null; A = fresh(ind); A.connected = true; A.xp = 100; A.avatar = keepAv; selEvent = null; graphIntro = true; }
+    if (reset) { const keepAv = A.connected ? A.avatar : null; A = fresh(ind); A.connected = true; A.xp = 100; A.xpLocal = 100; A.avatar = keepAv; selEvent = null; graphIntro = true; }
     A.profile = profile; editField = null; applyProfile();
+    A.apiLinked = false; // el perfil recién importado o escrito manda: el próximo sync lo sube a la API
     const p = PERSONAS[ind], d = IND[ind];
     if (reset) A.chat.push({ who: "ai", html: `Hola, ${esc(first(p.name))}. Configuré tu Summit para ${esc(d.role)} en ${d.label}: 4 sesiones, 3 matches y 3 misiones activas. ¿En qué te ayudo?` });
-    save(); consentGiven = null; closeModal(modal);
+    save(); syncFromApi(); consentGiven = null; closeModal(modal);
     const msg = { mcp: "Perfil importado vía MCP", manual: "Perfil creado manualmente", mixed: "Perfil completado: LinkedIn + datos tuyos" }[via];
     if (reset) { notify("xp", `+100 XP · ${msg}`, "¡Bienvenido a KNET!"); toast(`<b>${msg}</b>${xpLine(100)}`, via === "mcp" ? "link" : "pen"); } else toast(`<b>${msg}</b>`, "link");
     showTab("perfil");
@@ -3121,16 +3398,15 @@ export function bootKnetApp() {
       A.profile.interests = ints;
     } else if (field === "ind") {
       const ni = $("#pfe").value;
-      if (ni !== A.ind) { const keep = { profile: { ...A.profile, src: { ...A.profile.src, ind: "edited" } }, avatar: A.avatar, scopes: A.scopes, xp: A.xp };
-        A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true;
-        editField = null; applyProfile(); A.chat.push({ who: "ai", html: `Actualicé tu industria a ${IND[ni].label} y rehíce tu agenda, tus matches y tus misiones.` }); save();
+      if (ni !== A.ind) { A.profile.src = { ...A.profile.src, ind: "edited" }; switchIndustry(ni);
+        applyProfile(); A.chat.push({ who: "ai", html: `Actualicé tu industria a ${IND[ni].label} y rehíce tu agenda, tus matches y tus misiones.` }); save(); apiPatchProfile(["ind"]);
         toast(`<b>Industria actualizada</b><div class="text-[13px] text-mute">Tu agenda y tus matches se recalcularon.</div>`, "pen"); refresh(); return; }
     } else {
       const v = $("#pfe").value.trim();
       if (!v) return fail("Este dato no puede quedar vacío.");
       A.profile[field] = v;
     }
-    A.profile.src[field] = "edited"; editField = null; applyProfile(); save();
+    A.profile.src[field] = "edited"; editField = null; applyProfile(); save(); apiPatchProfile([field]);
     toast("<b>Dato actualizado</b> · KNET usará este valor", "pen"); refresh();
   }
   panel.addEventListener("keydown", (e) => {
@@ -3154,16 +3430,47 @@ export function bootKnetApp() {
   /* Volver a entrar con la sesión guardada */
   const hasSaved = () => !A.connected && !!A.profile;
   function resumeSession(tab) {
-    A.connected = true; save(); applyProfile();
+    A.connected = true; save(); applyProfile(); syncFromApi();
     toast(`<b>¡Hola de nuevo, ${esc(first(A.profile.name))}!</b><div class="text-[13px] text-mute">Recuperamos tu progreso: ${fmt(A.xp)} XP.</div>`, "check");
     showTab(tab || curTab || "perfil");
   }
+  /* ---- Supresión en el servidor (DELETE /api/me) ----
+     Si la API no responde, el UUID queda en ERASE_KEY y se reintenta en el próximo sync, después de
+     subir los consentimientos pendientes (así la revocación llega antes que la supresión). */
+  const ERASE_KEY = "knet-pending-erase";
+  const readErase = () => { try { return JSON.parse(localStorage.getItem(ERASE_KEY) || "[]"); } catch (e) { return []; } };
+  const writeErase = (ids) => { try { if (ids.length) localStorage.setItem(ERASE_KEY, JSON.stringify(ids)); else localStorage.removeItem(ERASE_KEY); } catch (e) {} };
+  async function eraseOnServer(uid) {
+    try { await api.deleteMe(uid); return "ok"; }
+    catch (e) {
+      if (isOffline(e)) return "offline";
+      if (e instanceof ApiError && e.status === 403 && e.code === "demo_account") return "demo";
+      if (e instanceof ApiError && e.status === 404) return "ok"; // ya no existe en el servidor
+      apiLog("el servidor rechazó el borrado", e); return "error";
+    }
+  }
+  async function flushPendingErase() {
+    const left = [];
+    for (const uid of readErase()) if ((await eraseOnServer(uid)) === "offline") left.push(uid);
+    writeErase(left);
+  }
   /* Revocar la autorización y borrar los datos (derecho del titular, Ley 1581) */
-  function revokeAndErase() {
-    logConsent({ tipo: "revocacion", formulario: "Panel · Tus autorizaciones", metodo: "Clic del titular en «Revocar y borrar mis datos» y confirmación", titular: (A.profile && A.profile.name) || "—", detalle: "Revoca la autorización y borra su perfil y progreso de este navegador. El registro de consentimientos se conserva como prueba (Ley 1581 de 2012, art. 17)." });
+  async function revokeAndErase() {
+    const uid = getUserId(); // sin X-User-Id el backend usa la cuenta demo compartida, que no se borra
+    const revoked = logConsent({ tipo: "revocacion", formulario: "Panel · Tus autorizaciones", metodo: "Clic del titular en «Revocar y borrar mis datos» y confirmación", titular: (A.profile && A.profile.name) || "—", detalle: "Revoca la autorización y pide borrar su perfil y progreso de este navegador y del servidor de KNET. El registro de consentimientos se conserva como prueba (Ley 1581 de 2012, art. 17)." });
     runId++; A = fresh(A.ind); editField = null; applyProfile(); try { localStorage.removeItem(KEY); } catch (e) {}
     toast("<b>Autorización revocada.</b> Borramos tu perfil y tu progreso de este navegador.", "shield");
     showLanding();
+    await revoked.catch(() => {}); // la revocación queda en la cadena antes que la supresión
+    const r = uid ? await eraseOnServer(uid) : "demo";
+    if (uid && r === "offline") writeErase(uniq(readErase().concat(uid)));
+    if (uid && r !== "error") setUserId(null); // no reutilizar una cuenta borrada (o por borrar)
+    toast({
+      ok: "<b>Datos borrados del servidor de KNET.</b> Conservamos solo el registro de tus consentimientos, como exige la ley.",
+      offline: "<b>Sin conexión con el servidor.</b> Borraremos tus datos del servidor de KNET cuando vuelva la conexión.",
+      demo: "<b>Cuenta demo compartida.</b> El servidor de KNET no la borra; tus datos se borraron de este navegador.",
+      error: "<b>El servidor no pudo borrar tus datos.</b> Escríbenos al correo de la política de privacidad para completar la supresión.",
+    }[r], "shield");
   }
   const onAct = async (b) => {
     const a = b.dataset.act, v = b.dataset.v;
@@ -3171,7 +3478,7 @@ export function bootKnetApp() {
     if (a === "vnopen") { VN.ev = v; if (myEvIds().includes(v)) { A.sel = A.sel || {}; A.sel.main = { ev: v, day: (A.sel.main && A.sel.main.ev === v) ? A.sel.main.day : 0 }; save(); } meView = "venue"; showTab("miseventos"); return; }
     if (a === "ask") { ask(v); return; }
     if (a === "kvinfo") { const box = document.getElementById(v), open = box.hidden; box.hidden = !open; b.setAttribute("aria-expanded", String(open)); return; }
-    if (a === "attend") { const s = sessionById(v); if (!s || A.attended.includes(s.id) || isEnded("ev:" + s.ev)) return; award(() => A.attended.push(s.id), 40, `Check-in · ${s.ttl} (${evById(s.ev).city}, Día ${s.day + 1})`, "qr"); return; }
+    if (a === "attend") { const s = sessionById(v); if (!s || A.attended.includes(s.id) || isEnded("ev:" + s.ev)) return; award(() => A.attended.push(s.id), CHECKIN_XP, `Check-in · ${s.ttl} (${evById(s.ev).city}, Día ${s.day + 1})`, "qr"); apiRun({ t: "checkin", id: s.id }); return; }
     if (a === "connect") { connectMatch(v); return; }
     if (a === "person") { openPerson(v); return; }
     if (a === "chat") { openChat(v); return; }
@@ -3195,7 +3502,7 @@ export function bootKnetApp() {
     if (a === "frameclaim") { const f = FRAMES.find(x => x.id === v); if (!f || A.xp < f.xp) return; A.frames = (A.frames || []).concat(v); A.frame = v; save(); toast(`<b>¡Recompensa reclamada!</b><div class="text-[13px] text-mute">${f.name} ya está en tu avatar.</div>`, "trophy"); refresh(); const c = $("#rewardsCard"); if (c) flash(c); return; }
     if (a === "frameon") { A.frame = v; save(); toast(`<b>Marco equipado</b>`, "star"); refresh(); return; }
     if (a === "frameoff") { A.frame = null; save(); refresh(); return; }
-    if (a === "complete") { const m = missionPool().find(x => x.id === v); if (!m || A.done.includes(v)) return; award(() => A.done.push(v), m.xp, `Misión completada · ${m.title}`); return; }
+    if (a === "complete") { const m = missionPool().find(x => x.id === v); if (!m || A.done.includes(v)) return; award(() => A.done.push(v), m.xp, `Misión completada · ${m.title}`); apiRun({ t: "mission", id: v }); return; }
     if (a === "nfc") { b.classList.remove("tapped"); void b.offsetWidth; b.classList.add("tapped"); setTimeout(() => award(() => {}, 25, "Toque NFC registrado", "nfc"), 120); return; }
     if (a === "flip") { b.classList.toggle("flipped"); return; }
     if (a === "avedit") { openAvatar(); return; }
@@ -3209,10 +3516,10 @@ export function bootKnetApp() {
     if (a === "resync") { connectFlow($("#personaSel").value); return; }
     if (a === "evinfo") { openEvent(v); return; }
     if (a === "evselect") { const c = (EVENTS.find(e => e.id === v) || {}).city, cur = selEvent && (EVENTS.find(e => e.id === selEvent) || {}).city; selEvent = cur === c ? null : v; refresh(); if (!selEvent) return; const el = $("#ev-" + v); if (el && window.matchMedia("(max-width: 1023px)").matches) scrollToEl(el); if (el) flash(el); return; }
-    if (a === "evsave") { const ev = EVENTS.find(e => e.id === v); if (isLockedEv(ev)) { toast(`<b>Evento exclusivo del nivel ${ev.lvl}</b><div class="text-[13px] text-mute">Gana más XP para desbloquearlo.</div>`, "lock"); return; } if (A.events.includes(v)) { A.events = A.events.filter(x => x !== v); save(); toast(`<b>Cancelaste tu inscripción</b> · ${ev.name}`, "calendar"); refresh(); } else { A.events.push(v); notify("event", `Te inscribiste en ${ev.name}`, `${ev.city} · ${ev.when}`); save(); toast(`<b>Te inscribiste en ${ev.name}</b><div class="text-[13px] text-mute">Lo encuentras en Mis eventos.</div>`, "calendar"); refresh(); } return; }
+    if (a === "evsave") { const ev = EVENTS.find(e => e.id === v); if (!ev) return; if (isLockedEv(ev)) { toast(`<b>Evento exclusivo del nivel ${ev.lvl}</b><div class="text-[13px] text-mute">Gana más XP para desbloquearlo.</div>`, "lock"); return; } toggleRegistration(ev); refresh(); return; }
     if (a === "gen") { b.disabled = true; b.innerHTML = `${svg("spark")}<span>Generando…</span>`; b.classList.add("shimmer"); await sleep(1300);
       if (!A.dossierAt) award(() => { A.dossierAt = new Date().toISOString(); }, 0, "Dossier generado", "file"); else { A.dossierAt = new Date().toISOString(); save(); toast("<b>Dossier actualizado</b>", "file"); refresh(); }
-      downloadDossier(); return; }
+      apiSaveDossier(); downloadDossier(); return; }
     if (a === "dospdf") { downloadDossier(); return; }
     if (a === "copy") { const txt = summaryText();
       const fallback = () => { const box = $("#copyFallback"); box.hidden = false; box.innerHTML = `<label for="copyTa" class="text-[13px] text-mute">Tu navegador bloqueó el portapapeles. Selecciona y copia el texto:</label><textarea id="copyTa" class="select" rows="8" readonly style="margin-top:8px;font-family:var(--f-mono);font-size:12px"></textarea>`; const ta = $("#copyTa"); ta.value = txt; ta.focus(); ta.select(); };
@@ -3349,4 +3656,8 @@ export function bootKnetApp() {
     const io = new IntersectionObserver((e) => { if (e[0].isIntersecting) { if (!timer) next(); } else { clearTimeout(timer); timer = null; k = -1; } }, { threshold: .2 });
     io.observe(st);
   })();
+
+  /* Backend: sincroniza al arrancar (sin bloquear la landing ni el 3D) y al recuperar la red */
+  syncFromApi();
+  window.addEventListener("online", () => syncFromApi());
 }
