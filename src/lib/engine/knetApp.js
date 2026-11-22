@@ -14,7 +14,7 @@ import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
 import { AV_SKIN, AV_HAIRC, AV_OUT, AV_HAIR, AV_ACC, AV_XHAIR, AV_XACC, AV_GENDER } from "@/data/avatar.js";
 import { SV_ASPECTS, SV_BEST, SV_FACES } from "@/data/survey.js";
 import { PDF_MAP, PDF_FONTS } from "@/data/pdf-fonts.js";
-import { api, ApiError, isOffline } from "@/services/api.js";
+import { api, ApiError, isOffline, getUserId } from "@/services/api.js";
 
 /**
  * Arranca KNET sobre el DOM renderizado por React. Llamar una sola vez.
@@ -606,6 +606,7 @@ export function bootKnetApp() {
     apiSyncing = (async () => {
       try {
         const evs = await api.listEvents(); mergeEvents(evs.events);
+        flushConsents(); // la API respondió: sube los consentimientos que quedaron pendientes
         if (A.connected && A.profile) {
           if (!A.apiLinked) await linkLocalToApi(); else await flushOutbox();
           const [me, ms, ck, cn, ds] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers()]);
@@ -2976,7 +2977,7 @@ export function bootKnetApp() {
       <h4>4. Autorización</h4>
       <p>Tratamos tus datos con tu autorización previa, expresa e informada, que das marcando la casilla de esta política. Puedes revocarla en cualquier momento con «Revocar y borrar mis datos», en tu panel, o escribiendo a ${L("correo")}.</p>
       <h4>5. Dónde se guardan</h4>
-      <p>Tu perfil y tu progreso se guardan en el almacenamiento de tu propio navegador. El registro de consentimientos se guarda en la base de datos de la plataforma claude.ai, operada por Anthropic, con servidores en Estados Unidos. Estados Unidos figura entre los países con nivel adecuado de protección según la Circular Externa 005 de 2017 de la SIC, y al aceptar autorizas expresamente esta transferencia. Las fuentes tipográficas (Google Fonts) y la hoja de estilos (Tailwind CSS) se descargan de servidores de terceros, que reciben tu dirección IP.</p>
+      <p>Tu perfil y tu progreso se guardan en el almacenamiento de tu propio navegador y, cuando la app está conectada al servidor de KNET, también en su base de datos. El registro de consentimientos se guarda en la base de datos PostgreSQL de KNET, administrada por el Responsable del tratamiento, y tu navegador conserva una copia. Si el servidor no está disponible, el registro queda en tu navegador y se envía al servidor cuando se restablece la conexión. Las fuentes tipográficas (Google Fonts) y la hoja de estilos (Tailwind CSS) se descargan de servidores de terceros, que reciben tu dirección IP.</p>
       <h4>6. Cuánto tiempo</h4>
       <p>Tu perfil y tu progreso: hasta que pulses «Revocar y borrar mis datos» o borres los datos de tu navegador. Cerrar sesión no los borra. El registro de consentimientos: ${L("retencionRegistro")}, para poder atender requerimientos de la Superintendencia de Industria y Comercio.</p>
       <h4>7. Tus derechos</h4>
@@ -2988,7 +2989,7 @@ export function bootKnetApp() {
         <li>Antes de acudir a la SIC debes haber agotado este trámite con nosotros.</li></ul>
       <p>Dentro de la app puedes ver tus datos, corregirlos con el lápiz, revisar tus aceptaciones y revocar permisos.</p>
       <h4>9. Seguridad</h4>
-      <p>Aplicamos medidas razonables: guardamos solo lo necesario, el registro de consentimientos no puede ser modificado por otras personas desde la app y cada evento lleva una huella SHA-256 encadenada que permite detectar alteraciones.</p>
+      <p>Aplicamos medidas razonables: guardamos solo lo necesario, la base de datos solo permite agregar registros de consentimiento (no modificarlos ni borrarlos) y cada evento lleva una huella SHA-256 encadenada que permite detectar alteraciones.</p>
       <h4>10. Cambios y vigencia</h4>
       <p>Si cambiamos esta política de forma sustancial te avisaremos y te pediremos aceptarla de nuevo.</p>` },
     cookies: { title: "Política de cookies y almacenamiento local", short: "Cookies", html: () => `
@@ -3072,14 +3073,44 @@ export function bootKnetApp() {
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#m-legal").hidden) { e.stopImmediatePropagation(); closeLegal(); } }, true);
 
-  /* ---- Registro trazable de consentimientos ---- */
-  
+  /* ---- Registro trazable de consentimientos ----
+     Cada evento se encadena en este navegador (SHA-256 del registro + hash anterior) y se envía a
+     POST /api/me/consents, que guarda su propia cadena en PostgreSQL (tabla de solo inserción).
+     rec.api = { estado: "pendiente" | "guardado" | "rechazado", id?, hash?, error? } se escribe
+     después de calcular la huella local, por eso verifyChain() la excluye. Los registros anteriores
+     a esta versión (sin rec.api) no se suben: se aceptaron con otro texto sobre dónde se guardan. */
   const readLocal = () => { try { return JSON.parse(localStorage.getItem(CONSENT_KEY) || "[]"); } catch (e) { return []; } };
   const writeLocal = (arr) => { try { localStorage.setItem(CONSENT_KEY, JSON.stringify(arr)); } catch (e) {} };
   const cUse = (n) => { try { return window.claude && typeof window.claude.use === "function" ? window.claude.use(n).catch(() => null) : Promise.resolve(null); } catch (e) { return Promise.resolve(null); } };
   const localStamp = (d) => { const off = -d.getTimezoneOffset(), s = off >= 0 ? "+" : "-", hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, "0"), mm = String(Math.abs(off) % 60).padStart(2, "0"); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${s}${hh}:${mm}`; };
   let consentQueue = Promise.resolve();
-  function logConsent(evt) { const run = consentQueue.then(() => logConsentNow(evt)); consentQueue = run.catch(() => {}); return run; }
+  const enqueueConsent = (fn) => { const run = consentQueue.then(fn); consentQueue = run.catch(() => {}); return run; };
+  function logConsent(evt) { return enqueueConsent(() => logConsentNow(evt)); }
+  const docIdOf = (d) => LEGAL_IDS.find(k => DOCS[k].title === d.documento) || String(d.documento || "").slice(0, 60);
+  function consentToApi(r) {
+    const { id, tipo, documentos, hash, hashAnterior, almacenamiento, errorServidor, api: _mark, ...rest } = r;
+    const body = { type: tipo, details: { ...rest, documentos, idLocal: id, hashLocal: hash } };
+    if (documentos && documentos.length) body.documents = documentos.map(d => ({ id: docIdOf(d), version: String(d.version || "").slice(0, 20), hash: String(d.huellaSHA256 || "").slice(0, 128) }));
+    return body;
+  }
+  async function sendConsent(r) {
+    try {
+      const { consent } = await api.addConsent(consentToApi(r));
+      r.api = { estado: "guardado", id: consent.id, hash: consent.hash }; r.almacenamiento = "servidor"; delete r.errorServidor;
+    } catch (e) {
+      if (isOffline(e)) throw e;
+      r.api = { estado: "rechazado", error: String(e.code || e.status || "desconocido") }; r.errorServidor = r.api.error;
+      apiLog(`el servidor rechazó el consentimiento ${r.id}`, e);
+    }
+  }
+  /* Sube en orden los pendientes de `local` (y lo guarda). Se detiene si la API no responde. */
+  async function sendPendingConsents(local) {
+    let changed = false;
+    try { for (const r of local) if (r.api && r.api.estado === "pendiente") { await sendConsent(r); changed = true; } }
+    catch (e) { apiLog("sin backend; los consentimientos se enviarán al reconectar", e); }
+    if (changed) writeLocal(local);
+  }
+  const flushConsents = () => enqueueConsent(() => sendPendingConsents(readLocal()));
   async function logConsentNow(evt) {
     await hashesReady;
     const now = new Date();
@@ -3088,24 +3119,27 @@ export function bootKnetApp() {
       navegador: navigator.userAgent.slice(0, 300), idiomaNavegador: navigator.language || "", aplicacion: APP_VERSION };
     if (rec.documentos) rec.documentos = rec.documentos.map(docRef);
     const local = readLocal();
-    let db = null, uid = null;
-    try { const [d, u] = await Promise.all([cUse("db"), cUse("user")]); db = d; uid = u ? await u.id() : null; } catch (e) {}
-    rec.cuentaId = uid || "sin-cuenta";
-    let prev = [];
-    if (db && uid) { try { const s = await db.doc("consents/" + uid).get(); prev = s.exists ? (s.data().eventos || []) : []; } catch (e) {} }
-    const chainFrom = prev.length ? prev : local;
-    rec.hashAnterior = chainFrom.length ? chainFrom[chainFrom.length - 1].hash : "inicio";
+    rec.cuentaId = getUserId() || "usuario-demo";
+    rec.hashAnterior = local.length ? local[local.length - 1].hash : "inicio";
     rec.hash = await sha256(JSON.stringify(rec));
     rec.almacenamiento = "solo-navegador";
-    if (db && uid) {
-      try { await db.doc("consents/" + uid).set({ cuentaId: uid, actualizado: rec.fechaUTC, eventos: prev.concat([{ ...rec, almacenamiento: "servidor" }]) }); rec.almacenamiento = "servidor"; }
-      catch (e) { rec.almacenamiento = "solo-navegador"; rec.errorServidor = e && e.code ? e.code : "desconocido"; }
-    }
-    local.push(rec); writeLocal(local);
+    rec.api = { estado: "pendiente" };
+    local.push(rec); writeLocal(local); // primero en local: si la API tarda o falla, la prueba no se pierde
+    await sendPendingConsents(local);
     return rec;
   }
-  async function verifyChain(evts) { let prevHash = null, ok = true; for (const r of evts) { const { hash, almacenamiento, errorServidor, _cuenta, ...rest } = r; const calc = await sha256(JSON.stringify(rest)); if (calc !== hash || (prevHash && r.hashAnterior !== prevHash)) ok = false; prevHash = hash; } return ok; }
-  
+  async function verifyChain(evts) { let prevHash = null, ok = true; for (const r of evts) { const { hash, almacenamiento, errorServidor, api: _mark, _cuenta, ...rest } = r; const calc = await sha256(JSON.stringify(rest)); if (calc !== hash || (prevHash && r.hashAnterior !== prevHash)) ok = false; prevHash = hash; } return ok; }
+  /* Registro del servidor → forma de las filas locales (los cambios de permiso que registra PATCH /api/me no traen details) */
+  function fromApiConsent(c) {
+    const p = c.payload || {}, d = p.details || {};
+    return { ...d, id: d.idLocal || "srv_" + c.id, tipo: c.type,
+      formulario: d.formulario || (p.scope ? "API · PATCH /api/me" : ""),
+      detalle: d.detalle || (p.scope ? `Permiso ${p.scope}: ${p.granted ? "concedido" : "retirado"}` : ""),
+      documentos: d.documentos || (p.documents || []).map(x => ({ documento: (DOCS[x.id] && DOCS[x.id].title) || x.id, version: x.version, vigencia: "", huellaSHA256: x.hash })),
+      fechaUTC: d.fechaUTC || c.createdAt, fechaLocal: d.fechaLocal || c.createdAt,
+      hashAnterior: c.prevHash, hash: c.hash, almacenamiento: "servidor", _cuenta: "Tu cuenta KNET" };
+  }
+
   const evtSummary = (r) => `${evtTypeLbl[r.tipo] || r.tipo} · ${r.formulario || ""}`;
 
   /* Vista del Responsable (dueño o editores del artifact) */
@@ -3113,15 +3147,15 @@ export function bootKnetApp() {
     const m = $("#m-registro"), body = $("#regBody");
     body.innerHTML = `<p class="text-mute">Cargando registro…</p>`;
     if (m.hidden) openModal("registro");
-    const [db, user] = await Promise.all([cUse("db"), cUse("user")]);
-    const admin = user ? (await user.isOwner()) || (await user.canEdit()) : false;
-    let rows = [], source = "navegador";
-    if (db && admin) { try { const snap = await db.collection("consents").get(); snap.docs.forEach((d, i) => { const data = d.data() || {}; (data.eventos || []).forEach(ev => rows.push({ ...ev, _cuenta: "Cuenta " + (i + 1) })); }); source = "servidor"; } catch (e) { source = "error"; } }
-    if (!rows.length && source !== "servidor") rows = readLocal().map(ev => ({ ...ev, _cuenta: "Este navegador" }));
+    await flushConsents(); // sube lo pendiente antes de leer
+    let rows = [], source = "navegador", chain = null;
+    try { const r = await api.listConsents(); rows = (r.consents || []).map(fromApiConsent); chain = r.chain; source = "servidor"; }
+    catch (e) { apiLog("no se pudo leer el registro del servidor", e); }
+    if (source !== "servidor") rows = readLocal().map(ev => ({ ...ev, _cuenta: "Este navegador" }));
     rows.sort((a, b) => String(b.fechaUTC).localeCompare(String(a.fechaUTC)));
-    window.__knetRegistro = rows;
+    window.__knetRegistro = rows; window.__knetRegistroSrc = source;
     body.innerHTML = `
-      <p class="text-[14px] text-mute">${source === "servidor" ? `Registro completo guardado en el servidor: ${rows.length} eventos. Solo lo ven el dueño y los editores de esta página; nadie puede modificar el registro de otra persona desde la app.` : `Estás viendo solo los eventos guardados en este navegador (${rows.length}). El registro completo del servidor lo ve el dueño de la página con su sesión de claude.ai.`}</p>
+      <p class="text-[14px] text-mute">${source === "servidor" ? `Registro de tu cuenta guardado en la base de datos PostgreSQL de KNET: ${rows.length} eventos. La base de datos solo permite agregar registros; ninguno se puede modificar ni borrar.${chain && !chain.valid ? " <b>Atención: la cadena de huellas del servidor no es válida.</b>" : ""}` : `Estás viendo solo los eventos guardados en este navegador (${rows.length}): el servidor de KNET no respondió. Los pendientes se enviarán cuando vuelva la conexión.`}</p>
       <div class="flex flex-wrap gap-2" style="margin-block:12px">
         <button type="button" class="btn btn-primary btn-sm" data-regcsv>${svg("file")}Descargar CSV</button>
         <button type="button" class="btn btn-ghost btn-sm" data-regjson>${svg("file")}Copiar JSON</button>
@@ -3129,7 +3163,7 @@ export function bootKnetApp() {
         <span class="text-[13px] text-mute" id="regMsg" role="status"></span>
       </div>
       ${rows.length ? `<div class="lg-table-wrap"><table class="lg-table reg-table"><thead><tr><th>Fecha y hora</th><th>Titular</th><th>Evento</th><th>Método</th><th>Documentos</th><th>Guardado en</th><th>Huella</th></tr></thead><tbody>
-        ${rows.map(r => `<tr><td class="tabular">${esc(r.fechaLocal || r.fechaUTC)}</td><td>${esc(r.titular || "—")}<div class="text-mute text-[11px]">${esc(r._cuenta)}</div></td><td>${esc(evtSummary(r))}</td><td>${esc(r.metodo || "—")}</td><td>${(r.documentos || []).map(d => `${esc(d.documento)} v${esc(d.version)}`).join("<br>") || "—"}${r.autorizacion ? `<div class="text-mute text-[11px]">${esc(r.autorizacion.texto || "")}</div>` : ""}</td><td>${r.almacenamiento === "servidor" ? "Servidor" : "Solo navegador"}</td><td><code>${esc(String(r.hash || "").slice(0, 12))}</code></td></tr>`).join("")}
+        ${rows.map(r => `<tr><td class="tabular">${esc(r.fechaLocal || r.fechaUTC)}</td><td>${esc(r.titular || "—")}<div class="text-mute text-[11px]">${esc(r._cuenta)}</div></td><td>${esc(evtSummary(r))}</td><td>${esc(r.metodo || "—")}</td><td>${(r.documentos || []).map(d => `${esc(d.documento)} v${esc(d.version)}`).join("<br>") || "—"}${r.autorizacion ? `<div class="text-mute text-[11px]">${esc(r.autorizacion.texto || "")}</div>` : ""}</td><td>${r.almacenamiento === "servidor" ? "Servidor" : "Solo navegador"}${r.api && r.api.estado !== "guardado" && r.almacenamiento !== "servidor" ? `<div class="text-mute text-[11px]">${r.api.estado === "pendiente" ? "Envío pendiente" : "Rechazado por el servidor"}</div>` : ""}</td><td><code>${esc(String(r.hash || "").slice(0, 12))}</code></td></tr>`).join("")}
       </tbody></table></div>` : `<div class="dempty">Todavía no hay aceptaciones registradas. Aparecerán aquí cuando alguien cree su perfil.</div>`}`;
   }
   const csvCell = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
@@ -3147,6 +3181,12 @@ export function bootKnetApp() {
     }
     if (e.target.closest("[data-regjson]")) { const txt = JSON.stringify(rows.map(({ _cuenta, ...r }) => r), null, 2); try { await navigator.clipboard.writeText(txt); msg.textContent = "JSON copiado."; } catch (err) { msg.textContent = "Tu navegador bloqueó el portapapeles."; } }
     if (e.target.closest("[data-regverify]")) {
+      // Registro del servidor: la cadena la recalcula el backend (GET /api/me/consents → chain)
+      if (window.__knetRegistroSrc === "servidor") {
+        try { const { chain } = await api.listConsents(); msg.textContent = chain.valid ? "Integridad verificada en el servidor: ninguna huella fue alterada." : `Atención: la cadena se rompe en el registro ${chain.brokenAt}.`; }
+        catch (err) { msg.textContent = "No se pudo contactar al servidor para verificar."; }
+        return;
+      }
       const byAcc = {}; rows.forEach(r => (byAcc[r._cuenta] = byAcc[r._cuenta] || []).push(r));
       let ok = true; for (const k of Object.keys(byAcc)) { const ev = byAcc[k].slice().sort((a, b) => String(a.fechaUTC).localeCompare(String(b.fechaUTC))); if (!(await verifyChain(ev))) ok = false; }
       msg.textContent = ok ? "Integridad verificada: ninguna huella fue alterada." : "Atención: hay eventos cuya huella no coincide.";

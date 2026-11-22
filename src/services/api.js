@@ -86,6 +86,10 @@ export const api = {
   getMe: () => request("GET", "/api/me"),
   updateMe: (patch) => request("PATCH", "/api/me", patch),
 
+  // Consentimientos (cadena SHA-256 de solo inserción en PostgreSQL)
+  listConsents: () => request("GET", "/api/me/consents"),
+  addConsent: (body) => request("POST", "/api/me/consents", body),
+
   // Eventos e inscripciones
   listEvents: (params = {}) => {
     const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== "")).toString();
