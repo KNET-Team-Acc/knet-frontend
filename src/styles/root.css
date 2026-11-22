@@ -1,0 +1,2 @@
+/* React monta todo dentro de #root; se comporta como si los hijos colgaran de <body>. */
+#root { display: contents; }

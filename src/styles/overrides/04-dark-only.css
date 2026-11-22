@@ -1,0 +1,16 @@
+/* Solo modo oscuro y cierre compacto en celular. */
+
+/* Solo modo oscuro */
+#themeBtn { display: none !important; }
+
+/* Cierre (CTA) más compacto en celular y tablet */
+@media (max-width: 959px) {
+  .footer-cta { padding: 26px 20px !important; border-radius: 24px !important; }
+  .footer-cta .h2 { font-size: clamp(1.35rem, 6vw, 1.9rem) !important; line-height: 1.12; margin-top: 10px !important; }
+  .footer-cta .eyebrow { font-size: 10.5px; letter-spacing: .1em; }
+  .footer-cta .flex.flex-wrap.gap-3.mt-8 { margin-top: 18px !important; gap: 10px !important; }
+  .footer-cta .btn { padding: 10px 16px; font-size: 14px; }
+  .cta-grid { gap: 18px !important; }
+  .cta-logo { padding: 0 !important; }
+  .cta-logo img { max-width: 170px !important; margin-inline: auto; }
+}
