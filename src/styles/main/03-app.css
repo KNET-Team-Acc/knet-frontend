@@ -1016,6 +1016,15 @@ mark.todo { background: rgba(255,196,0,.18); color: var(--t-gold); border: 1px d
 .qs-cam { position: relative; aspect-ratio: 1; border-radius: 22px; overflow: hidden; padding: 22px; background: radial-gradient(circle, rgba(117,0,192,.35), #0A0B10 70%); }
 .qs-cam .qr-svg { animation: qsZoom 1.8s ease-out both; }
 @keyframes qsZoom { from { transform: scale(.7) rotate(-6deg); opacity: .4; filter: blur(2px); } to { transform: none; opacity: 1; filter: none; } }
+/* Escáner real: el video llena el visor y el QR del servidor no se anima (debe leerse al instante) */
+.qs-cam.qs-live { padding: 0; background: #0A0B10; }
+.qs-cam.qs-live video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.qr-wait { aspect-ratio: 1; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 12px; text-align: center; font-size: 13px; color: #4B3A66; background: #F8F6FF; border-radius: 12px; }
+.qr-wait svg { width: 26px; height: 26px; }
+.nfc-pulse { width: 112px; height: 112px; border-radius: 50%; display: grid; place-items: center; color: #3D6BFF; background: radial-gradient(circle, rgba(61,107,255,.25), transparent 70%); animation: nfcPulse 1.4s ease-in-out infinite; }
+.nfc-pulse svg { width: 48px; height: 48px; }
+@keyframes nfcPulse { 50% { transform: scale(1.08); box-shadow: 0 0 0 14px rgba(61,107,255,.08); } }
+@media (prefers-reduced-motion: reduce) { .nfc-pulse { animation: none; } }
 .qs-beam { position: absolute; left: 12px; right: 12px; top: 12px; height: 3px; background: linear-gradient(90deg, transparent, #3D6BFF, transparent); box-shadow: 0 0 14px #3D6BFF; animation: qsBeam 1.1s ease-in-out infinite alternate; }
 @keyframes qsBeam { to { transform: translateY(165px); } }
 .qs-req, .qs-done { display: grid; gap: 16px; padding: 16px; border-radius: 18px; background: rgba(var(--w-rgb),.035); border: 1px solid var(--line); }

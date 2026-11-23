@@ -228,4 +228,46 @@ export const api = {
   listDossiers: () => request("GET", "/api/me/dossiers"),
   getDossier: (eventId) => request("GET", `/api/me/dossiers/${enc(eventId)}`),
   saveDossier: (eventId, body) => request("POST", `/api/me/dossiers/${enc(eventId)}`, body),
+
+  // Cafés 1:1 (solo con conexiones aceptadas: 403 not_connected; 409 coffee_active si ya hay uno activo)
+  listCoffees: (status) => request("GET", `/api/me/coffees${status ? `?status=${enc(status)}` : ""}`),
+  proposeCoffeeApi: (body) => request("POST", "/api/me/coffees", body),
+  // status: accepted | declined | done | cancelled. Aceptar suma +50 XP una sola vez (ref coffee:<id>)
+  updateCoffee: (id, status) => request("PATCH", `/api/me/coffees/${enc(id)}`, { status }),
+
+  // Mensajes directos sobre una conexión aceptada. Página del más antiguo al más reciente; nextCursor = before
+  listMessages: (connId, { before, limit } = {}) => {
+    const q = new URLSearchParams(Object.entries({ before, limit }).filter(([, v]) => v != null)).toString();
+    return request("GET", `/api/me/messages/${enc(connId)}${q ? `?${q}` : ""}`);
+  },
+  sendMessage: (connId, body) => request("POST", `/api/me/messages/${enc(connId)}`, { body }),
+
+  // QR dinámico: token firmado de corta vida (pedir otro cada refreshIn s) y escaneo del de otro asistente.
+  // scan: 400 invalid_qr / qr_expired / own_qr, 409 qr_used, 403 peer_network_off, 429 rate_limited
+  qrToken: () => request("GET", "/api/me/qr-token"),
+  scanQr: (token, context) => request("POST", "/api/me/connections/scan", { token, ...(context ? { context } : {}) }),
 };
+
+/**
+ * URL de GET /api/me/stream (Server-Sent Events). EventSource no admite headers propios: el access token
+ * va en ?access_token= y, solo en desarrollo sin sesión, el UUID en ?userId=. null = sin API.
+ */
+export function streamUrl() {
+  if (!apiEnabled) return null;
+  const q = new URLSearchParams();
+  if (session) q.set("access_token", session.accessToken);
+  else if (DEV) { const uid = getUserId(); if (uid) q.set("userId", uid); }
+  else return null;
+  const s = q.toString();
+  return `${API_URL}/api/me/stream${s ? `?${s}` : ""}`;
+}
+
+/** Fecha de caducidad (ms) del token QR knet1.<payload>.<firma>, o null si no se puede leer */
+export function qrTokenExpiry(token) {
+  try {
+    const [pre, payload] = String(token).split(".");
+    if (pre !== "knet1" || !payload) return null;
+    const p = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
+    return Number.isInteger(p.x) ? p.x * 1000 : null;
+  } catch { return null; }
+}

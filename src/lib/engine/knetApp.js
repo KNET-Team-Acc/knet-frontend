@@ -14,7 +14,8 @@ import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
 import { AV_SKIN, AV_HAIRC, AV_OUT, AV_HAIR, AV_ACC, AV_XHAIR, AV_XACC, AV_GENDER } from "@/data/avatar.js";
 import { SV_ASPECTS, SV_BEST, SV_FACES } from "@/data/survey.js";
 import { PDF_MAP, PDF_FONTS } from "@/data/pdf-fonts.js";
-import { api, ApiError, isOffline, getUserId, setUserId, apiEnabled, hasSession, sessionUserId, sessionEmail, clearSession, accountAvailable, onApiEvent } from "@/services/api.js";
+import { api, ApiError, isOffline, getUserId, setUserId, apiEnabled, hasSession, sessionUserId, sessionEmail, clearSession, accountAvailable, onApiEvent, streamUrl, qrTokenExpiry } from "@/services/api.js";
+import qrcode from "qrcode-generator";
 
 /**
  * Arranca KNET sobre el DOM renderizado por React. Llamar una sola vez.
@@ -452,12 +453,12 @@ export function bootKnetApp() {
      - A.regLocal: inscripciones que el servidor aún rechaza por nivel (su XP es menor); se conservan. */
   const API_FIELD = { name: "name", role: "role", company: "company", ind: "industry", seniority: "seniority", interests: "interests", location: "location" };
   const API_SRC = ["mcp", "manual", "edited"];
-  const CHECKIN_XP = 40, CONN_XP = 100; // iguales a XP_REWARDS del backend
+  const CHECKIN_XP = 40, CONN_XP = 100, COFFEE_XP = 50; // iguales a XP_REWARDS del backend
   if (typeof A.xpLocal !== "number") A.xpLocal = A.xp || 0;
   if (!Array.isArray(A.xpSynced)) A.xpSynced = (A.doneSynced || []).map(c => "mission:" + c); // migra el formato anterior
   delete A.doneSynced;
   let apiSyncing = null, apiSyncAgain = false;
-  let connIndex = null; // nombre del contacto → { id, status } en el servidor (solo en memoria)
+  let connIndex = null; // nombre del contacto → { id, status, userId } en el servidor (solo en memoria; userId = otro usuario real)
   const apiLog = (msg, e) => { try { console.info(`[KNET API] ${msg}`, (e && e.message) || ""); } catch (err) {} };
   const outbox = () => (A.outbox ||= []);
   const uniq = (arr) => [...new Set(arr)];
@@ -517,21 +518,32 @@ export function bootKnetApp() {
     try { const r = await api.completeMission(code); moveXp("mission:" + code, missionXp(code), r.xp); return "ok"; }
     catch (e) { if (e instanceof ApiError && e.status === 409) { moveXp("mission:" + code, missionXp(code), null); return "resync"; } throw e; }
   }
-  async function sendCheckin(code) {
-    try { const r = await api.checkin(code, "qr"); moveXp("checkin:" + code, CHECKIN_XP, r.xp); return "ok"; }
+  async function sendCheckin(code, method = "qr") {
+    try { const r = await api.checkin(code, method); moveXp("checkin:" + code, CHECKIN_XP, r.xp); return "ok"; }
     catch (e) {
       if (e instanceof ApiError && e.status === 409) { moveXp("checkin:" + code, CHECKIN_XP, null); return "resync"; }
       if (e instanceof ApiError && e.status === 403) { apiLog(`el check-in ${code} queda local: el servidor no tiene tu inscripción a ese evento`, e); return "ok"; }
       throw e;
     }
   }
+  const indexConnections = (list) => new Map((list || []).map(c => [c.contact.name, { id: c.id, status: c.status, userId: c.contact.userId || null }]));
   async function loadConnIndex() {
     const r = await api.listConnections();
-    connIndex = new Map((r.connections || []).map(c => [c.contact.name, { id: c.id, status: c.status }]));
+    connIndex = indexConnections(r.connections);
     return connIndex;
   }
-  /* Lleva la conexión con `op.id` (nombre) al estado `op.state`: pending | accepted | removed */
+  /* Nombre local de la conexión `id` del servidor (null si este navegador no la conoce) */
+  const connNameById = (id) => { for (const [n, c] of connIndex || []) if (c.id === id) return n; return null; };
+  /* Conexión aceptada de `n` en el servidor (recarga el índice si no la conoce); null si no existe o no está aceptada */
+  async function acceptedConn(n) {
+    let cn = (connIndex || await loadConnIndex()).get(n);
+    if (!cn) cn = (await loadConnIndex()).get(n);
+    return cn && cn.status === "accepted" ? cn : null;
+  }
+  /* Lleva la conexión con `op.id` (nombre) al estado `op.state`: pending | accepted | removed.
+     state "scan": QR de otro asistente escaneado sin conexión; se envía solo si el token sigue vigente. */
   async function sendConnection(op, retried = false) {
+    if (op.state === "scan") return sendQueuedScan(op);
     const idx = connIndex || await loadConnIndex();
     let cur = idx.get(op.id);
     if (op.state === "removed") {
@@ -572,12 +584,113 @@ export function bootKnetApp() {
     }
     return "ok";
   }
+  /* ---- Cafés 1:1: A.coffees[nombre] = { status: pending | accepted, slot (texto), sid (id en el servidor),
+     role: proposer | invitee, real (el otro es un usuario real), xpLocal (sus +50 XP se sumaron en local) } ---- */
+  const COFFEE_STATUS = { proposed: "pending", accepted: "accepted", done: "accepted" };
+  const keepLocal = (e) => e instanceof ApiError && [403, 404].includes(e.status);
+  /* «15:00 · Lounge B» → próxima vez que sean las 15:00 (hoy o mañana) y el lugar */
+  function coffeeWhen(label) {
+    const [hm, ...rest] = String(label || "").split("·"), m = /(\d{1,2}):(\d{2})/.exec(hm || ""), d = new Date();
+    if (m) d.setHours(+m[1], +m[2], 0, 0); else d.setTime(d.getTime() + 36e5);
+    if (d.getTime() <= Date.now() + 6e4) d.setDate(d.getDate() + 1);
+    return { slot: d.toISOString(), place: rest.join("·").trim().slice(0, 120) };
+  }
+  const coffeeLabel = (c) => { const d = new Date(c.slot); return `${isNaN(d) ? "" : d.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", hour12: false })}${c.place ? " · " + c.place : ""}`; };
+  /* El café `sid` ya cuenta en el servidor: si sus +50 XP se sumaron en local, salen de xpLocal (una vez) */
+  function coffeeXpSynced(c, serverXp) {
+    const key = "coffee:" + c.sid;
+    if (c.xpLocal) moveXp(key, COFFEE_XP, serverXp);
+    else { if (!synced(key)) A.xpSynced.push(key); if (typeof serverXp === "number") A.xp = serverXp + A.xpLocal; }
+  }
+  async function sendCoffee(op) {
+    if (op.state === "declined" || op.state === "cancelled") {
+      if (op.sid) { try { await api.updateCoffee(op.sid, op.state); } catch (e) { if (!(e instanceof ApiError && [403, 404, 409].includes(e.status))) throw e; } }
+      return "ok";
+    }
+    const c = coffeeOf(op.id); if (!c) return "ok"; // se quitó en local antes de enviarse
+    if (!c.sid) {
+      const cn = await acceptedConn(op.id);
+      if (!cn) { apiLog(`el café con ${op.id} queda local: la conexión no está aceptada en el servidor`); return "ok"; }
+      try { const r = await api.proposeCoffeeApi({ connectionId: cn.id, ...coffeeWhen(c.slot) }); c.sid = r.coffee.id; }
+      catch (e) {
+        if (e instanceof ApiError && e.status === 409) { // ya había uno activo (otro dispositivo o la otra persona): se adopta
+          const r = await api.listCoffees(), cur = (r.coffees || []).find(x => x.connectionId === cn.id && COFFEE_STATUS[x.status]);
+          if (!cur) return "resync";
+          c.sid = cur.id; save(); return "resync"; // el sync trae su rol y estado reales
+        } else if (keepLocal(e)) { apiLog(`el café con ${op.id} queda local`, e); return "ok"; }
+        else throw e;
+      }
+      save();
+    }
+    if (op.state === "accepted" && c.status === "accepted") {
+      try { const r = await api.updateCoffee(c.sid, "accepted"); coffeeXpSynced(c, r.xp); }
+      catch (e) {
+        if (e instanceof ApiError && e.status === 409) return "resync"; // ya no estaba propuesto: manda el servidor
+        if (keepLocal(e)) { apiLog(`el servidor no aceptó el café con ${op.id}`, e); return "ok"; }
+        throw e;
+      }
+    }
+    return "ok";
+  }
+  /* ---- Mensajes directos: A.dms[nombre] = [{ who: me | them, text, at, sid }] (sid = id en el servidor) ---- */
+  async function sendDmOp(op) {
+    const msg = ((A.dms || {})[op.n] || []).find(x => x.who === "me" && x.at === op.at);
+    if (!msg || msg.sid) return "ok";
+    const cn = await acceptedConn(op.n);
+    if (!cn) { apiLog(`el mensaje a ${op.n} queda local: la conexión no está aceptada en el servidor`); return "ok"; }
+    try { const r = await api.sendMessage(cn.id, msg.text.slice(0, 2000)); msg.sid = r.message.id; save(); }
+    catch (e) { if (keepLocal(e)) { apiLog(`el mensaje a ${op.n} queda local`, e); return "ok"; } throw e; }
+    return "ok";
+  }
+  /* Une los mensajes del servidor al hilo local. Devuelve cuántos mensajes nuevos de la otra persona llegaron. */
+  function mergeMessages(n, list) {
+    const msgs = ((A.dms ||= {})[n] ||= []); let fresh = 0;
+    (list || []).forEach(m => {
+      if (msgs.some(x => x.sid === m.id)) return;
+      const mine = m.fromMe && msgs.find(x => x.who === "me" && !x.sid && x.text === m.body); // enviado, pero la respuesta no llegó
+      if (mine) { mine.sid = m.id; return; }
+      msgs.push({ who: m.fromMe ? "me" : "them", text: m.body, at: Date.parse(m.createdAt) || Date.now(), sid: m.id });
+      if (!m.fromMe) fresh++;
+    });
+    msgs.sort((a, b) => a.at - b.at);
+    if (msgs.length > 60) A.dms[n] = msgs.slice(-60);
+    return fresh;
+  }
+  /* Une los cafés del servidor (los que propuse y a los que me invitaron) con los locales */
+  function mergeCoffees(list) {
+    A.coffees ||= {};
+    (list || []).forEach(s => {
+      const n = connNameById(s.connectionId) || (s.with && s.with.name); if (!n || !isConn(n)) return;
+      const c = A.coffees[n], status = COFFEE_STATUS[s.status], mine = c && (c.sid === s.id || !c.sid);
+      if (!status) { // rechazado o cancelado
+        if (c && c.sid === s.id) {
+          delete A.coffees[n];
+          if (c.role !== "invitee" && s.status === "declined") notify("conn", `${n} no puede tomar el café`, "Puedes proponer otro horario");
+        }
+        return;
+      }
+      if (c && !mine && COFFEE_STATUS[c.status]) return; // ya hay otro café activo en local
+      if (c && c.sid === s.id && c.status === "accepted" && status === "pending") return; // la aceptación local aún no llega al servidor
+      const was = c ? c.status : null, label = c && c.sid === s.id ? c.slot : coffeeLabel(s);
+      const next = A.coffees[n] = { ...(c || {}), status, sid: s.id, role: s.role, slot: label, real: !!(s.with && s.with.userId), at: (c && c.at) || Date.parse(s.createdAt) || Date.now() };
+      if (next.real) delete next.due;
+      if (status === "accepted") {
+        coffeeXpSynced(next, null);
+        if (was === "pending" && next.role === "proposer" && next.real) { notify("conn", `${n} aceptó el café`, `${label} · lo añadimos a tu plan`); toast(`<b>${esc(n)} aceptó el café</b><div class="text-[13px] text-mute">${esc(label)}</div>`, "coffee"); }
+      } else if (!was && next.role === "invitee") {
+        notify("conn", `${n} te invitó a un café`, label);
+        toast(`<b>${esc(n)} te invitó a un café</b><div class="text-[13px] text-mute">${esc(label)} · respóndele desde el chat</div>`, "coffee");
+      }
+    });
+  }
   const SEND = {
     mission: (op) => sendMission(op.id),
     reg: (op) => sendRegistration(op.id, op.on),
-    checkin: (op) => sendCheckin(op.id),
+    checkin: (op) => sendCheckin(op.id, op.method),
     conn: (op) => sendConnection(op),
     dossier: (op) => sendDossier(op.id, op.body),
+    coffee: (op) => sendCoffee(op),
+    dm: (op) => sendDmOp(op),
   };
   const sendOp = (op) => (SEND[op.t] ? SEND[op.t](op) : Promise.resolve("ok"));
   async function flushOutbox() {
@@ -599,6 +712,8 @@ export function bootKnetApp() {
     Object.entries(A.requests || {}).forEach(([n, r]) => { if (r.status === "pending" && !A.connections.includes(n)) queueOp({ t: "conn", id: n, state: "pending", source: "request" }); });
     for (const n of A.connections) if (!synced("conn:" + n)) queueOp({ t: "conn", id: n, state: "accepted", source: qrPerson(n) ? "qr" : "request" });
     if (A.dossierAt) { const body = dossierPayload(); for (const id of myEvIds()) queueOp({ t: "dossier", id, body }); }
+    Object.entries(A.coffees || {}).forEach(([n, c]) => { if (isConn(n) && !c.sid && c.role !== "invitee") queueOp({ t: "coffee", id: n, state: c.status === "accepted" ? "accepted" : "proposed" }); });
+    Object.entries(A.dms || {}).forEach(([n, list]) => { if (isConn(n)) list.filter(x => x.who === "me" && !x.sid).slice(-20).forEach(x => queueOp({ t: "dm", id: n + "|" + x.at, n, at: x.at })); });
     await flushOutbox();
     A.apiLinked = true; save();
   }
@@ -612,7 +727,9 @@ export function bootKnetApp() {
         await flushPendingErase(); // y después los borrados que no llegaron al servidor
         if (A.connected && A.profile && accountReady()) {
           if (!A.apiLinked) await linkLocalToApi(); else await flushOutbox();
-          const [me, ms, ck, cn, ds] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers()]);
+          // Cafés: opcional (un backend sin /api/me/coffees responde 404 y el resto del sync sigue)
+          const optional = (p, what) => p.catch(e => { if (isOffline(e)) throw e; apiLog(`sin ${what} en el servidor`, e); return null; });
+          const [me, ms, ck, cn, ds, cf] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers(), optional(api.listCoffees(), "cafés")]);
           applyServerUser(me.user); applyProfile();
           const regs = (me.registrations || []).filter(id => EVENTS.some(e => e.id === id));
           A.events = uniq(regs.concat(A.regLocal || []));
@@ -622,26 +739,34 @@ export function bootKnetApp() {
           (ck.checkins || []).forEach(c => {
             adoptServerAction("checkin:" + c.sessionCode, CHECKIN_XP, A.attended.includes(c.sessionCode)); if (!A.attended.includes(c.sessionCode)) A.attended.push(c.sessionCode); });
           // Conexiones aceptadas en el servidor: solo se suman las que esta industria sabe mostrar
-          connIndex = new Map((cn.connections || []).map(c => [c.contact.name, { id: c.id, status: c.status }]));
+          connIndex = indexConnections(cn.connections);
           (cn.connections || []).filter(c => c.status === "accepted").forEach(c => {
-            const n = c.contact.name, local = A.connections.includes(n);
-            if (!local && !IND[A.ind].matches.some(m => m[1] === n) && !qrPerson(n)) return;
+            const n = c.contact.name, local = A.connections.includes(n), real = !!c.contact.userId;
+            if (!local && !real && !IND[A.ind].matches.some(m => m[1] === n) && !qrPerson(n)) return;
+            if (real) adoptRealPeer(c, !local && Date.now() - (Date.parse(c.acceptedAt || c.createdAt) || 0) < 9e5); // solo avisa de las recientes
             adoptServerAction("conn:" + n, CONN_XP, local); if (!local) A.connections.push(n); });
+          if (cf) mergeCoffees(cf.coffees);
+          // Mensajes: solo los hilos con usuarios reales (con contactos del catálogo las respuestas son simuladas y locales)
+          const threads = [...connIndex].filter(([n, c]) => c.userId && c.status === "accepted" && A.connections.includes(n));
+          const pages = await Promise.all(threads.map(([, c]) => optional(api.listMessages(c.id, { limit: 30 }), "mensajes")));
+          threads.forEach(([n], i) => { if (pages[i]) mergeMessages(n, pages[i].messages); });
           // Dossier: recupera la fecha si este navegador la perdió
           const lastDossier = (ds.dossiers || []).map(d => d.generatedAt).sort().pop();
           if (!A.dossierAt && lastDossier) A.dossierAt = lastDossier;
           A.xp = me.user.xp + A.xpLocal;
         }
         save(); refresh();
+        if (!$("#m-dm").hidden && dmFor && !dmBusy) renderDm();
+        startStream();
       } catch (e) { apiLog(isOffline(e) ? "sin backend; se usan los datos locales" : "no se pudo sincronizar", e); }
       finally { apiSyncing = null; if (apiSyncAgain) { apiSyncAgain = false; syncFromApi(); } }
     })();
     return apiSyncing;
   }
   /* Envía una acción del usuario; si la API no responde, queda en la cola */
-  function apiRun(op) {
+  function apiRun(op, { localQueue = true } = {}) {
     if (!A.connected) return;
-    if (!accountReady()) { queueOp(op); return; } // sin cuenta (modo local): se sube si luego crea una
+    if (!accountReady()) { if (localQueue) queueOp(op); return; } // sin cuenta (modo local): se sube si luego crea una
     // Sin vincular: se encola (así no se pierden las eliminaciones) y la vinculación sube el resto del estado local
     if (!A.apiLinked) { queueOp(op); syncFromApi(); return; }
     const xpBefore = A.xp;
@@ -748,7 +873,7 @@ export function bootKnetApp() {
     const p = PERSONAS[A.ind], d = IND[A.ind], into = A.xp % 500, max = lvlMax(), [title, desc] = TAB_DESC[tab], num = (TABS.find(x => x[0] === tab) || [])[1];
     return `<header class="th">
       <div class="th-me-wrap"><button type="button" class="th-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(58)}<span class="th-id"><b>${esc(p.name)}</b><span class="th-role">${esc(d.role)} · ${esc(p.company)}</span><span class="th-lvl">${lvlBadge(lvl(), 20)}Nivel ${lvl()} · ${lvlName()}<span class="th-xp-t tabular">${fmt(A.xp)} XP</span></span><span class="th-xp"><i style="width:${max ? 100 : into / 5}%"></i></span></span></button>${tab === "perfil" ? `<button type="button" class="btn btn-ghost btn-sm" data-avedit>${svg(A.avatar ? "spark" : "users")}${A.avatar ? "Editar avatar" : "Crear avatar"}</button>` : ""}</div>
-      <div class="th-tab"><span class="th-n mono">${num}</span><div class="min-w-0"><h1 class="th-t">${title}</h1><p class="th-d">${desc}</p></div>${tab === "red" ? `<button type="button" class="btn btn-primary btn-sm th-act" data-act="qrscan" data-v="">${svg("qr")}Escanear credencial</button>` : ""}${tab === "perfil" ? `<button type="button" class="btn btn-ghost btn-sm th-edit-desk" data-avedit>${svg(A.avatar ? "spark" : "users")}${A.avatar ? "Editar avatar" : "Crear avatar"}</button>` : ""}</div>
+      <div class="th-tab"><span class="th-n mono">${num}</span><div class="min-w-0"><h1 class="th-t">${title}</h1><p class="th-d">${desc}</p></div>${tab === "red" ? `<button type="button" class="btn btn-primary btn-sm th-act" data-act="${qrLiveMode() ? "qrcam" : "qrscan"}" data-v="">${svg("qr")}Escanear credencial</button>` : ""}${tab === "perfil" ? `<button type="button" class="btn btn-ghost btn-sm th-edit-desk" data-avedit>${svg(A.avatar ? "spark" : "users")}${A.avatar ? "Editar avatar" : "Crear avatar"}</button>` : ""}</div>
     </header>`;
   }
   function renderTabs() {
@@ -1133,19 +1258,23 @@ export function bootKnetApp() {
       </div>
       <div class="person-actions">${personActions(n)}</div>`;
   }
-  /* ---- Conexiones con aprobación, cafés y chat 1:1 (simulados) ---- */
+  /* ---- Conexiones con aprobación, cafés y chat 1:1 ----
+     Con contactos del catálogo (demo) las respuestas se simulan con scheduleResponses()/dmReply() y el
+     resultado se registra en el servidor. Con usuarios reales (conectados por QR) responde la otra persona
+     desde su app: no se simula nada y llega por el sync o por /api/me/stream. */
   
   const reqOf = (n) => (A.requests || {})[n];
   const coffeeOf = (n) => (A.coffees || {})[n];
   const isConn = (n) => A.connections.includes(n);
   const isPending = (n) => !isConn(n) && reqOf(n) && reqOf(n).status === "pending";
+  const isRealPeer = (n) => !!((connIndex && connIndex.get(n) && connIndex.get(n).userId) || (qrPerson(n) && qrPerson(n).userId));
   const rnd = (a, b) => a + Math.floor(Math.random() * (b - a));
   const timers = new Set();
   function scheduleResponses() {
     if (!A.connected) return;
     const now = Date.now();
     Object.entries(A.requests || {}).forEach(([n, r]) => { const k = "req:" + n + r.at; if (r.status !== "pending" || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveRequest(n, r.at); }, Math.max(400, r.due - now)); });
-    Object.entries(A.coffees || {}).forEach(([n, c]) => { const k = "cof:" + n + c.at; if (c.status !== "pending" || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveCoffee(n, c.at); }, Math.max(400, c.due - now)); });
+    Object.entries(A.coffees || {}).forEach(([n, c]) => { const k = "cof:" + n + c.at; if (c.status !== "pending" || c.real || c.role === "invitee" || isRealPeer(n) || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveCoffee(n, c.at); }, Math.max(400, c.due - now)); });
   }
   const personOpenFor = (n) => !$("#m-person").hidden && $("#personName") && $("#personName").textContent === n;
   function resolveRequest(n, at) {
@@ -1157,7 +1286,8 @@ export function bootKnetApp() {
   }
   function resolveCoffee(n, at) {
     const c = coffeeOf(n); if (!A.connected || !c || c.at !== at || c.status !== "pending") return;
-    award(() => { c.status = "accepted"; c.answered = Date.now(); }, 50, `${n} aceptó el café`, "coffee");
+    award(() => { c.status = "accepted"; c.answered = Date.now(); c.xpLocal = true; }, COFFEE_XP, `${n} aceptó el café`, "coffee");
+    apiRun({ t: "coffee", id: n, state: "accepted" }); // contacto del catálogo: quien propone registra la respuesta simulada
     setTimeout(() => toast(`<b>Café confirmado</b><div class="text-[13px] text-mute">${esc(c.slot)} · lo añadimos a tu plan</div>`, "calendar"), 500);
     if (personOpenFor(n)) openPerson(n);
   }
@@ -1174,10 +1304,23 @@ export function bootKnetApp() {
   function proposeCoffee(n) {
     if (!isConn(n)) { toast("<b>Primero conecten</b><div class='text-[13px] text-mute'>Puedes proponer un café cuando acepte tu solicitud.</div>", "info"); return; }
     const c = coffeeOf(n); if (c && (c.status === "pending" || c.status === "accepted")) return;
-    A.coffees = A.coffees || {}; const at = Date.now(), idx = IND[A.ind].matches.findIndex(m => m[1] === n);
-    A.coffees[n] = { status: "pending", at, due: at + rnd(5000, 9000), slot: COFFEE_SLOTS[(idx + Object.keys(A.coffees).length) % COFFEE_SLOTS.length] };
+    A.coffees = A.coffees || {}; const at = Date.now(), idx = IND[A.ind].matches.findIndex(m => m[1] === n), real = isRealPeer(n);
+    A.coffees[n] = { status: "pending", at, role: "proposer", slot: COFFEE_SLOTS[(Math.max(0, idx) + Object.keys(A.coffees).length) % COFFEE_SLOTS.length], ...(real ? { real: true } : { due: at + rnd(5000, 9000) }) };
     save(); toast(`<b>Invitación a café enviada</b><div class="text-[13px] text-mute">${esc(A.coffees[n].slot)} · esperando que ${esc(first(n))} acepte.</div>`, "coffee");
-    refresh(); if (personOpenFor(n)) openPerson(n); scheduleResponses();
+    refresh(); if (personOpenFor(n)) openPerson(n); if (!$("#m-dm").hidden && dmFor === n) renderDm(); scheduleResponses();
+    apiRun({ t: "coffee", id: n, state: "proposed" });
+  }
+  /* Invitación de un usuario real: aceptar (+50 XP, también para quien propuso) o rechazar */
+  function answerCoffee(n, yes) {
+    const c = coffeeOf(n); if (!c || c.role !== "invitee" || c.status !== "pending") return;
+    if (yes) {
+      award(() => { c.status = "accepted"; c.answered = Date.now(); c.xpLocal = true; }, COFFEE_XP, `Café confirmado con ${n}`, "coffee");
+      apiRun({ t: "coffee", id: n, state: "accepted" });
+    } else {
+      delete A.coffees[n]; save(); toast(`<b>Rechazaste el café</b><div class="text-[13px] text-mute">Le avisamos a ${esc(first(n))}.</div>`, "x"); refresh();
+      apiRun({ t: "coffee", id: n + "|" + c.sid, state: "declined", sid: c.sid });
+    }
+    if (!$("#m-dm").hidden && dmFor === n) renderDm();
   }
   function personStatusChip(n) {
     if (isConn(n)) return `<span class="chip chip-emerald" id="personStatus">${svg("check")}Conectados</span>`;
@@ -1258,23 +1401,46 @@ export function bootKnetApp() {
     return ["Interesante. Me gustaría saber más; ¿lo hablamos en persona?", "¡Totalmente de acuerdo! Después del próximo bloque te escribo.", `Eso conecta con lo que hago en ${info.int[0].toLowerCase()}. Te comparto mis notas al final del día.`][(A.dms[n] || []).length % 3];
   }
   function renderDm() {
-    const n = dmFor, d = IND[A.ind], q = qrPerson(n), m = d.matches.find(x => x[1] === n) || [initialsOf(n), n, q ? q.role + " · conectado por QR" : ""], idx = Math.max(0, d.matches.indexOf(m)), msgs = (A.dms || {})[n] || [];
+    const n = dmFor, d = IND[A.ind], q = qrPerson(n), m = d.matches.find(x => x[1] === n) || [initialsOf(n), n, q ? q.role + " · conectado por QR" : ""], idx = Math.max(0, d.matches.indexOf(m)), msgs = (A.dms || {})[n] || [], real = isRealPeer(n);
     $("#dmBody").innerHTML = `
       <div class="mh dm-head"><div class="person-id"><div class="avatar" style="width:44px;height:44px;background:${avatarBg(idx)}">${m[0]}</div><div class="min-w-0"><h3 id="dmTitle" class="font-display font-bold text-[18px] leading-tight">${esc(n)}</h3><div class="text-[12.5px] text-mute">${esc(m[2])}</div><div class="dm-online"><span></span>En el Summit ahora</div></div></div>
         <button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar chat">${svg("x")}</button></div>
       <div class="chat-log dm-log" id="dmLog" aria-live="polite">${msgs.length ? "" : `<div class="dm-empty">${svg("msg")}<span>Ya están conectados. Rompe el hielo con un mensaje.</span></div>`}${msgs.map(x => `<div class="bubble ${x.who === "me" ? "me" : "ai"}">${esc(x.text)}<span class="dm-time">${new Date(x.at).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</span></div>`).join("")}</div>
+      ${real ? dmCoffeeHTML(n) : ""}
       <div class="flex flex-wrap gap-2">${DM_PILLS.map(q => `<button type="button" class="pill-btn" data-dmq="${esc(q)}">${esc(q)}</button>`).join("")}</div>
       <form id="dmForm" class="chat-form" autocomplete="off"><label for="dmIn" class="sr-only">Mensaje para ${esc(n)}</label><input id="dmIn" class="select" maxlength="300" placeholder="Escribe un mensaje…"><button class="btn btn-primary btn-sm" type="submit">${svg("arrow")}<span>Enviar</span></button></form>
-      <p class="text-[12px] text-mute">Conversación simulada para la demo. No compartas datos sensibles.</p>`;
+      <p class="text-[12px] text-mute">${real ? "Tus mensajes se guardan en KNET y le llegan a la otra persona. No compartas datos sensibles." : "Conversación simulada para la demo. No compartas datos sensibles."}</p>`;
     const log = $("#dmLog"); log.scrollTop = log.scrollHeight;
+  }
+  /* Café dentro del chat con un usuario real (con contactos del catálogo se propone desde su perfil) */
+  function dmCoffeeHTML(n) {
+    const c = coffeeOf(n);
+    const body = c && c.status === "accepted" ? `<span class="chip chip-emerald">${svg("coffee")}Café confirmado · ${esc(c.slot)}</span>`
+      : c && c.status === "pending" && c.role === "invitee" ? `<span class="chip chip-cyan">${svg("coffee")}${esc(first(n))} te invitó a un café · ${esc(c.slot)}</span><button type="button" class="btn btn-emerald btn-sm" data-dmcof="yes">${svg("check")}Aceptar · +50 XP</button><button type="button" class="pill-btn" data-dmcof="no">Rechazar</button>`
+      : c && c.status === "pending" ? `<span class="chip chip-cyan"><span class="pend-dot"></span>Café propuesto · esperando respuesta</span>`
+      : `<button type="button" class="btn btn-ghost btn-sm" data-dmcof="propose">${svg("coffee")}Proponer café de 15 min</button>`;
+    return `<div class="flex flex-wrap gap-2 items-center">${body}</div>`;
+  }
+  /* Hilo de un usuario real recién pedido al servidor (al abrir el chat) */
+  async function loadThread(n) {
+    if (!isRealPeer(n) || !accountReady() || !A.apiLinked) return;
+    try {
+      const cn = await acceptedConn(n); if (!cn) return;
+      const r = await api.listMessages(cn.id, { limit: 30 });
+      if (mergeMessages(n, r.messages) || r.messages.length) { save(); if (!$("#m-dm").hidden && dmFor === n && !dmBusy) renderDm(); }
+    } catch (e) { apiLog(`no se pudo cargar el chat con ${n}`, e); }
   }
   function openChat(n) {
     if (!isConn(n)) { toast("<b>Aún no están conectados</b><div class='text-[13px] text-mute'>El chat se habilita cuando acepte tu solicitud.</div>", "info"); return; }
     dmFor = n; A.dms = A.dms || {}; renderDm(); if ($("#m-dm").hidden) openModal("dm"); setTimeout(() => { const i = $("#dmIn"); if (i) i.focus(); }, 60);
+    loadThread(n);
   }
   async function sendDm(text) {
     text = String(text || "").trim(); const n = dmFor; if (!text || !n || dmBusy) return; dmBusy = true;
-    (A.dms[n] = A.dms[n] || []).push({ who: "me", text, at: Date.now() }); save(); renderDm();
+    const at = Date.now();
+    (A.dms[n] = A.dms[n] || []).push({ who: "me", text, at }); save(); renderDm();
+    apiRun({ t: "dm", id: n + "|" + at, n, at }, { localQueue: false }); // sin cuenta no se encola: linkLocalToApi sube los pendientes
+    if (isRealPeer(n)) { dmBusy = false; const i = $("#dmIn"); if (i) i.focus(); return; } // responde la otra persona, no una simulación
     const log = $("#dmLog"); log.insertAdjacentHTML("beforeend", `<div class="bubble ai typing" id="dmTyping" aria-label="${esc(first(n))} está escribiendo"><span></span><span></span><span></span></div>`); log.scrollTop = log.scrollHeight;
     setBusy("#dmForm input, #dmForm button, #m-dm [data-dmq]", true); // sin envíos dobles mientras responde
     const ai = await aiSimulator(n, text);
@@ -1282,7 +1448,11 @@ export function bootKnetApp() {
     A.dms[n].push({ who: "them", text: ai ?? dmReply(n, text), at: Date.now() }); if (A.dms[n].length > 60) A.dms[n] = A.dms[n].slice(-60); save();
     dmBusy = false; if (!$("#m-dm").hidden && dmFor === n) { renderDm(); const i = $("#dmIn"); if (i) i.focus(); }
   }
-  $("#m-dm").addEventListener("click", (e) => { const q = e.target.closest("[data-dmq]"); if (q) sendDm(q.dataset.dmq); });
+  $("#m-dm").addEventListener("click", (e) => {
+    const q = e.target.closest("[data-dmq]"); if (q) { sendDm(q.dataset.dmq); return; }
+    const cf = e.target.closest("[data-dmcof]"); if (!cf || !dmFor) return;
+    if (cf.dataset.dmcof === "propose") proposeCoffee(dmFor); else answerCoffee(dmFor, cf.dataset.dmcof === "yes");
+  });
   $("#m-dm").addEventListener("submit", (e) => { if (e.target.id !== "dmForm") return; e.preventDefault(); const i = $("#dmIn"); const v = i.value; i.value = ""; sendDm(v); });
   function reply(q) {
     const tq = q.toLowerCase(), d = IND[A.ind];
@@ -2205,7 +2375,7 @@ export function bootKnetApp() {
             <div class="flex flex-wrap items-center gap-2"><span class="chip">${x.kind}</span><span class="text-[12px] text-mute flex items-center gap-1"><span class="ico" style="width:12px;height:12px">${svg("pin")}</span>${esc(x.room)}</span></div>
             <div class="font-semibold mt-1.5 leading-snug">${esc(x.ttl)}</div>
             <div class="text-[13px] text-accentsoft mt-1 flex gap-1.5 items-start"><span class="ico flex-none" style="width:14px;height:14px;margin-top:3px">${svg("spark")}</span><span>${esc(x.why)}</span></div>
-            <div class="me-actions" style="margin-top:10px">${ok ? `<span class="chip chip-emerald">${svg("check")}Asististe · +40 XP</span>${sumCtl("ses:" + x.id)}` : ended ? `<span class="chip">${svg("lock")}No hiciste check-in</span>` : act("attend", x.id, `${svg("qr")}Check-in QR · +40 XP`, "btn btn-emerald btn-sm")}</div>
+            <div class="me-actions" style="margin-top:10px">${ok ? `<span class="chip chip-emerald">${svg("check")}Asististe · +40 XP</span>${sumCtl("ses:" + x.id)}` : ended ? `<span class="chip">${svg("lock")}No hiciste check-in</span>` : act("attend", x.id, `${svg("qr")}Check-in QR · +40 XP`, "btn btn-emerald btn-sm") + (nfcOk() ? act("nfcattend", x.id, `${svg("nfc")}Check-in NFC`, "btn btn-ghost btn-sm") : "")}</div>
           </div></div>`; }).join("")}</div>
         <div class="pcard-foot">${svg("users")}<span>${d.matches.filter(m => !isConn(m[1])).length ? `${d.matches.filter(m => !isConn(m[1])).length} conexiones estratégicas te esperan en Mi red.` : "Ya conectaste con todos tus matches sugeridos."}</span>${act("goto", "red:matchesCard", `Ver matches ${svg("arrow")}`, "pill-btn")}</div>
       </article>`;
@@ -2666,14 +2836,15 @@ export function bootKnetApp() {
 
   /* ---- 06 · Mi red: grafo + credencial QR + matches sugeridos ---- */
   function redCredHTML() {
-    const p = PERSONAS[A.ind], d = IND[A.ind], left = 30 - Math.floor(Date.now() / 1000) % 30, n = (A.qrConn || []).length;
+    const p = PERSONAS[A.ind], d = IND[A.ind], live = qrLiveMode(), left = live ? qrLiveLeft() : 30 - Math.floor(Date.now() / 1000) % 30, n = (A.qrConn || []).length;
     return `<article class="pcard red-cred" id="qrCard">
       <span class="red-cred-k">Mi credencial QR</span>
-      <div class="red-qr"><div id="myQr">${qrSVG(p.name + "|" + qrEpochNow(), "me")}</div><span class="qr-scanline" aria-hidden="true"></span></div>
+      <div class="red-qr"><div id="myQr">${live ? qrLiveBody() : qrSVG(p.name + "|" + qrEpochNow(), "me")}</div>${live ? "" : `<span class="qr-scanline" aria-hidden="true"></span>`}</div>
       <div class="red-cred-n">${esc(p.name)}</div>
       <div class="red-cred-r">${esc(d.role)}${p.company ? " · " + esc(p.company) : ""}</div>
-      <p class="red-cred-s">Muéstrala para que te escaneen. Es firmada y se renueva en <b class="tabular" id="qrLeft">${left}</b> s.</p>
-      <div class="red-cred-f"><span class="mono tabular">${n} por QR</span>${act("qrscan", "", `${svg("spark")}Simular escaneo`, "btn btn-ghost btn-sm")}</div>
+      <p class="red-cred-s">${live ? `Muéstrala para que te escaneen. Sirve una sola vez y se renueva en <b class="tabular" id="qrLeft">${left}</b> s.` : `Muéstrala para que te escaneen. Es firmada y se renueva en <b class="tabular" id="qrLeft">${left}</b> s.`}</p>
+      ${live ? `<p class="red-cred-s" id="qrErr" role="status" ${qrLiveErr ? "" : "hidden"}>${esc(qrLiveErr)}</p>` : ""}
+      <div class="red-cred-f"><span class="mono tabular">${n} por QR</span>${live ? act("qrcam", "", `${svg("qr")}Escanear QR`, "btn btn-ghost btn-sm") : act("qrscan", "", `${svg("spark")}Simular escaneo`, "btn btn-ghost btn-sm")}</div>
     </article>`;
   }
   function redChipsHTML() {
@@ -2691,6 +2862,41 @@ export function bootKnetApp() {
         <div class="mcard-actions">${matchActions(n)}${act("person", n, "Detalle", "btn btn-ghost btn-sm")}</div>
       </article>`; }).join("")}</div>` : `<div class="conn-empty">${svg("check")}<div><b>Ya conectaste con todos tus matches sugeridos</b><p class="text-mute text-[14px]">Te avisaremos cuando la IA encuentre a alguien nuevo con alta afinidad. Mientras tanto, puedes escanear credenciales para sumar contactos.</p></div></div>`}
     </section>`;
+  }
+  /* ---- QR dinámico real: con una cuenta sincronizada se muestra el token firmado de GET /api/me/qr-token
+     (caduca en segundos, sirve una sola vez y se pide otro cada `refreshIn` s). Sin API, sin cuenta o con un
+     backend que aún no tiene el endpoint (404) se mantiene la demo: QR decorativo y escaneo simulado con SUMMIT_POOL. */
+  let qrLive = null, qrLiveErr = "", qrNextAt = 0, qrFetching = false, qrApiMissing = false;
+  const qrLiveMode = () => apiEnabled && A.connected && accountReady() && !!A.apiLinked && !qrApiMissing;
+  async function renewQr() {
+    if (qrFetching) return; qrFetching = true;
+    try {
+      const r = await api.qrToken(), exp = Date.parse(r.expiresAt) || qrTokenExpiry(r.token) || Date.now() + 30000;
+      qrLive = { token: r.token, expiresAt: exp, refreshAt: Date.now() + Math.max(5, Number(r.refreshIn) || 30) * 1000 };
+      qrLiveErr = ""; qrNextAt = qrLive.refreshAt;
+    } catch (e) {
+      qrNextAt = Date.now() + 10000;
+      if (e instanceof ApiError && e.status === 404) { qrApiMissing = true; apiLog("el servidor aún no emite QR dinámicos; se usa la demo", e); }
+      else if (e instanceof ApiError && e.status === 403) { qrLive = null; qrLiveErr = "Desactivaste el permiso «Red de contactos»: actívalo en Permisos para compartir tu QR."; }
+      else { if (qrLive && qrLive.expiresAt <= Date.now()) qrLive = null; qrLiveErr = isOffline(e) ? "Sin conexión: tu QR se actualizará al volver la red." : "No pudimos generar tu QR. Lo reintentamos en unos segundos."; }
+    } finally { qrFetching = false; }
+    if (qrApiMissing) { refresh(); return; }
+    paintQr();
+  }
+  /* QR escaneable del texto `text` (corrección de errores M, zona silenciosa de 4 módulos) */
+  function qrRealSVG(text) {
+    const q = qrcode(0, "M"); q.addData(text); q.make();
+    const N = q.getModuleCount(); let d = "";
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (q.isDark(y, x)) d += `M${x} ${y}h1v1h-1z`;
+    return `<svg viewBox="-4 -4 ${N + 8} ${N + 8}" class="qr-svg" role="img" shape-rendering="crispEdges" aria-label="Código QR de conexión de ${esc(PERSONAS[A.ind].name)}"><rect x="-4" y="-4" width="${N + 8}" height="${N + 8}" rx="3" fill="#FFFFFF"/><path d="${d}" fill="#1B0B33"/></svg>`;
+  }
+  const qrLiveBody = () => qrLive && qrLive.expiresAt > Date.now() ? qrRealSVG(qrLive.token) : `<div class="qr-wait">${svg("clock")}<span>${qrLiveErr ? "Esperando un código nuevo…" : "Generando tu código…"}</span></div>`;
+  const qrLiveLeft = () => (qrLive ? Math.max(0, Math.ceil((qrLive.refreshAt - Date.now()) / 1000)) : "…");
+  function paintQr() {
+    const el = $("#myQr"); if (!el || !qrLiveMode()) return;
+    el.innerHTML = qrLiveBody();
+    const l = $("#qrLeft"); if (l) l.textContent = qrLiveLeft();
+    const er = $("#qrErr"); if (er) { er.hidden = !qrLiveErr; er.textContent = qrLiveErr; }
   }
   function qrCardHTML() {
     const p = PERSONAS[A.ind], d = IND[A.ind], list = (A.qrConn || []).slice(-3).reverse(), left = 30 - Math.floor(Date.now() / 1000) % 30;
@@ -2720,11 +2926,230 @@ export function bootKnetApp() {
   }
   function startQrTimer() {
     clearInterval(qrTimer); qrEpoch = qrEpochNow();
+    if (qrLiveMode() && Date.now() >= qrNextAt) renewQr();
     qrTimer = setInterval(() => {
       const el = $("#myQr"); if (!el) { clearInterval(qrTimer); return; }
+      if (qrLiveMode()) {
+        if (Date.now() >= qrNextAt) renewQr();
+        else { const l = $("#qrLeft"); if (l) l.textContent = qrLiveLeft(); if (qrLive && qrLive.expiresAt <= Date.now()) paintQr(); }
+        return;
+      }
       const l = $("#qrLeft"); if (l) l.textContent = 30 - Math.floor(Date.now() / 1000) % 30;
       if (qrEpochNow() !== qrEpoch) { qrEpoch = qrEpochNow(); el.innerHTML = qrSVG(PERSONAS[A.ind].name + "|" + qrEpoch, "me"); const t = $("#qrTok2"); if (t) t.textContent = qrToken(); }
     }, 1000);
+  }
+
+  /* ---- Escáner real con la cámara: BarcodeDetector si existe; si no, jsQR (se carga solo al usarlo) ---- */
+  let cam = null;
+  function stopCam() { if (!cam) return; clearTimeout(cam.t); cam.stream.getTracks().forEach(t => t.stop()); cam = null; }
+  const qsHead = (chip, title) => `<div class="mh"><div>${chip}<h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">${title}</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>`;
+  function scanProblem(title, sub, retry = "cam") {
+    stopCam(); stopNfc();
+    $("#qsBody").innerHTML = `${qsHead(`<span class="chip">${svg("info")}No se pudo completar</span>`, esc(title))}
+      <p class="text-mute">${esc(sub)}</p>
+      <div class="av-foot"><button type="button" class="btn btn-ghost btn-sm" data-close>Cerrar</button>${retry ? `<button type="button" class="btn btn-primary btn-sm" data-qs="${retry}">${svg("qr")}Intentarlo de nuevo</button>` : ""}</div>`;
+    if ($("#m-qrscan").hidden) openModal("qrscan");
+  }
+  const qsMsg = (t) => { const m = $("#qsMsg"); if (m) m.textContent = t; };
+  function camProblem(e) {
+    const n = e && e.name;
+    if (n === "NotAllowedError" || n === "SecurityError") return scanProblem("Permiso de cámara denegado", "Permite el acceso a la cámara para este sitio en la configuración del navegador y vuelve a intentarlo.");
+    if (n === "NotFoundError" || n === "OverconstrainedError") return scanProblem("No encontramos una cámara", "Usa un teléfono o un equipo con cámara para escanear el QR.");
+    if (n === "NotReadableError") return scanProblem("La cámara está ocupada", "Cierra otras apps que estén usando la cámara y vuelve a intentarlo.");
+    return scanProblem("No pudimos abrir la cámara", "Vuelve a intentarlo en unos segundos.");
+  }
+  async function qrDetector() {
+    if ("BarcodeDetector" in window) {
+      try {
+        const f = await window.BarcodeDetector.getSupportedFormats();
+        if (f.includes("qr_code")) { const bd = new window.BarcodeDetector({ formats: ["qr_code"] }); return async (v) => { const r = await bd.detect(v); return r[0] ? r[0].rawValue : null; }; }
+      } catch (e) { /* sin soporte real: jsQR */ }
+    }
+    const { default: jsQR } = await import("jsqr");
+    const cv = document.createElement("canvas"), cx = cv.getContext("2d", { willReadFrequently: true });
+    return async (v) => {
+      const w = v.videoWidth, h = v.videoHeight; if (!w || !h) return null;
+      const k = Math.min(1, 640 / Math.max(w, h)); cv.width = Math.round(w * k); cv.height = Math.round(h * k);
+      cx.drawImage(v, 0, 0, cv.width, cv.height);
+      const img = cx.getImageData(0, 0, cv.width, cv.height), r = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+      return r ? r.data : null;
+    };
+  }
+  async function startCamScan() {
+    stopCam(); stopNfc(); const run = ++scanRun; scanCur = null;
+    $("#qsBody").innerHTML = `${qsHead(`<span class="chip chip-cyan">${svg("qr")}Cámara</span>`, "Escanea el QR de otro asistente")}
+      <div class="qs-scan"><div class="qs-phone"><div class="qs-cam qs-live"><video id="qsVideo" playsinline muted autoplay aria-label="Vista de la cámara"></video><span class="qs-beam"></span><span class="ar-corner tl"></span><span class="ar-corner tr"></span><span class="ar-corner bl"></span><span class="ar-corner br"></span></div></div>
+        <p class="text-[14px] text-mute" id="qsMsg" role="status" style="text-align:center">Apunta al código de su tarjeta «Mi QR de Conexión Rápida».</p></div>`;
+    if ($("#m-qrscan").hidden) openModal("qrscan");
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      scanProblem("La cámara no está disponible", window.isSecureContext ? "Tu navegador no permite usar la cámara desde esta página." : "La cámara solo funciona en una conexión segura (HTTPS).", null); return;
+    }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false }); }
+    catch (e) { if (run === scanRun) camProblem(e); return; }
+    if (run !== scanRun || $("#m-qrscan").hidden) { stream.getTracks().forEach(t => t.stop()); return; }
+    cam = { stream, run, t: 0 };
+    const v = $("#qsVideo"); v.srcObject = stream; try { await v.play(); } catch (e) { /* autoplay ya lo reproduce */ }
+    let detect;
+    try { detect = await qrDetector(); } catch (e) { scanProblem("No pudimos iniciar el lector", "Recarga la página y vuelve a intentarlo."); return; }
+    const tick = async () => {
+      if (!cam || cam.run !== run) return;
+      if ($("#m-qrscan").hidden) { stopCam(); return; }
+      let txt = null; try { txt = await detect(v); } catch (e) { txt = null; }
+      if (!cam || cam.run !== run) return;
+      if (txt) {
+        if (/^knet1\./.test(txt)) { stopCam(); submitScan(txt); return; }
+        qsMsg("Ese QR no es de KNET. Apunta al código de su tarjeta «Mi QR de Conexión Rápida».");
+      }
+      cam.t = setTimeout(tick, 220);
+    };
+    tick();
+  }
+  const scanContext = () => ((A.profile && A.profile.interests) || PERSONAS[A.ind].interests || []).slice(0, 3).join(", ").slice(0, 280);
+  /* Error del servidor al escanear → [título, detalle] */
+  function scanErrText(e) {
+    const c = e && e.code;
+    if (c === "own_qr") return ["Es tu propio código", "Escanea el QR de otra persona para conectar."];
+    if (c === "qr_expired") return ["El código caducó", "Pide a la otra persona que lo actualice y vuelve a escanear."];
+    if (c === "qr_used") return ["Este código ya se usó", "Cada QR sirve una sola vez: pide a la otra persona que lo actualice."];
+    if (c === "invalid_qr") return ["QR no válido", "Este código no es de KNET o está dañado."];
+    if (c === "peer_network_off") return ["Esta persona no comparte su red", "No es posible conectar con ella por ahora."];
+    if (e && e.status === 403) return ["Tu red de contactos está desactivada", "Activa el permiso «Red de contactos» en Permisos para sumar contactos."];
+    if (e && e.status === 429) return ["Demasiados escaneos", "Espera un minuto y vuelve a intentarlo."];
+    return ["No se pudo conectar", "Vuelve a intentarlo en unos segundos."];
+  }
+  async function submitScan(token) {
+    const run = scanRun, context = scanContext();
+    $("#qsBody").innerHTML = `${qsHead(`<span class="chip chip-accent"><span class="pend-dot"></span>QR detectado</span>`, "Conectando…")}<p class="text-mute">Validando el código con KNET.</p>`;
+    try {
+      const r = await api.scanQr(token, context), n = adoptScan(r);
+      if (run === scanRun && !$("#m-qrscan").hidden) scanDone(qrPerson(n) || { name: n, role: "", hora: "", fecha: "", lugar: "" }, r.xpAwarded || 0, true);
+    } catch (e) {
+      if (run !== scanRun) return;
+      if (isOffline(e)) {
+        const exp = qrTokenExpiry(token);
+        if (exp && exp > Date.now()) {
+          queueOp({ t: "conn", id: "qr:" + token.slice(-16), state: "scan", token, exp, context });
+          scanProblem("Sin conexión", "Guardamos el escaneo: la conexión se crea al volver la red si el código sigue vigente (dura menos de un minuto).", null);
+        } else scanProblem("El código caducó", "No hay conexión y el código ya no es válido. Pide a la otra persona que lo actualice.");
+        return;
+      }
+      const [t, sub] = scanErrText(e); scanProblem(t, sub);
+    }
+  }
+  /* Escaneo hecho sin conexión: solo se envía si el token sigue vigente; si caducó, se avisa */
+  async function sendQueuedScan(op) {
+    if (!op.exp || op.exp <= Date.now()) {
+      notify("conn", "Un QR que escaneaste sin conexión caducó", "Pide a la otra persona que te muestre su código otra vez");
+      toast("<b>El QR que escaneaste sin conexión caducó</b><div class='text-[13px] text-mute'>Pide a la otra persona que te lo muestre otra vez.</div>", "qr");
+      return "ok";
+    }
+    try { const r = await api.scanQr(op.token, op.context); const n = adoptScan(r); toast(`<b>Conexión por QR con ${esc(n)}</b>${r.xpAwarded ? xpLine(r.xpAwarded) : ""}`, "qr"); }
+    catch (e) {
+      if (!(e instanceof ApiError)) throw e;
+      const [t, sub] = scanErrText(e); notify("conn", `Escaneo sin conexión: ${t}`, sub);
+    }
+    return "ok";
+  }
+  /* Conexión entre usuarios reales: ficha en A.qrConn (para el chat, el Dossier y Mi red) */
+  function adoptRealPeer(c, announce) {
+    const n = c.contact.name, q = qrPerson(n), when = new Date(c.acceptedAt || c.createdAt || Date.now());
+    if (q) { q.userId = c.contact.userId; return; }
+    (A.qrConn ||= []).push({ name: n, role: c.contact.headline || "Asistente de KNET", lugar: "En persona", userId: c.contact.userId, at: when.getTime(), interests: [],
+      hora: when.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }), fecha: when.toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" }) });
+    if (announce) notify("conn", `${n} se conectó contigo por QR`, "Nueva conexión · ya pueden chatear");
+  }
+  /* Respuesta de POST /api/me/connections/scan → estado local. La XP la suma el servidor (+100 una sola vez). */
+  function adoptScan(r) {
+    const c = r.connection, n = c.contact.name, isNew = !isConn(n);
+    (connIndex ||= new Map()).set(n, { id: c.id, status: c.status, userId: c.contact.userId || null });
+    adoptRealPeer(c, false);
+    if (isNew) A.connections.push(n);
+    if (!synced("conn:" + n)) A.xpSynced.push("conn:" + n);
+    if (typeof r.xp === "number") A.xp = r.xp + A.xpLocal;
+    if (isNew) notify("conn", `Conexión por QR con ${n}`, r.xpAwarded ? `Nueva conexión · +${r.xpAwarded} XP` : "Nueva conexión");
+    save(); refresh(); return n;
+  }
+
+  /* ---- Check-in NFC (Web NFC, Android Chrome): el tag de la sala lleva «knet:checkin:<evento:día:slot>»
+     (registro de texto) o una URL con «#checkin=<evento:día:slot>». Sin NDEFReader la opción no aparece. ---- */
+  const nfcOk = () => "NDEFReader" in window;
+  let nfcCtl = null, nfcWatch = 0;
+  function stopNfc() { clearInterval(nfcWatch); if (nfcCtl) { nfcCtl.abort(); nfcCtl = null; } }
+  function nfcSessionCode(message) {
+    for (const r of (message && message.records) || []) {
+      let t = "";
+      try { if (r.data) t = new TextDecoder(r.encoding || "utf-8").decode(r.data); } catch (e) { t = ""; }
+      const m = /(?:knet:checkin:|[#?&]checkin=)([a-z0-9]+:\d+:\d+)/i.exec(t);
+      if (m) return m[1].toLowerCase();
+    }
+    return null;
+  }
+  async function nfcCheckin(sid) {
+    const s = sessionById(sid); if (!s || A.attended.includes(s.id) || isEnded("ev:" + s.ev) || !nfcOk()) return;
+    stopCam(); stopNfc(); const run = ++scanRun; scanCur = null;
+    $("#qsBody").innerHTML = `${qsHead(`<span class="chip chip-cyan">${svg("nfc")}Check-in NFC</span>`, "Acerca tu teléfono al tag NFC")}
+      <div class="qs-scan"><div class="nfc-pulse" aria-hidden="true">${svg("nfc")}</div>
+        <p class="text-[14px] text-mute" id="qsMsg" role="status" style="text-align:center">Busca el tag de KNET en la entrada de <b class="text-ink">${esc(s.room)}</b> y acerca la parte trasera del teléfono.</p></div>
+      <div class="av-foot"><button type="button" class="btn btn-ghost btn-sm" data-close>Cancelar</button></div>`;
+    if ($("#m-qrscan").hidden) openModal("qrscan");
+    const ctl = nfcCtl = new AbortController();
+    nfcWatch = setInterval(() => { if ($("#m-qrscan").hidden || run !== scanRun) stopNfc(); }, 500);
+    try {
+      const reader = new window.NDEFReader();
+      reader.onreading = (ev) => {
+        if (run !== scanRun || ctl.signal.aborted) return;
+        const code = nfcSessionCode(ev.message);
+        if (!code) { qsMsg("Este tag no es de una sesión de KNET."); return; }
+        if (code !== s.id) { const o = sessionById(code); qsMsg(o ? `Este tag es de «${o.ttl}». Acércate al de ${s.room}.` : "Este tag es de otra sesión."); return; }
+        stopNfc(); closeModal($("#m-qrscan"));
+        if (A.attended.includes(s.id)) return;
+        award(() => A.attended.push(s.id), CHECKIN_XP, `Check-in NFC · ${s.ttl} (${evById(s.ev).city}, Día ${s.day + 1})`, "nfc");
+        apiRun({ t: "checkin", id: s.id, method: "nfc" });
+      };
+      reader.onreadingerror = () => { if (run === scanRun) qsMsg("No pudimos leer el tag. Vuelve a acercar el teléfono."); };
+      await reader.scan({ signal: ctl.signal });
+    } catch (e) {
+      if (run !== scanRun || (e && e.name === "AbortError")) return;
+      if (e && e.name === "NotAllowedError") scanProblem("Permiso NFC denegado", "Permite el acceso a NFC para este sitio en la configuración de Chrome y vuelve a intentarlo.", null);
+      else if (e && e.name === "NotSupportedError") scanProblem("NFC no disponible", "Activa el NFC en los ajustes del teléfono y vuelve a intentarlo.", null);
+      else scanProblem("No se pudo iniciar el NFC", "Vuelve a intentarlo o usa el check-in QR.", null);
+    }
+  }
+
+  /* ---- Tiempo real: GET /api/me/stream (SSE) mientras haya una cuenta sincronizada ----
+     message.new se une al hilo al instante; coffee.updated y connection.* lanzan un sync. */
+  let es = null, esUser = null, esRetry = 0, esFails = 0, liveT = 0;
+  function stopStream() { clearTimeout(esRetry); if (es) { es.close(); es = null; } esUser = null; }
+  function startStream() {
+    if (typeof EventSource === "undefined" || !A.connected || !accountReady() || !A.apiLinked) { stopStream(); return; }
+    const uid = getUserId() || "demo";
+    if (es && esUser === uid) return;
+    const url = streamUrl(); if (!url) return;
+    stopStream(); esUser = uid;
+    const src = es = new EventSource(url);
+    const on = (type, fn) => src.addEventListener(type, (ev) => { let d = null; try { d = JSON.parse(ev.data); } catch (e) { d = null; } if (es === src) fn(d || {}); });
+    src.onopen = () => { esFails = 0; };
+    on("message.new", onLiveMessage);
+    ["coffee.updated", "connection.accepted", "connection.request"].forEach(t => on(t, liveSync));
+    src.onerror = () => {
+      if (es !== src || src.readyState !== 2) return; // CONNECTING: el navegador reintenta solo
+      // Cerrada (401 por token caducado, backend sin stream…): reintento con espera creciente; getMe refresca el token
+      es = null; src.close(); const wait = Math.min(300000, 15000 * 2 ** esFails++);
+      esRetry = setTimeout(() => { esUser = null; api.getMe().catch(() => {}).finally(startStream); }, wait);
+    };
+  }
+  function liveSync() { clearTimeout(liveT); liveT = setTimeout(() => syncFromApi(), 400); }
+  function onLiveMessage(d) {
+    const n = d.connectionId ? connNameById(d.connectionId) : null;
+    if (!n || !d.message || !isConn(n)) { liveSync(); return; }
+    const fresh = mergeMessages(n, [d.message]); save();
+    if (!$("#m-dm").hidden && dmFor === n) { if (!dmBusy) renderDm(); }
+    else if (fresh) {
+      const body = String(d.message.body || "");
+      notify("conn", `Nuevo mensaje de ${n}`, body.slice(0, 80));
+      toast(`<b>${esc(n)}</b><div class="text-[13px] text-mute">${esc(body.slice(0, 120))}</div>`, "msg");
+    }
   }
   async function simulateScan() {
     const my = ++scanRun, p = PERSONAS[A.ind], used = (A.qrConn || []).map(x => x.name).concat(A.connections);
@@ -2759,6 +3184,9 @@ export function bootKnetApp() {
     const c = scanCur; if (!c) return; scanCur = null;
     award(() => { (A.qrConn = A.qrConn || []).push(c); if (!A.connections.includes(c.name)) A.connections.push(c.name); }, CONN_XP, `Conexión por QR con ${c.name}`, "qr", "conn");
     apiRun({ t: "conn", id: c.name, state: "accepted", source: "qr", context: (c.interests || []).join(", ").slice(0, 280) });
+    scanDone(c, CONN_XP, false);
+  }
+  function scanDone(c, xp, live) {
     $("#qsBody").innerHTML = `
       <div class="mh"><div><span class="chip chip-emerald">${svg("check")}Conexión registrada</span><h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">¡Conexión lista con ${esc(first(c.name))}!</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
       <div class="qs-done reveal-in">
@@ -2770,16 +3198,17 @@ export function bootKnetApp() {
           <div><span>Guardado en</span><b>Tu Dossier · sección Conexión</b></div>
         </div>
       </div>
-      <div class="av-foot"><button type="button" class="btn btn-ghost btn-sm" data-qs="again">${svg("qr")}Simular otro escaneo</button><button type="button" class="btn btn-primary btn-sm" data-qs="chat" data-v="${esc(c.name)}">${svg("msg")}Chatear con ${esc(first(c.name))}</button></div>`;
+      <div class="av-foot"><button type="button" class="btn btn-ghost btn-sm" data-qs="${live ? "cam" : "again"}">${svg("qr")}${live ? "Escanear otro QR" : "Simular otro escaneo"}</button><button type="button" class="btn btn-primary btn-sm" data-qs="chat" data-v="${esc(c.name)}">${svg("msg")}Chatear con ${esc(first(c.name))}</button></div>`;
     const el = $("#qsXp"), t0 = performance.now();
-    const step = (t) => { const k = Math.min(1, (t - t0) / 900); if (!el.isConnected) return; el.textContent = "+" + Math.round(100 * (1 - Math.pow(1 - k, 3))); if (k < 1) requestAnimationFrame(step); };
-    requestAnimationFrame(reduce ? () => { el.textContent = "+100"; } : step);
+    const step = (t) => { const k = Math.min(1, (t - t0) / 900); if (!el.isConnected) return; el.textContent = "+" + Math.round(xp * (1 - Math.pow(1 - k, 3))); if (k < 1) requestAnimationFrame(step); };
+    requestAnimationFrame(reduce ? () => { el.textContent = "+" + xp; } : step);
   }
   $("#m-qrscan").addEventListener("click", (e) => {
     const b = e.target.closest("[data-qs]"); if (!b) return;
     if (b.dataset.qs === "accept") acceptScan();
     if (b.dataset.qs === "decline") { const n = scanCur && scanCur.name; scanCur = null; closeModal($("#m-qrscan")); toast(`<b>Solicitud rechazada</b>${n ? `<div class="text-[13px] text-mute">${esc(n)} no verá tus datos.</div>` : ""}`, "x"); }
     if (b.dataset.qs === "again") simulateScan();
+    if (b.dataset.qs === "cam") startCamScan();
     if (b.dataset.qs === "chat") { closeModal($("#m-qrscan")); openChat(b.dataset.v); }
   });
 
@@ -3673,7 +4102,9 @@ export function bootKnetApp() {
     } finally { b.disabled = false; }
   });
   onApiEvent("legal-outdated", () => { if (hasSession()) openLegalUpdate(); });
+  onApiEvent("session-changed", (d) => { if (esUser && (!d || d.userId !== esUser)) stopStream(); });
   onApiEvent("session-expired", () => {
+    stopStream();
     const wasIn = A.connected && !!A.accountId;
     if (wasIn) { runId++; A.connected = false; save(); applyProfile(); showLanding(); }
     closeLegalUpdate();
@@ -3734,6 +4165,8 @@ export function bootKnetApp() {
     if (a === "chat") { openChat(v); return; }
     if (a === "qrtoggle") { qrOpen = !qrOpen; refresh(); const c = $("#qrCard"); if (c && qrOpen) flash(c); return; }
     if (a === "qrscan") { simulateScan(); return; }
+    if (a === "qrcam") { startCamScan(); return; }
+    if (a === "nfcattend") { nfcCheckin(v); return; }
     if (a === "exppick") { expPick = !expPick; expAsk = null; refresh(); return; }
     if (a === "expchange") { expPick = true; expAsk = null; refresh(); return; }
     if (a === "mepick") { mePick = !mePick; expAsk = null; refresh(); return; }
