@@ -14,7 +14,7 @@ import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
 import { AV_SKIN, AV_HAIRC, AV_OUT, AV_HAIR, AV_ACC, AV_XHAIR, AV_XACC, AV_GENDER } from "@/data/avatar.js";
 import { SV_ASPECTS, SV_BEST, SV_FACES } from "@/data/survey.js";
 import { PDF_MAP, PDF_FONTS } from "@/data/pdf-fonts.js";
-import { api, ApiError, isOffline, getUserId, setUserId } from "@/services/api.js";
+import { api, ApiError, isOffline, getUserId, setUserId, apiEnabled, hasSession, sessionUserId, sessionEmail, clearSession, accountAvailable, onApiEvent } from "@/services/api.js";
 
 /**
  * Arranca KNET sobre el DOM renderizado por React. Llamar una sola vez.
@@ -326,8 +326,8 @@ export function bootKnetApp() {
   const openModal = (id) => { lastFocus = document.activeElement; const m = $("#m-" + id); m.hidden = false; document.body.style.overflow = "hidden"; setTimeout(() => (m.querySelector("[data-close]") || m).focus(), 30); if (id === "video") startScenes(); };
   const closeModal = (m) => { m.hidden = true; document.body.style.overflow = ""; if (m.id === "m-video") stopScenes(); lastFocus && lastFocus.focus(); };
   $$("[data-open]").forEach(b => b.addEventListener("click", (e) => { e.preventDefault(); openModal(b.dataset.open); }));
-  $$(".modal").forEach(m => { m.addEventListener("click", e => { if (e.target === m || e.target.closest("[data-close]")) closeModal(m); }); });
-  document.addEventListener("keydown", e => { if (e.key === "Escape") $$(".modal").forEach(m => { if (!m.hidden) closeModal(m); }); });
+  $$(".modal").forEach(m => { m.addEventListener("click", e => { if (m.dataset.locked) return; if (e.target === m || e.target.closest("[data-close]")) closeModal(m); }); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") $$(".modal").forEach(m => { if (!m.hidden && !m.dataset.locked) closeModal(m); }); });
 
   /* Video storyboard */
   
@@ -462,6 +462,8 @@ export function bootKnetApp() {
   const outbox = () => (A.outbox ||= []);
   const uniq = (arr) => [...new Set(arr)];
   const synced = (key) => (A.xpSynced ||= []).includes(key);
+  /* Cuenta con la que se sincroniza este perfil: la sesión (si es la suya) o, en desarrollo, X-User-Id / demo */
+  const accountReady = () => accountAvailable() && (!hasSession() || A.accountId === sessionUserId());
   function queueOp(op) { A.outbox = outbox().filter(o => !(o.t === op.t && o.id === op.id)).concat([op]); save(); }
 
   function profileToApi(fields) {
@@ -480,7 +482,7 @@ export function bootKnetApp() {
      (el servidor los guarda igual; los matches, la red y las misiones sí se rehacen para la nueva industria) */
   function switchIndustry(ni) {
     const keep = { profile: { ...A.profile, src: { ...A.profile.src } }, avatar: A.avatar, scopes: A.scopes, xp: A.xp, xpLocal: A.xpLocal, events: A.events,
-      attended: A.attended, outbox: A.outbox, apiLinked: A.apiLinked, xpSynced: A.xpSynced, regLocal: A.regLocal };
+      attended: A.attended, outbox: A.outbox, apiLinked: A.apiLinked, xpSynced: A.xpSynced, regLocal: A.regLocal, accountId: A.accountId, accountEmail: A.accountEmail };
     A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true; editField = null;
   }
   function applyServerUser(u) {
@@ -608,7 +610,7 @@ export function bootKnetApp() {
         const evs = await api.listEvents(); mergeEvents(evs.events);
         await flushConsents(); // la API respondió: sube los consentimientos que quedaron pendientes
         await flushPendingErase(); // y después los borrados que no llegaron al servidor
-        if (A.connected && A.profile) {
+        if (A.connected && A.profile && accountReady()) {
           if (!A.apiLinked) await linkLocalToApi(); else await flushOutbox();
           const [me, ms, ck, cn, ds] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers()]);
           applyServerUser(me.user); applyProfile();
@@ -639,6 +641,7 @@ export function bootKnetApp() {
   /* Envía una acción del usuario; si la API no responde, queda en la cola */
   function apiRun(op) {
     if (!A.connected) return;
+    if (!accountReady()) { queueOp(op); return; } // sin cuenta (modo local): se sube si luego crea una
     // Sin vincular: se encola (así no se pierden las eliminaciones) y la vinculación sube el resto del estado local
     if (!A.apiLinked) { queueOp(op); syncFromApi(); return; }
     const xpBefore = A.xp;
@@ -647,7 +650,7 @@ export function bootKnetApp() {
       .catch((e) => { if (isOffline(e)) { queueOp(op); apiLog(`sin backend; ${op.t} ${op.id} se enviará al reconectar`, e); } else apiLog(`el servidor rechazó ${op.t} ${op.id}`, e); });
   }
   function apiPatchProfile(fields) {
-    if (!A.connected) return;
+    if (!A.connected || !accountReady()) return;
     if (!A.apiLinked) { syncFromApi(); return; }
     const body = profileToApi(fields); if (!body) return;
     api.updateMe(body).catch((e) => {
@@ -2844,7 +2847,7 @@ export function bootKnetApp() {
   }
   function route() {
     const h = location.hash.slice(1);
-    if (TAB_IDS.includes(h)) { if (A.connected) { if (!inApp || h !== curTab) showTab(h); } else if (hasSaved()) { resumeSession(h); } else { showLanding(); startConnect(); } }
+    if (TAB_IDS.includes(h)) { if (A.connected) { if (!inApp || h !== curTab) showTab(h); } else if (!apiEnabled && hasSaved()) { resumeSession(h); } else { showLanding(); openEntry(h); } }
     else if (inApp) showLanding(h);
     else renderHeader();
   }
@@ -3086,7 +3089,12 @@ export function bootKnetApp() {
   const localStamp = (d) => { const off = -d.getTimezoneOffset(), s = off >= 0 ? "+" : "-", hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, "0"), mm = String(Math.abs(off) % 60).padStart(2, "0"); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${s}${hh}:${mm}`; };
   let consentQueue = Promise.resolve();
   const enqueueConsent = (fn) => { const run = consentQueue.then(fn); consentQueue = run.catch(() => {}); return run; };
-  function logConsent(evt) { return enqueueConsent(() => logConsentNow(evt)); }
+  /* opts.savedOnServer = { id?, hash? }: el servidor ya registró este evento (registro de cuenta, LinkedIn): no se reenvía */
+  function logConsent(evt, opts) { return enqueueConsent(() => logConsentNow(evt, opts)); }
+  /* Un pendiente se envía si es de la cuenta de la sesión (o de un visitante sin cuenta, que se asocia a ella).
+     En desarrollo, también con X-User-Id. Si no, espera: nunca se marca «rechazado» por falta de sesión. */
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const consentSendable = (r) => import.meta.env.DEV || (hasSession() && (r.cuentaId === sessionUserId() || !UUID_RE.test(String(r.cuentaId || ""))));
   const docIdOf = (d) => LEGAL_IDS.find(k => DOCS[k].title === d.documento) || String(d.documento || "").slice(0, 60);
   function consentToApi(r) {
     const { id, tipo, documentos, hash, hashAnterior, almacenamiento, errorServidor, api: _mark, ...rest } = r;
@@ -3107,12 +3115,12 @@ export function bootKnetApp() {
   /* Sube en orden los pendientes de `local` (y lo guarda). Se detiene si la API no responde. */
   async function sendPendingConsents(local) {
     let changed = false;
-    try { for (const r of local) if (r.api && r.api.estado === "pendiente") { await sendConsent(r); changed = true; } }
+    try { for (const r of local) if (r.api && r.api.estado === "pendiente" && consentSendable(r)) { await sendConsent(r); changed = true; } }
     catch (e) { apiLog("sin backend; los consentimientos se enviarán al reconectar", e); }
     if (changed) writeLocal(local);
   }
   const flushConsents = () => enqueueConsent(() => sendPendingConsents(readLocal()));
-  async function logConsentNow(evt) {
+  async function logConsentNow(evt, opts = {}) {
     await hashesReady;
     const now = new Date();
     const rec = { id: "evt_" + now.getTime().toString(36) + Math.random().toString(36).slice(2, 7), ...evt,
@@ -3123,10 +3131,10 @@ export function bootKnetApp() {
     rec.cuentaId = getUserId() || "usuario-demo";
     rec.hashAnterior = local.length ? local[local.length - 1].hash : "inicio";
     rec.hash = await sha256(JSON.stringify(rec));
-    rec.almacenamiento = "solo-navegador";
-    rec.api = { estado: "pendiente" };
+    rec.almacenamiento = opts.savedOnServer ? "servidor" : "solo-navegador";
+    rec.api = opts.savedOnServer ? { estado: "guardado", ...opts.savedOnServer } : { estado: "pendiente" };
     local.push(rec); writeLocal(local); // primero en local: si la API tarda o falla, la prueba no se pierde
-    await sendPendingConsents(local);
+    if (!opts.savedOnServer) await sendPendingConsents(local);
     return rec;
   }
   async function verifyChain(evts) { let prevHash = null, ok = true; for (const r of evts) { const { hash, almacenamiento, errorServidor, api: _mark, _cuenta, ...rest } = r; const calc = await sha256(JSON.stringify(rest)); if (calc !== hash || (prevHash && r.hashAnterior !== prevHash)) ok = false; prevHash = hash; } return ok; }
@@ -3225,7 +3233,7 @@ export function bootKnetApp() {
   let runId = 0, consentGiven = null;
   const showPane = (id) => ["mcpChoice", "mcpPerm", "mcpAuto", "mcpForm"].forEach(k => $("#" + k).hidden = k !== id);
   function startConnect() {
-    runId++; consentGiven = null;
+    runId++; consentGiven = null; pendingAccount = null; liMode = null;
     $("#mcpTitle").textContent = "Crea tu perfil del Summit";
     $("#mcpSub").textContent = "Importa tus datos desde LinkedIn o complétalos manualmente. Podrás modificar tus datos más tarde.";
     showPane("mcpChoice"); $("#mcpDone").hidden = true;
@@ -3267,6 +3275,7 @@ export function bootKnetApp() {
     const campos = ["Nombre"].concat(scopes.work ? ["Cargo y empresa"] : [], scopes.industry ? ["Industria y seniority"] : [], scopes.skills ? ["Habilidades e intereses"] : []);
     const ev = { tipo: "aceptacion", formulario: "Pantalla de permiso de LinkedIn MCP", metodo: "Casillas de verificación no premarcadas y clic en «Autorizar y conectar»",
       casillas: [LI_AUTH_TXT, CHECK_TXT.terminos, CHECK_TXT.privacidad], documentos: ["terminos", "privacidad"], autorizacion: { texto: LI_AUTH_TXT, campos }, titular: "Pendiente: se identifica al importar el perfil" };
+    if (liMode === "oauth") { startLinkedInOAuth(scopes, ev); return; }
     consentGiven = { at: new Date(), p: logConsent(ev) };
     connectFlow(null, { scopes, incomplete: $("#mcpPerm").dataset.demo === "1" });
   });
@@ -3291,7 +3300,7 @@ export function bootKnetApp() {
         <div class="pf-field"><label for="pf-loc">Ciudad ${opt} ${tag("location")}</label><input id="pf-loc" class="select" maxlength="60" value="${v("location")}" placeholder="Ej. Bogotá"></div>
         <fieldset class="pf-field pf-wide"><legend>Intereses · elige de 1 a 5 ${tag("interests")}</legend><div class="pf-chips" id="pf-ints">${INTEREST_POOL.map(x => `<button type="button" class="av-chip" data-int="${esc(x)}" aria-pressed="${(pre.interests || []).includes(x)}">${x}</button>`).join("")}</div></fieldset>
       </div>
-      ${consentGiven ? `<div class="lg-done">${svg("check")}<span>Ya aceptaste los Términos y la Política de privacidad (v${LEGAL.version}) a las ${when}, en la pantalla de permiso de LinkedIn. Queda en tu registro de consentimientos.</span></div>` : legalChecks("pf")}
+      ${consentGiven ? `<div class="lg-done">${svg("check")}<span>${consentGiven.via === "registro" ? `Ya aceptaste los Términos y la Política de privacidad (v${LEGAL.version}) a las ${when}, al crear tu cuenta KNET. Queda en tu registro de consentimientos.` : `Ya aceptaste los Términos y la Política de privacidad (v${LEGAL.version}) a las ${when}, en la pantalla de permiso de LinkedIn. Queda en tu registro de consentimientos.`}</span></div>` : legalChecks("pf")}
       <p class="pf-err" id="pfErr" role="alert" hidden></p>
       <div class="av-foot" style="margin-top:18px"><button type="button" class="btn btn-ghost btn-sm" data-pfback><span class="flip-x">${svg("arrow")}</span>Volver</button><button type="submit" class="btn btn-primary">${svg("check")}Crear mi perfil · +100 XP</button></div>`;
     setTimeout(() => { const empty = [...f.querySelectorAll("input:not([type=checkbox]),select")].find(el => !el.value && !el.closest(".pf-field").querySelector(".pf-opt")); (empty || $("#pf-name")).focus(); }, 40);
@@ -3315,7 +3324,7 @@ export function bootKnetApp() {
     const fromMcp = ($("#mcpForm").dataset.mcp || "").split(",").filter(Boolean);
     const profile = { name: val("#pf-name"), role: val("#pf-role"), company: val("#pf-company"), seniority: val("#pf-sen"), interests: ints, location: val("#pf-loc"),
       src: Object.fromEntries(P_FIELDS.map(f => [f, fromMcp.includes(f) ? "mcp" : "manual"])) };
-    if (consentGiven) logConsent({ tipo: "vinculacion", formulario: "Formulario «Completa lo que falta»", metodo: "Envío del formulario tras la aceptación en la pantalla de LinkedIn", titular: profile.name, detalle: "Identifica al titular de la aceptación anterior" });
+    if (consentGiven) logConsent({ tipo: "vinculacion", formulario: "Formulario «Completa lo que falta»", metodo: consentGiven.via === "registro" ? "Envío del formulario tras crear la cuenta KNET" : "Envío del formulario tras la aceptación en la pantalla de LinkedIn", titular: profile.name, detalle: "Identifica al titular de la aceptación anterior" });
     else logConsent({ tipo: "aceptacion", formulario: "Formulario de perfil manual", metodo: "Casillas de verificación no premarcadas y clic en «Crear mi perfil»", casillas: [CHECK_TXT.terminos, CHECK_TXT.privacidad], documentos: ["terminos", "privacidad"], titular: profile.name });
     finalize(val("#pf-ind"), profile, fromMcp.length ? "mixed" : "manual");
   });
@@ -3371,11 +3380,18 @@ export function bootKnetApp() {
     if (reset) { const keepAv = A.connected ? A.avatar : null; A = fresh(ind); A.connected = true; A.xp = 100; A.xpLocal = 100; A.avatar = keepAv; selEvent = null; graphIntro = true; }
     A.profile = profile; editField = null; applyProfile();
     A.apiLinked = false; // el perfil recién importado o escrito manda: el próximo sync lo sube a la API
+    const acct = pendingAccount; pendingAccount = null;
+    if (hasSession()) { A.accountId = sessionUserId(); A.accountEmail = sessionEmail(); }
+    const serverWins = !!(acct && acct.serverWins); // cuenta que ya existía: sus inscripciones y progreso mandan
+    if (serverWins) { A.apiLinked = true; if (reset) { A.xp = acct.xp || 0; A.xpLocal = 0; } }
     const p = PERSONAS[ind], d = IND[ind];
     if (reset) A.chat.push({ who: "ai", html: `Hola, ${esc(first(p.name))}. Configuré tu Summit para ${esc(d.role)} en ${d.label}: 4 sesiones, 3 matches y 3 misiones activas. ¿En qué te ayudo?` });
-    save(); syncFromApi(); consentGiven = null; closeModal(modal);
+    save();
+    if (serverWins) { const body = profileToApi(); (body ? api.updateMe(body) : Promise.resolve()).catch((e) => apiLog("no se pudo completar el perfil en el servidor", e)).finally(() => syncFromApi()); }
+    else syncFromApi();
+    consentGiven = null; closeModal(modal);
     const msg = { mcp: "Perfil importado vía MCP", manual: "Perfil creado manualmente", mixed: "Perfil completado: LinkedIn + datos tuyos" }[via];
-    if (reset) { notify("xp", `+100 XP · ${msg}`, "¡Bienvenido a KNET!"); toast(`<b>${msg}</b>${xpLine(100)}`, via === "mcp" ? "link" : "pen"); } else toast(`<b>${msg}</b>`, "link");
+    if (reset && !serverWins) { notify("xp", `+100 XP · ${msg}`, "¡Bienvenido a KNET!"); toast(`<b>${msg}</b>${xpLine(100)}`, via === "mcp" ? "link" : "pen"); } else toast(`<b>${msg}</b>`, "link");
     showTab("perfil");
     if (reset) setTimeout(() => { if (!A.avatar && inApp) openAvatar(); }, 900);
     if (reset && !A.tourSeen) offerTourWhenIdle();
@@ -3416,13 +3432,14 @@ export function bootKnetApp() {
   });
 
   /* ---- Eventos ---- */
-  $$("[data-connect]").forEach(b => b.addEventListener("click", () => { if (A.connected) showTab(curTab || "perfil"); else if (hasSaved()) resumeSession(); else startConnect(); }));
+  $$("[data-connect]").forEach(b => b.addEventListener("click", () => openEntry()));
   /* Cerrar sesión: conserva perfil, avatar y progreso en este navegador */
   $("#logoutBtn").addEventListener("click", () => {
     const b = $("#logoutBtn"); b.classList.add("closing");
     setTimeout(() => {
       b.classList.remove("closing");
       runId++; editField = null; A.connected = false; save(); applyProfile();
+      if (hasSession()) api.logout(); // revoca el refresh token; el perfil local queda para la próxima vez
       toast(`<b>Sesión cerrada</b><div class="text-[13px] text-mute">Tu perfil y tu progreso quedan guardados en este navegador.</div>`, "lock");
       showLanding();
     }, reduce ? 0 : 380);
@@ -3434,6 +3451,187 @@ export function bootKnetApp() {
     toast(`<b>¡Hola de nuevo, ${esc(first(A.profile.name))}!</b><div class="text-[13px] text-mute">Recuperamos tu progreso: ${fmt(A.xp)} XP.</div>`, "check");
     showTab(tab || curTab || "perfil");
   }
+  /* ---- Cuenta KNET: login, registro, LinkedIn (OAuth real) y re-aceptación legal ----
+     Con API (VITE_API_URL), entrar al panel pasa por una cuenta: correo + contraseña o LinkedIn. «Continuar sin
+     cuenta» mantiene el modo local de siempre. El perfil local queda ligado a la cuenta (A.accountId):
+     - Registro con un perfil local sin cuenta: se vincula y el navegador sube todo (A.apiLinked = false).
+     - Registro nuevo o cuenta de LinkedIn recién creada: formulario de perfil y luego sube todo.
+     - Login (o LinkedIn de una cuenta existente): manda el servidor (A.apiLinked = true); si al perfil le faltan
+       datos, se completan en el formulario y solo se suben esos campos. */
+  let authMode = "register", authBusy = false, liAvailable = false, liMode = null, pendingAccount = null;
+  let legalUpOpen = false, afterLegal = null;
+  const LI_PENDING = "knet-li-pending";
+  const sessionMatches = () => hasSession() && !!A.profile && A.accountId === sessionUserId();
+  const needsLegal = (u) => !!u && !u.isDemo && cmpVersion(u.legalVersion, LEGAL.version) < 0;
+  function cmpVersion(a, b) { const pa = String(a || "0").split("."), pb = String(b || "0").split("."); for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (parseInt(pa[i], 10) || 0) - (parseInt(pb[i], 10) || 0); if (d) return d < 0 ? -1 : 1; } return 0; }
+
+  /* Botón «Entrar» / hash de una pestaña sin sesión activa */
+  function openEntry(tab) {
+    if (A.connected) { showTab(tab || curTab || "perfil"); return; }
+    if (!apiEnabled) { if (hasSaved()) resumeSession(tab); else startConnect(); return; }
+    const erasing = hasSession() && readErase().includes(sessionUserId()); // sesión retenida solo para un borrado pendiente
+    if (!erasing && sessionMatches()) { resumeSession(tab); return; }
+    if (!erasing && hasSession()) { loadSessionAccount(tab); return; }
+    openAuth(A.accountId ? "login" : "register");
+  }
+  function loadSessionAccount(tab) {
+    api.getMe().then((r) => enterWithAccount(r.user)).catch((e) => {
+      if (e instanceof ApiError && e.code === "legal_outdated") { afterLegal = () => loadSessionAccount(tab); return; }
+      if (isOffline(e)) { toast("<b>Sin conexión con el servidor de KNET</b><div class='text-[13px] text-mute'>Inténtalo de nuevo en unos segundos.</div>", "info"); return; }
+      openAuth("login");
+    });
+  }
+  function setAuthMode(mode) {
+    authMode = mode; const reg = mode === "register";
+    $$("#m-auth [data-authtab]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.authtab === mode)));
+    $("#authNameRow").hidden = !reg; $("#authPassHint").hidden = !reg;
+    $("#au-pass").setAttribute("autocomplete", reg ? "new-password" : "current-password");
+    $("#authLegal").innerHTML = reg ? legalChecks("au") : "";
+    $("#authSubmit").textContent = reg ? "Crear cuenta" : "Iniciar sesión";
+    $("#authTitle").textContent = reg ? "Crea tu cuenta KNET" : "Entra a tu cuenta KNET";
+    $("#authErr").hidden = true;
+  }
+  function openAuth(mode, notice) {
+    setAuthMode(mode || authMode);
+    const n = $("#authNotice"); n.hidden = !notice; n.textContent = notice || "";
+    const em = $("#au-email"); if (!em.value && A.accountEmail) em.value = A.accountEmail;
+    $("#au-pass").value = ""; $("#authLiRow").hidden = !liAvailable;
+    if ($("#m-auth").hidden) openModal("auth");
+    setTimeout(() => { const first = [$("#au-name"), em, $("#au-pass")].find(el => el && !el.closest("[hidden]") && !el.value); (first || em).focus(); }, 60);
+    api.providers().then((p) => { liAvailable = !!p.linkedin; }).catch(() => { liAvailable = false; }).finally(() => { $("#authLiRow").hidden = !liAvailable; });
+  }
+  const closeAuth = () => { if (!$("#m-auth").hidden) closeModal($("#m-auth")); };
+  function authErrorText(e) {
+    if (isOffline(e)) return "No pudimos conectar con el servidor de KNET. Inténtalo de nuevo o continúa sin cuenta.";
+    const code = e && e.code;
+    if (code === "invalid_credentials") return "Correo o contraseña incorrectos.";
+    if (code === "email_taken") return "Ya existe una cuenta con ese correo. Inicia sesión.";
+    if (code === "rate_limited") return "Demasiados intentos. Espera unos minutos.";
+    if (code === "validation_error") return "Revisa los datos del formulario.";
+    return "No pudimos completar la operación. Inténtalo de nuevo.";
+  }
+  $("#m-auth").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-authtab]"); if (t) { setAuthMode(t.dataset.authtab); return; }
+    if (e.target.closest("[data-authli]")) { closeAuth(); liMode = null; startConnect(); liMode = "oauth"; showLinkedInPermission(false); return; }
+    if (e.target.closest("[data-authlocal]")) { closeAuth(); if (hasSaved()) resumeSession(); else startConnect(); }
+  });
+  $("#authForm").addEventListener("submit", async (e) => {
+    e.preventDefault(); if (authBusy) return;
+    const name = $("#au-name").value.trim(), email = $("#au-email").value.trim(), pass = $("#au-pass").value, reg = authMode === "register";
+    const er = $("#authErr"), fail = (m, el) => { er.hidden = false; er.textContent = m; if (el) el.focus(); };
+    if (reg && name.length < 2) return fail("Escribe tu nombre.", $("#au-name"));
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail("Escribe un correo válido.", $("#au-email"));
+    if (!pass) return fail("Escribe tu contraseña.", $("#au-pass"));
+    if (reg && pass.length < 8) return fail("La contraseña debe tener al menos 8 caracteres.", $("#au-pass"));
+    if (reg) { const miss = [["#au-tyc", "aceptar los Términos y condiciones"], ["#au-priv", "autorizar la Política de privacidad"]].filter(([id]) => !$(id).checked); if (miss.length) return fail(`Para continuar falta: ${miss.map(m => m[1]).join(", ")}.`, $(miss[0][0])); }
+    authBusy = true; const btn = $("#authSubmit"); btn.disabled = true; er.hidden = true;
+    try { if (reg) await doRegister(name, email, pass); else await doLogin(email, pass); }
+    catch (err) { fail(authErrorText(err)); }
+    finally { authBusy = false; btn.disabled = false; }
+  });
+  async function doRegister(name, email, password) {
+    const r = await api.signUp({ email, password, name, industry: A.profile ? A.ind : "tech", acceptLegal: true, legalVersion: LEGAL.version,
+      consentDetails: { formulario: "Registro de cuenta KNET", casillas: [CHECK_TXT.terminos, CHECK_TXT.privacidad] } });
+    // La aceptación ya quedó en la cadena del servidor: aquí se deja la constancia local, marcada como guardada
+    logConsent({ tipo: "aceptacion", formulario: "Registro de cuenta KNET", metodo: "Casillas de verificación no premarcadas y clic en «Crear cuenta»", casillas: [CHECK_TXT.terminos, CHECK_TXT.privacidad], documentos: ["terminos", "privacidad"], titular: name },
+      { savedOnServer: { id: r.consent && r.consent.id, hash: r.consent && r.consent.hash } });
+    closeAuth();
+    if (A.profile && !A.accountId) { // ya tenía un perfil en este navegador: se vincula y se sube todo
+      A.accountId = r.user.id; A.accountEmail = r.user.email; A.connected = true; A.apiLinked = false; save(); applyProfile(); syncFromApi();
+      toast("<b>Cuenta creada</b><div class='text-[13px] text-mute'>Subimos tu perfil y tu progreso a tu cuenta KNET.</div>", "shield");
+      showTab("perfil"); return;
+    }
+    consentGiven = { at: new Date(), p: Promise.resolve(), via: "registro" }; pendingAccount = { serverWins: false };
+    if ($("#m-mcp").hidden) openModal("mcp");
+    showProfileForm({ name }, []);
+  }
+  async function doLogin(email, password) {
+    const r = await api.login(email, password);
+    closeAuth();
+    if (needsLegal(r.user)) { openLegalUpdate(() => enterWithAccount(r.user)); return; }
+    enterWithAccount(r.user);
+  }
+  /* Entra con la cuenta de la sesión. user = toUser del servidor */
+  function enterWithAccount(user, opts = {}) {
+    if (!user) return;
+    if (A.profile && A.accountId === user.id) { resumeSession(); return; } // mismo navegador y misma cuenta
+    if (A.profile && !A.accountId) { try { localStorage.setItem(KEY + "-sin-cuenta", JSON.stringify(A)); } catch (e) {} } // copia del perfil local previo
+    const ind = IND[user.industry] ? user.industry : "tech", fs = user.fieldSources || {};
+    const prof = { name: user.name || "", role: user.role || "", company: user.company || "", seniority: user.seniority || "", interests: (user.interests || []).slice(0, 5), location: user.location || "",
+      src: Object.fromEntries(P_FIELDS.map(f => [f, API_SRC.includes(fs[f]) ? fs[f] : "manual"])) };
+    const complete = prof.name && prof.role && prof.seniority && prof.interests.length;
+    if (!complete) {
+      runId++; A = fresh(ind); // el formulario parte de lo que hay en la cuenta
+      consentGiven = { at: new Date(), p: Promise.resolve(), via: opts.linkedin ? "linkedin" : "registro" };
+      pendingAccount = { serverWins: !opts.created, xp: user.xp || 0 };
+      if ($("#m-mcp").hidden) openModal("mcp");
+      showProfileForm({ ...prof, ind }, P_FIELDS.filter(f => fs[f] === "mcp"));
+      return;
+    }
+    runId++; A = fresh(ind); Object.assign(A, { connected: true, accountId: user.id, accountEmail: user.email, profile: prof, xp: user.xp || 0, xpLocal: 0, apiLinked: true });
+    applyProfile(); save(); syncFromApi();
+    toast(`<b>¡Hola de nuevo, ${esc(first(prof.name))}!</b><div class="text-[13px] text-mute">Recuperamos tu progreso: ${fmt(A.xp)} XP.</div>`, "check");
+    showTab("perfil");
+  }
+  /* LinkedIn real: guarda la aceptación de la pantalla de permiso y navega al OAuth del backend */
+  function startLinkedInOAuth(scopes, ev) {
+    const list = Object.entries(scopes).filter(([, on]) => on).map(([k]) => k);
+    try { sessionStorage.setItem(LI_PENDING, JSON.stringify({ ev, at: Date.now() })); } catch (e) {}
+    location.assign(api.linkedinUrl({ scopes: list, legalVersion: LEGAL.version, returnTo: location.origin + location.pathname }));
+  }
+  /* Vuelta del OAuth: ?knet_auth=<código de un solo uso> o ?knet_auth_error=… */
+  function authReturn() {
+    const q = new URLSearchParams(location.search), code = q.get("knet_auth"), err = q.get("knet_auth_error");
+    if (!code && !err) return;
+    q.delete("knet_auth"); q.delete("knet_auth_error");
+    try { history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q : "") + location.hash); } catch (e) {}
+    let pend = null; try { pend = JSON.parse(sessionStorage.getItem(LI_PENDING) || "null"); sessionStorage.removeItem(LI_PENDING); } catch (e) {}
+    const failLi = () => { toast("<b>No se completó el acceso con LinkedIn</b><div class='text-[13px] text-mute'>Puedes intentarlo de nuevo o usar tu correo.</div>", "info"); openAuth("login"); };
+    if (err || !apiEnabled) { failLi(); return; }
+    api.exchange(code).then((r) => {
+      // El servidor ya registró la autorización y la aceptación: constancia local marcada como guardada
+      if (pend && pend.ev) logConsent({ ...pend.ev, titular: r.user.name }, { savedOnServer: {} });
+      if (needsLegal(r.user)) { openLegalUpdate(() => enterWithAccount(r.user, { created: r.created, linkedin: true })); return; }
+      enterWithAccount(r.user, { created: r.created, linkedin: true });
+    }).catch(failLi);
+  }
+  /* 409 legal_outdated: no se entra al panel hasta aceptar la versión vigente */
+  function openLegalUpdate(after) {
+    if (after) afterLegal = after;
+    if (legalUpOpen) return;
+    legalUpOpen = true;
+    $("#legalUpBody").innerHTML = legalChecks("lu"); $("#legalUpErr").hidden = true;
+    openModal("legalup");
+  }
+  function closeLegalUpdate() { legalUpOpen = false; const m = $("#m-legalup"); if (!m.hidden) closeModal(m); }
+  $("#m-legalup").addEventListener("click", async (e) => {
+    if (e.target.closest("[data-legaluplogout]")) {
+      closeLegalUpdate(); afterLegal = null; runId++; A.connected = false; save(); applyProfile(); api.logout(); showLanding();
+      toast("<b>Sesión cerrada</b>", "lock"); return;
+    }
+    const b = e.target.closest("[data-legalupaccept]"); if (!b || b.disabled) return;
+    const er = $("#legalUpErr"), miss = [["#lu-tyc", "aceptar los Términos y condiciones"], ["#lu-priv", "autorizar la Política de privacidad"]].filter(([id]) => !$(id).checked);
+    if (miss.length) { er.hidden = false; er.textContent = `Para continuar falta: ${miss.map(m => m[1]).join(", ")}.`; $(miss[0][0]).focus(); return; }
+    b.disabled = true;
+    try {
+      const rec = await logConsent({ tipo: "aceptacion", formulario: "Actualización de Términos y Política", metodo: "Casillas de verificación no premarcadas y clic en «Aceptar y continuar»",
+        casillas: [CHECK_TXT.terminos, CHECK_TXT.privacidad], documentos: ["terminos", "privacidad"], titular: (A.profile && A.profile.name) || sessionEmail() || "—" });
+      if (rec && rec.api && rec.api.estado === "rechazado") { er.hidden = false; er.textContent = "No pudimos registrar tu aceptación. Inténtalo de nuevo."; return; }
+      closeLegalUpdate();
+      const next = afterLegal; afterLegal = null;
+      if (next) next(); else syncFromApi(); // sin conexión queda pendiente y se envía antes del próximo sync
+    } finally { b.disabled = false; }
+  });
+  onApiEvent("legal-outdated", () => { if (hasSession()) openLegalUpdate(); });
+  onApiEvent("session-expired", () => {
+    const wasIn = A.connected && !!A.accountId;
+    if (wasIn) { runId++; A.connected = false; save(); applyProfile(); showLanding(); }
+    closeLegalUpdate();
+    if (wasIn || !$("#m-auth").hidden) openAuth("login", "Tu sesión caducó. Inicia sesión de nuevo.");
+  });
+  /* Al arrancar: un perfil ligado a una cuenta sin sesión válida no entra al panel sin iniciar sesión */
+  if (apiEnabled && A.connected && A.accountId && !sessionMatches()) { A.connected = false; save(); applyProfile(); }
+
   /* ---- Supresión en el servidor (DELETE /api/me) ----
      Si la API no responde, el UUID queda en ERASE_KEY y se reintenta en el próximo sync, después de
      subir los consentimientos pendientes (así la revocación llega antes que la supresión). */
@@ -3451,7 +3649,7 @@ export function bootKnetApp() {
   }
   async function flushPendingErase() {
     const left = [];
-    for (const uid of readErase()) if ((await eraseOnServer(uid)) === "offline") left.push(uid);
+    for (const uid of readErase()) { const r = await eraseOnServer(uid); if (r === "offline") left.push(uid); else if (uid === sessionUserId()) clearSession(); }
     writeErase(left);
   }
   /* Revocar la autorización y borrar los datos (derecho del titular, Ley 1581) */
@@ -3465,6 +3663,7 @@ export function bootKnetApp() {
     const r = uid ? await eraseOnServer(uid) : "demo";
     if (uid && r === "offline") writeErase(uniq(readErase().concat(uid)));
     if (uid && r !== "error") setUserId(null); // no reutilizar una cuenta borrada (o por borrar)
+    if (r !== "offline" && hasSession()) clearSession(); // offline: la sesión se conserva solo para reintentar el borrado
     toast({
       ok: "<b>Datos borrados del servidor de KNET.</b> Conservamos solo el registro de tus consentimientos, como exige la ley.",
       offline: "<b>Sin conexión con el servidor.</b> Borraremos tus datos del servidor de KNET cuando vuelva la conexión.",
@@ -3606,7 +3805,8 @@ export function bootKnetApp() {
   applyLang();
   window.addEventListener("resize", fitNav);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitNav);
-  (function init() { const h = location.hash.slice(1); if (LEGAL_IDS.includes(h)) { renderHeader(); openLegal(h); return; } if (TAB_IDS.includes(h)) { if (A.connected) showTab(h); else if (hasSaved()) resumeSession(h); else startConnect(); } else renderHeader(); })();
+  (function init() { const h = location.hash.slice(1); if (LEGAL_IDS.includes(h)) { renderHeader(); openLegal(h); return; } if (TAB_IDS.includes(h)) { if (A.connected) showTab(h); else openEntry(h); } else renderHeader(); })();
+  authReturn(); // vuelta del OAuth de LinkedIn (?knet_auth=…)
 
   hydrate();
 
