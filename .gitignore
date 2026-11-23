@@ -13,3 +13,4 @@ dist-e2e-real
 playwright-report
 playwright-report-real
 test-results
+.vercel
