@@ -350,6 +350,8 @@ export const TEAM = [
 
 ## Despliegue
 
+**Producción actual:** https://knet-frontend.vercel.app (proyecto `knet-frontend` en Vercel), con `VITE_API_URL=https://knet-backend.vercel.app`. Se despliega con `npx vercel deploy --prod` hasta que el repositorio se conecte a la app de GitHub de Vercel; desde entonces, cada push a `main` desplegará solo.
+
 El build es estático (`dist/`). Para producción:
 
 1. Define `VITE_API_URL` con la URL **https** pública de knet-backend en la plataforma (ver `.env.production`); ese origen debe estar en el `CORS_ORIGIN` del backend. Sin ella, el build funciona en modo local (sin cuentas).
