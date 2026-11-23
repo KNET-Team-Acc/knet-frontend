@@ -4,6 +4,8 @@ Vite + React 19 + Tailwind. React monta el layout (`src/components/`); casi toda
 
 ## Comandos
 - `npm run dev` (:5173) · `npm run build` (verificación mínima tras editar) · `npm run lint` (`knetApp.js` está ignorado por eslint)
+- `npm run e2e` (Playwright + API simulada en `e2e/support/mock-api.js`; build en `dist-e2e`, preview :4173) · `npm run e2e:real` (contra knet-backend; `E2E_API_URL`, preview :4174). El CI corre lint, build y e2e: mantenlos verdes.
+- Despliegue: `vercel.json` / `public/_headers` / `public/_redirects`. Cabeceras: fuente única `deploy/security-headers.js` (la usa `vite preview`); si cambian, actualiza las copias estáticas. La CSP prohíbe scripts inline y `eval`.
 
 ## i18n
 Español es la fuente; el inglés se aplica en tiempo real. `src/lib/i18n/dictionary.js` = frases exactas (`EXACT`, clave = texto ES). `src/lib/i18n/runtime.js` = `PATS` para textos con variables: `[regex estilo re.escape con ([\s\S]*?), "EN con {0}", longitud del ES sin marcadores]`. Si cambias un texto visible en ES, actualiza su entrada o deja de traducirse.

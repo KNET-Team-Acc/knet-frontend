@@ -180,6 +180,8 @@ npm run preview
 | `npm run build` | Compila a `dist/` (separa React, el motor y el diccionario en chunks). |
 | `npm run preview` | Sirve `dist/` para probarlo como en producción. |
 | `npm run lint` | Revisa los componentes con ESLint. |
+| `npm run e2e` | Pruebas E2E con Playwright y la API simulada (construye y sirve el build en el puerto 4173). La primera vez: `npx playwright install chromium`. |
+| `npm run e2e:real` | Las mismas pruebas de punta a punta contra el backend real (`E2E_API_URL`, por defecto `http://localhost:4000`; su `CORS_ORIGIN` debe incluir `http://localhost:4174`). |
 
 > [!TIP]
 > Para ver las escenas 3D usa Chrome, Edge, Firefox o Safari con aceleración por hardware activa. Si el equipo no tiene WebGL, o si la persona pidió «reducir movimiento», la landing se muestra completa en versión estática.
@@ -340,13 +342,23 @@ export const TEAM = [
 
 ---
 
+## Pruebas
+
+- **E2E con API simulada** (`npm run e2e`, `e2e/*.spec.js`): la API se simula con `page.route` (`e2e/support/mock-api.js`) para probar sin backend los casos delicados: creación y edición del perfil, sesión y refresh del token, re-aceptación legal, **XP híbrida** (una misión hecha offline y confirmada online no suma dos veces), **cola offline** (`A.outbox` se reenvía en orden), **consentimientos** (`verifyChain()` válido y `rec.api` de pendiente a guardado), **«Revocar y borrar mis datos»** (online, offline con reintento y `403 demo_account`), cambio de idioma y cabeceras de seguridad.
+- **E2E contra el backend real** (`npm run e2e:real`, `e2e/real/`): cuenta, perfil, misión, cadena de consentimientos del servidor y supresión de la cuenta.
+- **CI** (`.github/workflows/ci.yml`, en cada PR y en `main`): `npm run lint`, `npm run build` y `npm run e2e`. La suite contra el backend real corre si el repositorio tiene el secreto `BACKEND_REPO_TOKEN` (lectura de `knet-backend`, que es privado); si no, se omite.
+
 ## Despliegue
 
-El build es estático (`dist/`), así que sirve cualquier hosting de archivos:
+El build es estático (`dist/`). Para producción:
 
-- **Vercel**: importa el repo → framework *Vite* → `npm run build` → carpeta `dist`.
-- **Netlify**: build `npm run build`, publish `dist`.
-- **GitHub Pages**: agrega `base: "/<nombre-del-repo>/"` en `vite.config.js` y publica `dist` (por ejemplo con GitHub Actions).
+1. Define `VITE_API_URL` con la URL **https** pública de knet-backend en la plataforma (ver `.env.production`); ese origen debe estar en el `CORS_ORIGIN` del backend. Sin ella, el build funciona en modo local (sin cuentas).
+2. Build `npm run build`, carpeta `dist`.
+
+- **Vercel**: `vercel.json` ya trae el build, el fallback SPA (cualquier ruta interna sirve `index.html`), las cabeceras de seguridad y la caché de `/assets`.
+- **Netlify / Cloudflare Pages**: `public/_redirects` (fallback SPA) y `public/_headers` (cabeceras) se copian a `dist`.
+- **Cabeceras**: CSP estricta (`script-src 'self'`, `connect-src 'self' https:`, `frame-ancestors 'none'`…), HSTS, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` y COOP. La fuente es `deploy/security-headers.js`, que también usa `vite preview` (así las pruebas E2E corren con la misma CSP). Si la cambias, actualiza `vercel.json` y `public/_headers`.
+- **GitHub Pages**: agrega `base: "/<nombre-del-repo>/"` en `vite.config.js`; Pages no permite cabeceras propias.
 
 ---
 
@@ -357,8 +369,10 @@ El build es estático (`dist/`), así que sirve cualquier hosting de archivos:
 - [x] Motor 3D, traductor y motor de la app como módulos ES.
 - [ ] Pasar cada pestaña del panel a componentes con estado (React context o Zustand), empezando por **Mi perfil** y **Misiones**.
 - [ ] Mover el contenido de las 4 experiencias y del simulador de plantillas a JSX.
-- [ ] Conectar un backend real: LinkedIn MCP, LLM + RAG sobre transcripciones y eventos en tiempo real (WebSocket).
-- [ ] Pruebas end-to-end (Playwright) y unitarias (Vitest).
+- [x] Backend real: cuentas (correo y LinkedIn OAuth), IA (Concierge, Simulador y Dossier con RAG ligero) y consentimientos en PostgreSQL.
+- [ ] Consumir el tiempo real (SSE de `/api/me/stream`) en el panel.
+- [x] Pruebas end-to-end (Playwright) y CI.
+- [ ] Pruebas unitarias (Vitest).
 
 ---
 
@@ -377,6 +391,6 @@ El build es estático (`dist/`), así que sirve cualquier hosting de archivos:
 - Tipografías: Archivo, Plus Jakarta Sans, Inter y JetBrains Mono (SIL Open Font License, vía Google Fonts).
 - React y Vite (MIT), Tailwind CSS (MIT).
 - Escenas 3D, recinto, generador de PDF, ilustraciones del avatar y del emblema: propios del equipo KNET.
-- La licencia del código la define el equipo; agrega un archivo `LICENSE` antes de publicar el repositorio.
+- Código bajo licencia [MIT](LICENSE) © 2026 KNET Team.
 
 <p align="center"><sub>© 2026 Equipo KNET · Prototipo funcional con datos simulados</sub></p>
