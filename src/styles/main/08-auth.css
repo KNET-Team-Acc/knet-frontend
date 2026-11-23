@@ -1,0 +1,13 @@
+/* Cuenta KNET: login / registro (#m-auth) y re-aceptación legal (#m-legalup) */
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 5px; margin-top: 18px; border-radius: 999px; background: rgba(var(--w-rgb),.04); border: 1px solid var(--line); }
+.auth-tab { padding: 9px 12px; border-radius: 999px; font-weight: 600; font-size: 14.5px; color: var(--muted); transition: background .2s, color .2s; }
+.auth-tab[aria-selected="true"] { background: rgba(161,0,255,.22); color: var(--fg, #fff); box-shadow: inset 0 0 0 1px rgba(161,0,255,.45); }
+.auth-tab:focus-visible { outline: 2px solid var(--t-lilac, #c4a1ff); outline-offset: 2px; }
+.auth-form { display: grid; gap: 14px; margin-top: 16px; }
+.auth-form .btn-primary { justify-self: stretch; justify-content: center; }
+.auth-notice { margin-top: 14px; font-size: 13.5px; padding: 10px 12px; border-radius: 10px; background: rgba(61,107,255,.1); border: 1px solid rgba(61,107,255,.32); }
+.auth-or { display: flex; align-items: center; gap: 12px; margin: 16px 0 12px; color: var(--muted); font-size: 13px; }
+.auth-or::before, .auth-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.auth-li { width: 100%; justify-content: center; }
+.auth-local { display: block; margin: 14px auto 0; font-size: 13.5px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+.auth-local:hover { color: var(--fg, #fff); }

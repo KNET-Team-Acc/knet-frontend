@@ -14,6 +14,8 @@ import AvatarModal from "./AvatarModal";
 import VideoModal from "./VideoModal";
 import LegalModal from "./LegalModal";
 import ConsentLogModal from "./ConsentLogModal";
+import AuthModal from "./AuthModal";
+import LegalUpdateModal from "./LegalUpdateModal";
 
 /**
  * Todos los diálogos de la app. Están en el DOM desde el inicio (ocultos) y el motor los abre/cierra.
@@ -37,6 +39,8 @@ export default function Modals() {
       <VideoModal />
       <LegalModal />
       <ConsentLogModal />
+      <AuthModal />
+      <LegalUpdateModal />
     </>
   );
 }
