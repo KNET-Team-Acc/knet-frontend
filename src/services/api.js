@@ -15,7 +15,10 @@
  */
 
 const RAW_URL = import.meta.env.VITE_API_URL;
-export const API_URL = (RAW_URL === undefined ? "http://localhost:4000" : String(RAW_URL)).trim().replace(/\/+$/, "");
+// Sin VITE_API_URL: en desarrollo, el backend local; en un build de producción, modo local (nunca localhost,
+// que además bloquearía la CSP). Para usar la API en producción hay que definir VITE_API_URL al construir.
+const DEFAULT_URL = import.meta.env.DEV ? "http://localhost:4000" : "";
+export const API_URL = (RAW_URL === undefined ? DEFAULT_URL : String(RAW_URL)).trim().replace(/\/+$/, "");
 export const apiEnabled = API_URL !== "";
 
 const USER_KEY = "knet-api-user";
