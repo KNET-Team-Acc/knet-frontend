@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  e2e:
+    name: E2E (API simulada)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+
+  e2e-real:
+    name: E2E (backend real)
+    runs-on: ubuntu-latest
+    # knet-backend es privado: este job necesita el secreto BACKEND_REPO_TOKEN (token con lectura del repo).
+    # Sin el secreto, los pasos se omiten y el job queda en verde.
+    env:
+      HAS_BACKEND: ${{ secrets.BACKEND_REPO_TOKEN != '' }}
+      DATABASE_URL: postgres://knet:knet@localhost:5432/knet
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: knet
+          POSTGRES_PASSWORD: knet
+          POSTGRES_DB: knet
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U knet -d knet"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - name: Sin BACKEND_REPO_TOKEN
+        if: env.HAS_BACKEND != 'true'
+        run: echo "::notice::Se omite la suite contra el backend real (falta el secreto BACKEND_REPO_TOKEN)."
+      - uses: actions/checkout@v4
+        if: env.HAS_BACKEND == 'true'
+      - uses: actions/checkout@v4
+        if: env.HAS_BACKEND == 'true'
+        with:
+          repository: KNET-Team-Acc/knet-backend
+          token: ${{ secrets.BACKEND_REPO_TOKEN }}
+          path: backend
+      - uses: actions/setup-node@v4
+        if: env.HAS_BACKEND == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+      - name: Backend (migrar, seed y arrancar en modo producción)
+        if: env.HAS_BACKEND == 'true'
+        working-directory: backend
+        env:
+          NODE_ENV: production
+          JWT_SECRET: ci-secret-solo-para-pruebas
+          CORS_ORIGIN: http://localhost:4174
+          PORT: "4000"
+        run: |
+          npm ci
+          npm run db:migrate
+          npm run db:seed
+          node src/server.js > ../api.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://localhost:4000/health && exit 0; sleep 1; done
+          cat ../api.log; exit 1
+      - run: npm ci
+        if: env.HAS_BACKEND == 'true'
+      - run: npx playwright install --with-deps chromium
+        if: env.HAS_BACKEND == 'true'
+      - run: npm run e2e:real
+        if: env.HAS_BACKEND == 'true'
+        env:
+          E2E_API_URL: http://localhost:4000
+      - name: Log de la API
+        if: failure() && env.HAS_BACKEND == 'true'
+        run: cat api.log
