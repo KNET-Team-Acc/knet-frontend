@@ -18,7 +18,8 @@ test("usuario real: café y DM llegan al servidor, sin respuestas simuladas y si
   await seedSession(page, seedPeer);
   await page.goto("/#red");
   await waitSync(api);
-  expect((await engineState(page)).qrConn.find((q) => q.name === PEER).userId).toBeTruthy();
+  // waitSync solo espera la petición: el motor aplica la respuesta un instante después
+  await expect.poll(async () => (await engineState(page)).qrConn.find((q) => q.name === PEER)?.userId).toBeTruthy();
 
   await openPeerChat(page);
   await page.locator('#m-dm [data-dmcof="propose"]').click();
