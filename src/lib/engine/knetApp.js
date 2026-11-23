@@ -1208,6 +1208,44 @@ export function bootKnetApp() {
     if (b.dataset.pact === "ask") { closeModal($("#m-person")); goTo("concierge"); setTimeout(() => ask(`¿Cómo me presento con ${n}?`), 350); }
   });
 
+  /* ---- IA del servidor (POST /api/ai/*) con fallback silencioso a las respuestas locales ----
+     Solo con una cuenta sincronizada (accountReady + apiLinked). Ante ApiOffline (red, timeout, 503
+     ai_unavailable) o cualquier error, devuelve null y el motor usa su contenido local sin mostrar error. */
+  const aiReady = () => accountReady() && !!A.apiLinked;
+  const plainText = (html) => { const d = document.createElement("div"); d.innerHTML = html; d.querySelectorAll("button").forEach(x => x.remove()); return d.textContent.replace(/\s+/g, " ").trim(); };
+  const aiHtml = (t) => esc(t).replace(/\n{2,}/g, "<br><br>").replace(/\n/g, "<br>");
+  const aiFail = (what, e) => apiLog(isOffline(e) ? `IA no disponible (${what}); se usa la respuesta local` : `la IA no respondió (${what}); se usa la respuesta local`, e);
+  async function aiConcierge(q) {
+    if (!aiReady()) return null;
+    const history = A.chat.slice(0, -1).slice(-10).map(m => ({ role: m.who === "me" ? "user" : "assistant", content: plainText(m.html).slice(0, 2000) })).filter(m => m.content);
+    const sel = myEvIds().length ? getSel("main") : null;
+    try {
+      const r = await api.aiChat({ message: q.slice(0, 1000), history, ...(sel ? { eventId: sel.ev, day: Math.max(0, sel.day) } : {}), lang: LANG });
+      return r && r.reply ? aiHtml(r.reply) : null;
+    } catch (e) { aiFail("Concierge", e); return null; }
+  }
+  async function aiSimulator(n, text) {
+    if (!aiReady()) return null;
+    const history = ((A.dms || {})[n] || []).slice(0, -1).slice(-10).map(x => ({ role: x.who === "me" ? "user" : "assistant", content: String(x.text).slice(0, 2000) }));
+    try {
+      const r = await api.aiSimulate({ contactName: n, message: text.slice(0, 600), history, lang: LANG });
+      return r && r.reply ? String(r.reply).slice(0, 1200) : null;
+    } catch (e) { aiFail("simulador", e); return null; }
+  }
+  /* Evento del Dossier: el seleccionado o, con «Todos mis eventos», el único en el que esté inscrito */
+  const dossierEvent = (rs) => (rs.ev && rs.ev !== "all" ? rs.ev : myEvIds().length === 1 ? myEvIds()[0] : null);
+  /* Dossier del evento redactado en el servidor; se guarda en A.aiDossier[evento] */
+  async function aiDossierGen() {
+    const ev = dossierEvent(getSel("res")); if (!aiReady() || !ev) return false;
+    try {
+      const r = await api.aiDossier({ eventId: ev, lang: LANG }), c = r && r.dossier && r.dossier.content;
+      if (!c) return false;
+      (A.aiDossier ||= {})[ev] = { at: r.dossier.generatedAt, notes: c.notes || "", ideas: c.ideas || [], plan: c.plan || [], paraTi: c.paraTi || "" };
+      save(); return true;
+    } catch (e) { aiFail("Dossier", e); return false; }
+  }
+  const setBusy = (sel, on) => $$(sel).forEach(x => { x.disabled = on; });
+
   /* Chat 1:1 con la persona conectada */
   let dmFor = null, dmBusy = false;
   
@@ -1238,8 +1276,10 @@ export function bootKnetApp() {
     text = String(text || "").trim(); const n = dmFor; if (!text || !n || dmBusy) return; dmBusy = true;
     (A.dms[n] = A.dms[n] || []).push({ who: "me", text, at: Date.now() }); save(); renderDm();
     const log = $("#dmLog"); log.insertAdjacentHTML("beforeend", `<div class="bubble ai typing" id="dmTyping" aria-label="${esc(first(n))} está escribiendo"><span></span><span></span><span></span></div>`); log.scrollTop = log.scrollHeight;
-    await sleep(rnd(1100, 2000));
-    A.dms[n].push({ who: "them", text: dmReply(n, text), at: Date.now() }); if (A.dms[n].length > 60) A.dms[n] = A.dms[n].slice(-60); save();
+    setBusy("#dmForm input, #dmForm button, #m-dm [data-dmq]", true); // sin envíos dobles mientras responde
+    const ai = await aiSimulator(n, text);
+    if (ai === null) await sleep(rnd(1100, 2000));
+    A.dms[n].push({ who: "them", text: ai ?? dmReply(n, text), at: Date.now() }); if (A.dms[n].length > 60) A.dms[n] = A.dms[n].slice(-60); save();
     dmBusy = false; if (!$("#m-dm").hidden && dmFor === n) { renderDm(); const i = $("#dmIn"); if (i) i.focus(); }
   }
   $("#m-dm").addEventListener("click", (e) => { const q = e.target.closest("[data-dmq]"); if (q) sendDm(q.dataset.dmq); });
@@ -1270,8 +1310,11 @@ export function bootKnetApp() {
     log.insertAdjacentHTML("beforeend", bubble(A.chat[A.chat.length - 1]));
     log.insertAdjacentHTML("beforeend", `<div class="bubble ai typing" id="typing" aria-label="El Concierge está escribiendo"><span></span><span></span><span></span></div>`);
     log.scrollTop = log.scrollHeight;
-    await sleep(650);
-    const html = reply(q); A.chat.push({ who: "ai", html }); if (A.chat.length > 40) A.chat = A.chat.slice(-40); save();
+    setBusy("#chatForm input, #chatForm button", true); // sin envíos dobles mientras responde
+    let html = await aiConcierge(q);
+    if (html === null) { await sleep(650); html = reply(q); }
+    setBusy("#chatForm input, #chatForm button", false);
+    A.chat.push({ who: "ai", html }); if (A.chat.length > 40) A.chat = A.chat.slice(-40); save();
     const ty = $("#typing"); if (ty) ty.outerHTML = bubble({ who: "ai", html });
     const l2 = $("#chatLog"); if (l2) l2.scrollTop = l2.scrollHeight;
     asking = false;
@@ -1300,6 +1343,7 @@ export function bootKnetApp() {
         </div>
         <div id="copyFallback" hidden></div>
       </article>
+      ${aiDossierCard(rs)}
       <div class="dgrid">
         ${col("evento", "calendar", "Evento", "Lo que viviste", sess.length ? sess.map(x => `<div class="ditem">${esc(x.ttl)}<small>${esc(evById(x.ev).city)} · Día ${x.day + 1} · ${x.tm} · ${esc(x.room)}</small></div>`).join("") : empty(`Aún no hay check-ins en ${esc(scope)}. Haz check-in desde tu Agenda IA.`, "agenda", "Ir a mi agenda"))}
         ${col("insight", "bulb", "Insight", "Lo que aprendiste", ins.length ? ins.map(x => `<div class="ditem">${x.text}<small>Fuente: ${x.src}</small></div>`).join("") : empty("Asiste a sesiones o pide un resumen al Concierge.", "concierge", "Abrir Concierge"))}
@@ -1307,6 +1351,11 @@ export function bootKnetApp() {
         ${col("accion", "bolt", "Acción", "Plan de 30 días", acts.map(a => `<label class="ditem dcheck" for="da-${esc(a.id)}"><input type="checkbox" id="da-${esc(a.id)}" data-action="${esc(a.id)}" ${A.actions[a.id] ? "checked" : ""}><span>${a.text}</span></label>`).join(""))}
       </div>
     </div>`;
+  }
+  function aiDossierCard(rs) {
+    const ai = aiDossierOf(rs); if (!ai) return "";
+    return `<article class="pcard"><header class="pcard-h"><div><span class="pcard-k">Dossier · IA</span><h2 class="pcard-t">Resumen generado por IA</h2></div><span class="chip chip-accent">${svg("spark")}IA</span></header>
+      <p class="text-[15px]">${esc(ai.notes)}</p>${ai.paraTi ? `<p class="text-mute text-[14px]">${esc(ai.paraTi)}</p>` : ""}</article>`;
   }
   const summaryText = () => {
     const p = PERSONAS[A.ind], d = IND[A.ind], L = [];
@@ -2025,17 +2074,18 @@ export function bootKnetApp() {
   }
   window.__knetPDF = (key) => buildPDF(sumData(key));
   /* PDF del Dossier generado: mismo motor de PDF que los resúmenes de eventos */
+  const aiDossierOf = (rs) => { const ev = dossierEvent(rs); return (ev && A.aiDossier && A.aiDossier[ev]) || null; };
   function dossierData() {
-    const p = PERSONAS[A.ind], d = IND[A.ind], rs = getSel("res"), sess = resSessions(), ins = insights(sess), scope = resScopeLabel(rs);
+    const p = PERSONAS[A.ind], d = IND[A.ind], rs = getSel("res"), sess = resSessions(), ins = insights(sess), scope = resScopeLabel(rs), ai = aiDossierOf(rs);
     const when = new Date(A.dossierAt || Date.now()).toLocaleString("es-CO", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
     const people = A.connections.map(n => { const m = d.matches.find(x => x[1] === n), q = typeof qrPerson === "function" ? qrPerson(n) : null; return m ? `${n} · ${m[2]}` : q && q.role ? `${n} · ${q.role}` : n; });
     return {
       title: `Dossier de ${p.name}`, kind: "Dossier post-Summit", whenLabel: "Generado", meta: `${d.role} · ${p.company} · ${scope}`, when, tags: p.interests.slice(0, 5),
-      resumen: `${p.name} (${d.role}, ${p.company}) cerró ${scope} con ${fmt(A.xp)} XP, en el nivel ${lvl()} · ${lvlName()}. Hizo check-in en ${sess.length} sesión${sess.length === 1 ? "" : "es"}, reunió ${ins.length} insight${ins.length === 1 ? "" : "s"} y sumó ${A.connections.length} ${A.connections.length === 1 ? "conexión" : "conexiones"} a su red. Este Dossier reúne lo que vivió, lo que aprendió, a quién conoció y qué hará en los próximos 30 días.`,
-      puntos: ins.length ? ins.map(x => x.text) : ["Aún no hay sesiones con check-in en este alcance. Haz check-in desde tu Agenda IA para sumar insights."],
+      resumen: ai && ai.notes ? ai.notes : `${p.name} (${d.role}, ${p.company}) cerró ${scope} con ${fmt(A.xp)} XP, en el nivel ${lvl()} · ${lvlName()}. Hizo check-in en ${sess.length} sesión${sess.length === 1 ? "" : "es"}, reunió ${ins.length} insight${ins.length === 1 ? "" : "s"} y sumó ${A.connections.length} ${A.connections.length === 1 ? "conexión" : "conexiones"} a su red. Este Dossier reúne lo que vivió, lo que aprendió, a quién conoció y qué hará en los próximos 30 días.`,
+      puntos: ai && ai.ideas.length ? ai.ideas.slice() : ins.length ? ins.map(x => x.text) : ["Aún no hay sesiones con check-in en este alcance. Haz check-in desde tu Agenda IA para sumar insights."],
       ideas: sess.map(x => ({ who: `${evById(x.ev).name} · Día ${x.day + 1} · ${x.tm} · ${x.ttl}`, txt: x.insight })),
-      paraTi: `Como ${d.role}, prioriza las ideas que conectan con tus intereses (${p.interests.slice(0, 3).join(", ")}) y conviértelas en tareas concretas del plan de 30 días. Retoma el contacto con tus conexiones esta semana, mientras la conversación está fresca.`,
-      acciones: actions().map(a => `${A.actions[a.id] ? "[Hecho] " : ""}${a.text}`),
+      paraTi: ai && ai.paraTi ? ai.paraTi : `Como ${d.role}, prioriza las ideas que conectan con tus intereses (${p.interests.slice(0, 3).join(", ")}) y conviértelas en tareas concretas del plan de 30 días. Retoma el contacto con tus conexiones esta semana, mientras la conversación está fresca.`,
+      acciones: ai && ai.plan.length ? ai.plan.slice() : actions().map(a => `${A.actions[a.id] ? "[Hecho] " : ""}${a.text}`),
       personas: people.length ? people : ["Aún no tienes conexiones. Conecta con tus matches sugeridos en Mi red."]
     };
   }
@@ -3671,6 +3721,7 @@ export function bootKnetApp() {
       error: "<b>El servidor no pudo borrar tus datos.</b> Escríbenos al correo de la política de privacidad para completar la supresión.",
     }[r], "shield");
   }
+  let genBusy = false;
   const onAct = async (b) => {
     const a = b.dataset.act, v = b.dataset.v;
     if (a === "goto") { goTo(v); return; }
@@ -3716,9 +3767,15 @@ export function bootKnetApp() {
     if (a === "evinfo") { openEvent(v); return; }
     if (a === "evselect") { const c = (EVENTS.find(e => e.id === v) || {}).city, cur = selEvent && (EVENTS.find(e => e.id === selEvent) || {}).city; selEvent = cur === c ? null : v; refresh(); if (!selEvent) return; const el = $("#ev-" + v); if (el && window.matchMedia("(max-width: 1023px)").matches) scrollToEl(el); if (el) flash(el); return; }
     if (a === "evsave") { const ev = EVENTS.find(e => e.id === v); if (!ev) return; if (isLockedEv(ev)) { toast(`<b>Evento exclusivo del nivel ${ev.lvl}</b><div class="text-[13px] text-mute">Gana más XP para desbloquearlo.</div>`, "lock"); return; } toggleRegistration(ev); refresh(); return; }
-    if (a === "gen") { b.disabled = true; b.innerHTML = `${svg("spark")}<span>Generando…</span>`; b.classList.add("shimmer"); await sleep(1300);
-      if (!A.dossierAt) award(() => { A.dossierAt = new Date().toISOString(); }, 0, "Dossier generado", "file"); else { A.dossierAt = new Date().toISOString(); save(); toast("<b>Dossier actualizado</b>", "file"); refresh(); }
-      apiSaveDossier(); downloadDossier(); return; }
+    if (a === "gen") { if (genBusy) return; genBusy = true; b.disabled = true; b.innerHTML = `${svg("spark")}<span>Generando…</span>`; b.classList.add("shimmer");
+      try {
+        const byAi = await aiDossierGen(); // el servidor ya lo guardó en dossiers
+        if (!byAi) { await sleep(1300); const ev = dossierEvent(getSel("res")); if (A.aiDossier && ev) delete A.aiDossier[ev]; }
+        if (!A.dossierAt) award(() => { A.dossierAt = new Date().toISOString(); }, 0, "Dossier generado", "file"); else { A.dossierAt = new Date().toISOString(); save(); toast("<b>Dossier actualizado</b>", "file"); refresh(); }
+        if (!byAi) apiSaveDossier();
+        downloadDossier();
+      } finally { genBusy = false; }
+      return; }
     if (a === "dospdf") { downloadDossier(); return; }
     if (a === "copy") { const txt = summaryText();
       const fallback = () => { const box = $("#copyFallback"); box.hidden = false; box.innerHTML = `<label for="copyTa" class="text-[13px] text-mute">Tu navegador bloqueó el portapapeles. Selecciona y copia el texto:</label><textarea id="copyTa" class="select" rows="8" readonly style="margin-top:8px;font-family:var(--f-mono);font-size:12px"></textarea>`; const ta = $("#copyTa"); ta.value = txt; ta.focus(); ta.select(); };
