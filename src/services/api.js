@@ -216,6 +216,11 @@ export const api = {
   acceptConnection: (id) => request("PATCH", `/api/me/connections/${enc(id)}`, { status: "accepted" }),
   deleteConnection: (id) => request("DELETE", `/api/me/connections/${enc(id)}`),
 
+  // IA (Claude en el servidor). Timeout largo; 503 ai_unavailable llega como ApiOffline → el motor usa su respuesta local.
+  aiChat: (body) => request("POST", "/api/ai/chat", body, { timeout: AI_TIMEOUT_MS }),
+  aiSimulate: (body) => request("POST", "/api/ai/simulate", body, { timeout: AI_TIMEOUT_MS }),
+  aiDossier: (body) => request("POST", "/api/ai/dossier", body, { timeout: AI_TIMEOUT_MS }),
+
   // Dossiers
   listDossiers: () => request("GET", "/api/me/dossiers"),
   getDossier: (eventId) => request("GET", `/api/me/dossiers/${enc(eventId)}`),
