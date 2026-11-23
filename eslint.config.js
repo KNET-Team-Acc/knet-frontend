@@ -4,7 +4,7 @@ import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 
 export default [
-  { ignores: ["dist", "src/lib/**", "src/data/pdf-fonts.js"] },
+  { ignores: ["dist", "dist-e2e", "dist-e2e-real", "playwright-report*", "test-results", "src/lib/**", "src/data/pdf-fonts.js"] },
   {
     files: ["**/*.{js,jsx}"],
     languageOptions: { ecmaVersion: 2022, sourceType: "module", globals: globals.browser, parserOptions: { ecmaFeatures: { jsx: true } } },
@@ -17,5 +17,10 @@ export default [
       ...reactHooks.configs.recommended.rules,
       "react/no-unknown-property": "off",
     },
+  },
+  {
+    // Configuración, despliegue y pruebas E2E corren en Node (Playwright / Vite)
+    files: ["*.config.js", "e2e/**/*.js", "deploy/**/*.js"],
+    languageOptions: { globals: { ...globals.node } },
   },
 ];

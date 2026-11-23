@@ -5,5 +5,11 @@ dist
 .env
 .env.*
 !.env.example
+!.env.production
 .vscode/
 .idea
+dist-e2e
+dist-e2e-real
+playwright-report
+playwright-report-real
+test-results
