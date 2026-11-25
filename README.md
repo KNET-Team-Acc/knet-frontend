@@ -447,7 +447,7 @@ El build es estático (`dist/`). Para producción:
 | | Integrante | Rol | Enlaces |
 |---|---|---|---|
 | <img src="src/assets/team/anderssonprogramming.webp" width="56"> | **Andersson David Sánchez Méndez** | Custom Software Engineering New Associate · Arquitectura de IA & Backend | [GitHub](https://github.com/AnderssonProgramming) · [LinkedIn](https://www.linkedin.com/in/anderssonsm/) |
-| <img src="src/assets/team/killerzeus666.webp" width="56"> | **Katheryn Sofia Guasca Chavarro** | Infra Managed Service New Associate · Infraestructura, DevOps & Cloud | [GitHub](https://github.com/Killerzeus666) |
+| <img src="src/assets/team/killerzeus666.webp" width="56"> | **Katheryn Sofia Guasca Chavarro** | Infra Managed Service New Associate · Infraestructura, DevOps & Cloud | [GitHub](https://github.com/Killerzeus666) · [LinkedIn](https://www.linkedin.com/in/katheryn-sof%C3%ADa-guasca-chavarro-73a93b35a/) |
 | <img src="src/assets/team/pbclaro96.webp" width="56"> | **Paola de Jesús Barros Claro** | Infra Managed Service New Associate · Frontend, Gamificación & Integración | [GitHub](https://github.com/pbclaro96) · [LinkedIn](https://www.linkedin.com/in/paola-de-jes%C3%BAs-barros/) |
 
 ---
