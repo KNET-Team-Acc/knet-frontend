@@ -13,6 +13,13 @@
   <img alt="WebGL" src="https://img.shields.io/badge/WebGL-3D_sin_dependencias-A100FF?labelColor=0A0710">
   <img alt="WebXR" src="https://img.shields.io/badge/WebXR-VR_%2F_AR-E43DD6?labelColor=0A0710">
   <img alt="i18n" src="https://img.shields.io/badge/i18n-ES_%7C_EN-10B981?labelColor=0A0710">
+  <img alt="Playwright" src="https://img.shields.io/badge/E2E-Playwright-2EAD33?logo=playwright&logoColor=white&labelColor=0A0710">
+  <img alt="Vercel" src="https://img.shields.io/badge/Deploy-Vercel-000000?logo=vercel&logoColor=white&labelColor=0A0710">
+</p>
+
+<p align="center">
+  <a href="https://knet-frontend.vercel.app"><b>Ver la app</b></a> ·
+  <a href="https://github.com/KNET-Team-Acc/knet-backend"><b>Backend</b></a>
 </p>
 
 ---
@@ -27,12 +34,14 @@
 6. [Estructura del proyecto](#estructura-del-proyecto)
 7. [Arquitectura](#arquitectura)
 8. [Personalización rápida](#personalización-rápida)
-9. [Datos reales y datos de demostración](#datos-reales-y-datos-de-demostración)
-10. [Privacidad, accesibilidad y rendimiento](#privacidad-accesibilidad-y-rendimiento)
-11. [Despliegue](#despliegue)
-12. [Hoja de ruta](#hoja-de-ruta)
-13. [Equipo](#equipo)
-14. [Créditos y licencias](#créditos-y-licencias)
+9. [Conexión con el backend](#conexión-con-el-backend)
+10. [Datos reales y datos de demostración](#datos-reales-y-datos-de-demostración)
+11. [Privacidad, accesibilidad y rendimiento](#privacidad-accesibilidad-y-rendimiento)
+12. [Pruebas](#pruebas)
+13. [Despliegue](#despliegue)
+14. [Hoja de ruta](#hoja-de-ruta)
+15. [Equipo](#equipo)
+16. [Créditos y licencias](#créditos-y-licencias)
 
 ---
 
@@ -54,7 +63,7 @@ En la mayoría de los eventos, el networking es al azar, las charlas son pasivas
 Este repositorio contiene el **frontend**: una landing cinematográfica con escenas 3D guiadas por el scroll y el **panel del asistente**. El panel tiene 8 secciones, recinto 3D con VR/AR, gamificación, tour guiado y traducción al inglés.
 
 > [!NOTE]
-> Es un **prototipo funcional con datos simulados**: la conexión con LinkedIn MCP, la IA y el backend se simulan en el navegador para poder probar toda la experiencia sin servidores. Ver [Datos reales y datos de demostración](#datos-reales-y-datos-de-demostración).
+> **Funciona con y sin servidor.** Con [knet-backend](https://github.com/KNET-Team-Acc/knet-backend) hay cuentas reales (correo o **Sign In with LinkedIn**), IA con **Claude**, cafés y chat entre asistentes, QR dinámico, check-in NFC y tiempo real. Sin él (o si se cae), la app sigue en **modo local**: guarda todo en el navegador, simula LinkedIn y la IA, y sincroniza lo pendiente al volver la conexión. En producción: https://knet-frontend.vercel.app. Ver [Conexión con el backend](#conexión-con-el-backend).
 
 ---
 
@@ -116,21 +125,22 @@ Un único lienzo WebGL fijo detrás de la página. Miles de partículas cambian 
 
 ### Panel del asistente (8 secciones)
 
-1. **Mi perfil**: datos importados de LinkedIn (MCP) o escritos a mano, editables con lápiz, avatar ilustrado y permisos revocables.
+1. **Mi perfil**: cuenta con correo o LinkedIn, datos importados de LinkedIn o escritos a mano, editables con lápiz, avatar ilustrado y permisos revocables.
 2. **Mis eventos**: inscripciones por día, recinto 3D de cada evento (recorrido a pie, tour, modo manos libres, **VR y AR con WebXR**) y exploración de eventos reales en un mapa de Colombia.
-3. **Mi red**: grafo de conocimiento (personas y temas que los unen), matches sugeridos, credencial con QR dinámico, cafés de networking y chat 1:1.
-4. **Agenda personalizada**: charlas elegidas para tu rol con check-in por QR.
+3. **Mi red**: grafo de conocimiento (personas y temas que los unen), matches sugeridos, credencial con **QR dinámico** firmado por el servidor, **escáner con la cámara**, cafés 1:1 y chat directo con otros asistentes (en tiempo real), y un simulador de networking con IA para practicar con los contactos del catálogo.
+4. **Agenda personalizada**: charlas elegidas para tu industria, con check-in por QR o acercando el teléfono a un **tótem NFC** (Web NFC).
 5. **Misiones**: XP, 5 niveles (Explorador → Innovador), insignias, misiones grupales y experiencias presenciales.
-6. **AI Concierge**: asistente conversacional sobre tu agenda, sesiones, misiones y a quién conocer.
+6. **AI Concierge**: asistente conversacional con **Claude** sobre tu agenda, sesiones, misiones y a quién conocer (cita las sesiones en las que se basa).
 7. **Recompensas**: marcos, peinados y accesorios para el avatar que se desbloquean con XP.
-8. **Dossier**: resumen post-Summit (ideas, contactos, plan de 30 días) **descargable en PDF**, generado sin librerías.
+8. **Dossier**: resumen post-Summit (ideas, contactos, plan de 30 días) escrito por la IA con tu actividad real y **descargable en PDF**, generado sin librerías.
 
 ### Y además
 
 - **Tour guiado**: aparece al conectar LinkedIn por primera vez y se puede repetir desde el menú.
 - **Traducción ES ↔ EN en tiempo real**: recorre el DOM con un diccionario y patrones con variables.
 - **Notificaciones**: centro de avisos y notificaciones emergentes (toasts).
-- **Legal y consentimientos**: términos, privacidad, cookies, reembolsos, créditos y registro trazable de consentimientos.
+- **Legal y consentimientos**: términos, privacidad, cookies, reembolsos, créditos y registro trazable de consentimientos (cadena de hashes en el navegador y en el servidor), con re-aceptación obligatoria cuando cambia la versión legal y «Revocar y borrar mis datos».
+- **Offline primero**: lo que haces sin conexión (misiones, inscripciones, check-ins, conexiones, cafés, mensajes) queda en cola y se envía en orden al volver la red, sin sumar la XP dos veces.
 - **Responsive real**: portátil al 100 % de zoom, tablet y celular.
 
 ---
@@ -146,19 +156,22 @@ Un único lienzo WebGL fijo detrás de la página. Miles de partículas cambian 
 | 3D recinto | WebGL propio + **WebXR** (VR con teletransporte y AR de sobremesa) y rutas con Dijkstra |
 | PDF | Generador de PDF propio (A4, fuentes embebidas) |
 | i18n | Traductor en tiempo real con `MutationObserver` |
+| QR | `qrcode-generator` (dibujar el código) y `BarcodeDetector` con `jsqr` de respaldo (leerlo con la cámara; se carga solo al usarlo) |
+| API | `src/services/api.js`: `fetch` con JWT, refresh automático, timeout y modo offline · `EventSource` para el tiempo real |
+| Pruebas | **Playwright** (E2E con API simulada y contra el backend real) · ESLint |
 | Tipografías | Archivo, Plus Jakarta Sans, Inter y JetBrains Mono (Google Fonts) |
 
-Sin dependencias de runtime aparte de React.
+Dependencias de runtime: React, `qrcode-generator` y `jsqr`. Todo lo demás (3D, PDF, traductor) es propio.
 
 ---
 
 ## Cómo empezar
 
-**Requisitos:** Node.js 18 o superior (se recomienda 20, ver `.nvmrc`) y npm.
+**Requisitos:** Node.js 20 o superior (ver `.nvmrc`) y npm.
 
 ```bash
 # 1. Clonar
-git clone https://github.com/<tu-usuario>/knet-frontend.git
+git clone https://github.com/KNET-Team-Acc/knet-frontend.git
 cd knet-frontend
 
 # 2. Instalar dependencias
@@ -198,8 +211,15 @@ knet-frontend/
 ├── tailwind.config.js            # Colores y fuentes de la marca
 ├── postcss.config.js
 ├── eslint.config.js
+├── playwright.config.js          # E2E con API simulada (preview :4173)
+├── playwright.real.config.js     # E2E contra el backend real (preview :4174)
+├── vercel.json                   # Build, fallback SPA y cabeceras de seguridad
+├── deploy/
+│   └── security-headers.js       # Fuente única de la CSP y demás cabeceras
 ├── public/
-│   └── favicon.webp
+│   ├── favicon.webp
+│   └── _headers · _redirects     # Cabeceras y fallback SPA para Netlify / Cloudflare Pages
+├── e2e/                          # Pruebas Playwright (support/mock-api.js simula la API; real/ usa la de verdad)
 ├── docs/
 │   └── screenshots/              # Imágenes de este README
 └── src/
@@ -214,7 +234,7 @@ knet-frontend/
     │   │                         # ArchitectureSection, TechDetails, TrustSection, ClosingCta
     │   ├── team/                 # TeamSection, Motto
     │   ├── app/                  # AppView: contenedor del panel y botón del tour
-    │   ├── modals/               # 16 diálogos (LinkedIn MCP, avatar, legal, evento, chat, QR, encuesta…)
+    │   ├── modals/               # 18 diálogos (cuenta, LinkedIn, re-aceptación legal, avatar, evento, chat, escáner QR…)
     │   ├── privacy/              # StorageBanner
     │   └── ui/                   # ToastHost, SectionMenuButton
     ├── data/                     # Contenido editable separado de la lógica
@@ -228,6 +248,8 @@ knet-frontend/
     │   ├── privacy.js            # Permisos por campo y textos de autorización
     │   ├── avatar.js · survey.js · networking.js · icons.js · config.js
     │   └── pdf-fonts.js          # Fuentes embebidas del PDF
+    ├── services/
+    │   └── api.js                # Cliente de knet-backend: sesión JWT, refresh, offline, IA, SSE
     ├── lib/
     │   ├── boot.js               # Orden de arranque (una sola vez)
     │   ├── engine/knetApp.js     # Motor de la app: panel, simulador, 3D del recinto, PDF, legal…
@@ -256,6 +278,9 @@ flowchart LR
     D --> G[cinematic/universe.js<br/>WebGL de la landing]
     F -.importa.-> H[(src/data/*)]
     E -.importa.-> I[(i18n/dictionary.js)]
+    F --> J[services/api.js]
+    J -->|REST + JWT · SSE| K[(knet-backend)]
+    F -.sin API.-> L[(localStorage)]
 ```
 
 1. **React** renderiza toda la estructura una sola vez: landing, panel vacío, modales y footer.
@@ -288,9 +313,10 @@ Está organizado por secciones con comentarios. Las principales:
 | Exp 04 · Dossier | Resumen, PDF propio |
 | 05 · Próximos eventos | Mapa de Colombia, afinidad, eventos exclusivos por nivel |
 | RECINTO 3D | WebGL + WebXR, rutas, modos de recorrido |
-| 06 · Mi red | Grafo, credencial QR, matches |
+| 06 · Mi red | Grafo, credencial QR dinámica, escáner, matches, cafés y chat |
+| Cuenta y sync | Entrada con cuenta o sin ella, LinkedIn real, cola `outbox`, XP híbrida, tiempo real |
 | Tour guiado | Recorrido paso a paso por las 8 secciones |
-| LEGAL | Documentos, consentimientos y almacenamiento |
+| LEGAL | Documentos, consentimientos, re-aceptación y almacenamiento |
 
 ---
 
@@ -322,6 +348,40 @@ export const TEAM = [
 
 ---
 
+## Conexión con el backend
+
+La app habla con [knet-backend](https://github.com/KNET-Team-Acc/knet-backend) a través de `src/services/api.js`. La URL sale de `VITE_API_URL`:
+
+| `VITE_API_URL` | Comportamiento |
+|---|---|
+| Sin definir, en `npm run dev` | Usa `http://localhost:4000` (la API local por defecto). |
+| Sin definir, en un build de producción | **Modo local**: sin cuentas, todo en el navegador. |
+| Vacía (`VITE_API_URL=`) | Modo local siempre. |
+| Una URL (`https://knet-backend.vercel.app`) | Cuentas reales y sincronización con esa API. Su origen debe estar en el `CORS_ORIGIN` del backend. |
+
+**Para correr todo en local:**
+
+```bash
+# Terminal 1: el backend (ver su README)
+cd knet-backend && docker compose up -d && npm run db:migrate && npm run db:seed && npm run dev
+
+# Terminal 2: el frontend, apuntando a esa API
+cd knet-frontend && npm run dev          # o, si la API usa otro puerto:
+# echo VITE_API_URL=http://localhost:4100 > .env.local && npm run dev
+```
+
+**Cómo se comporta:**
+
+- **Sesión:** al entrar se elige crear una cuenta, iniciar sesión o «Continuar sin cuenta». La sesión (access + refresh token) vive en `localStorage["knet-auth"]` y se renueva sola; si caduca, la app lo avisa y sigue en local.
+- **LinkedIn:** el botón «Continuar con LinkedIn» aparece solo si el backend responde `linkedin: true` en `/api/auth/providers` (es decir, si tiene `LINKEDIN_CLIENT_ID` y `LINKEDIN_CLIENT_SECRET`). Si no, se usa la importación simulada.
+- **Sin conexión:** si la API no responde (red, timeout de 4 s o 503), la app sigue con lo local y encola las acciones en `A.outbox`; al volver la red se envían en orden. La XP es híbrida (`servidor + local`) y nunca cuenta dos veces lo mismo.
+- **IA:** el Concierge, el Simulador y el Dossier prueban primero `/api/ai/*` (Claude); si falla o no hay cuenta, usan sus respuestas locales sin mostrar error.
+- **Tiempo real:** con una cuenta sincronizada, la app escucha `GET /api/me/stream` (SSE) para recibir al instante solicitudes y aceptaciones de conexión, mensajes y cambios en los cafés.
+
+Más detalle técnico en [`CLAUDE.md`](CLAUDE.md).
+
+---
+
 ## Datos reales y datos de demostración
 
 | Elemento | Tipo |
@@ -329,14 +389,16 @@ export const TEAM = [
 | DevFest Bogotá 2026, DevFest Medellín 2026, Andina Link Smart Cities Expo 2027 | **Reales**: cada tarjeta muestra su fuente («Ver fuente»). Verifica fechas con los organizadores antes de una presentación. |
 | AI & Business Summit (evento principal del panel) | **Demostración**: no aparece en «Explorar»; alimenta la agenda, misiones, recinto y Dossier. |
 | Eventos exclusivos por nivel, ponentes, personas, matches, misiones | **Ficticios**, creados para la demo (los retratos son ilustraciones). |
-| LinkedIn MCP, IA, RAG, NFC, QR dinámico | **Simulados** en el navegador; la arquitectura objetivo se describe en «Ver el detalle técnico». |
-| Perfil, progreso y consentimientos | Se guardan en el **`localStorage`** del navegador. |
+| Cuentas, Sign In with LinkedIn, IA (Claude), QR dinámico, NFC, cafés y chat | **Reales** con el backend. En modo local, LinkedIn, la IA y las respuestas de los contactos se simulan en el navegador. |
+| Contactos del catálogo (matches) | **Ficticios**: sus respuestas en el chat las da el simulador. Con otros asistentes reales, los mensajes son de verdad. |
+| Perfil, progreso y consentimientos | En **PostgreSQL** con una cuenta, y siempre también en el **`localStorage`** del navegador (para seguir sin conexión). |
 
 ---
 
 ## Privacidad, accesibilidad y rendimiento
 
-- **Privacidad**: permisos de LinkedIn por campo (activos por defecto y revocables), aceptación explícita de términos y privacidad, registro trazable de consentimientos y aviso de almacenamiento.
+- **Privacidad**: permisos de LinkedIn por campo (activos por defecto y revocables), aceptación explícita de términos y privacidad, registro trazable de consentimientos, aviso de almacenamiento y borrado de la cuenta en el servidor. A la IA solo llegan los datos que cubren los permisos activos.
+- **Seguridad**: CSP estricta sin scripts inline ni `eval`, HSTS y demás cabeceras (ver [Despliegue](#despliegue)). La cámara solo se pide al abrir el escáner.
 - **Accesibilidad**: estructura semántica, `aria-*` en pestañas y diálogos, navegación con teclado (también en el tour: flechas y `Esc`) y respeto a `prefers-reduced-motion`.
 - **Rendimiento**: el 3D se pausa fuera de la landing y en pestañas ocultas, baja la resolución si el equipo va justo y usa menos partículas en móviles.
 
@@ -350,7 +412,7 @@ export const TEAM = [
 
 ## Despliegue
 
-**Producción actual:** https://knet-frontend.vercel.app (proyecto `knet-frontend` en Vercel), con `VITE_API_URL=https://knet-backend.vercel.app`. Se despliega con `npx vercel deploy --prod` hasta que el repositorio se conecte a la app de GitHub de Vercel; desde entonces, cada push a `main` desplegará solo.
+**Producción actual:** https://knet-frontend.vercel.app (proyecto `knet-frontend` en Vercel), con `VITE_API_URL=https://knet-backend.vercel.app`. El repositorio está conectado a Vercel: cada push a `main` despliega producción y cada PR tiene su preview. A mano: `npx vercel deploy --prod`.
 
 El build es estático (`dist/`). Para producción:
 
@@ -372,9 +434,11 @@ El build es estático (`dist/`). Para producción:
 - [ ] Pasar cada pestaña del panel a componentes con estado (React context o Zustand), empezando por **Mi perfil** y **Misiones**.
 - [ ] Mover el contenido de las 4 experiencias y del simulador de plantillas a JSX.
 - [x] Backend real: cuentas (correo y LinkedIn OAuth), IA (Concierge, Simulador y Dossier con RAG ligero) y consentimientos en PostgreSQL.
-- [ ] Consumir el tiempo real (SSE de `/api/me/stream`) en el panel.
-- [x] Pruebas end-to-end (Playwright) y CI.
+- [x] Cafés 1:1 y chat directo sincronizados, QR dinámico con escáner real y check-in con Web NFC.
+- [x] Consumir el tiempo real (SSE de `/api/me/stream`) en el panel.
+- [x] Pruebas end-to-end (Playwright), CI y despliegue continuo en Vercel.
 - [ ] Pruebas unitarias (Vitest).
+- [ ] Guardar en el servidor el chat del Concierge, las notificaciones y las recompensas del avatar.
 
 ---
 
@@ -391,8 +455,8 @@ El build es estático (`dist/`). Para producción:
 ## Créditos y licencias
 
 - Tipografías: Archivo, Plus Jakarta Sans, Inter y JetBrains Mono (SIL Open Font License, vía Google Fonts).
-- React y Vite (MIT), Tailwind CSS (MIT).
+- React y Vite (MIT), Tailwind CSS (MIT), `qrcode-generator` (MIT), `jsqr` (Apache-2.0), Playwright (Apache-2.0).
 - Escenas 3D, recinto, generador de PDF, ilustraciones del avatar y del emblema: propios del equipo KNET.
 - Código bajo licencia [MIT](LICENSE) © 2026 KNET Team.
 
-<p align="center"><sub>© 2026 Equipo KNET · Prototipo funcional con datos simulados</sub></p>
+<p align="center"><sub>© 2026 Equipo KNET · <a href="https://knet-frontend.vercel.app">knet-frontend.vercel.app</a></sub></p>
