@@ -3445,7 +3445,7 @@ export function bootKnetApp() {
   function tourRender() {
     const total = TOUR.length, p = PERSONAS[A.ind] || {}, name = A.profile && A.profile.name ? first(A.profile.name) : first(p.name || "");
     const card = tourEl.querySelector(".tour-card"); let html;
-    if (tourI === 0) html = `<span class="tour-k">${svg("compass")}Tour guiado · 1 minuto</span><h3>Hola${name ? ", " + esc(name) : ""}. Te muestro KNET</h3><p>Un recorrido rápido por las 8 secciones de tu panel para que sepas dónde está cada cosa.</p>
+    if (tourI === 0) html = `<span class="tour-k">${svg("compass")}Tour guiado · 1 minuto</span><h3>Hola${name ? ", " + esc(name) : ""}. Te muestro KNET</h3><p>Un recorrido rápido por las 8 secciones de tu panel para facilitar tu navegación desde el primer momento.</p>
       <div class="tour-actions"><button type="button" class="btn btn-ghost btn-sm" data-tour="skip">Ahora no</button><button type="button" class="btn btn-primary btn-sm" data-tour="next">Empezar tour${svg("arrow")}</button></div>`;
     else if (tourI > total) html = `<span class="tour-k">${svg("check")}Tour completo</span><h3>¡Listo! Ya conoces KNET</h3><p>Puedes repetir este recorrido cuando quieras con el botón «Tour guiado por KNET» del menú.</p>
       <div class="tour-actions"><button type="button" class="btn btn-primary btn-sm" data-tour="end">Empezar a usar KNET</button></div>`;
