@@ -2,6 +2,8 @@
  * Panel de creador de eventos (knet-frontend#21): «Mis eventos › Mis eventos creados», solo para cuentas con
  * accountRole organizer/admin. Asistente por pasos contra /api/admin/* (api.admin en src/services/api.js):
  *   1 Detalles · 2 Días y agenda · 3 Charlas · 4 Speakers · 5 Misiones · 6 Recinto 3D · 7 Vista previa y publicar.
+ * Un admin elige entre «Mis eventos» y «Todos los eventos» (st.scope): ve y edita los de cualquier organizador; los del
+ * catálogo sembrado (catalog: true) salen en solo lectura porque db:seed los reescribe en cada despliegue.
  * Cada paso guarda en el servidor (borrador). Publicar lo hace visible en GET /api/events: el motor lo integra
  * como evento hosted (mergeEvents) con su agenda, misiones y recinto.
  *
@@ -41,7 +43,9 @@ export function createOrganizer(ctx) {
   const { api, ApiError, isOffline, t, tf, esc, svg, toast } = ctx;
   // Plural: «org.x.one» para 1 (p. ej. «1 charla»), «org.x» para el resto
   const tn = (k, n) => tf(n === 1 ? `${k}.one` : k, n);
-  const st = { list: null, loading: false, cur: null, step: 0, busy: false, msg: null, ask: null, days: null, agenda: null, sDay: 0, dirty: false };
+  const st = { list: null, loading: false, cur: null, step: 0, busy: false, msg: null, ask: null, days: null, agenda: null, sDay: 0, dirty: false, scope: "mine" };
+  const allScope = () => st.scope === "all" && ctx.isAdmin();
+  const notMine = (e) => !!(e && e.owner && e.owner.id && e.owner.id !== ctx.myId());
   // Repinta el panel (lo escrito y no guardado se descarta: dirty evita que un refresh() del motor lo borre antes)
   const rr = () => { st.dirty = false; ctx.rerender(); };
 
@@ -90,7 +94,7 @@ export function createOrganizer(ctx) {
   /* ---------- Carga ---------- */
   async function loadList() {
     if (st.loading) return; st.loading = true;
-    try { st.list = (await api.admin.listEvents()).events || []; setMsg(null); }
+    try { st.list = (await api.admin.listEvents({ all: allScope() })).events || []; setMsg(null); }
     catch (e) { st.list = st.list || []; setMsg("err", errText(e)); if (e instanceof ApiError && e.status === 403) ctx.onRoleLost(); }
     finally { st.loading = false; rr(); }
   }
@@ -108,21 +112,26 @@ export function createOrganizer(ctx) {
   const msgHTML = () => st.msg ? `<p data-live class="org-msg ${st.msg.type === "err" ? "is-err" : "is-ok"}" role="${st.msg.type === "err" ? "alert" : "status"}">${svg(st.msg.type === "err" ? "info" : "check")}<span>${esc(st.msg.text)}</span></p>` : "";
   const busyAttr = () => (st.busy ? "disabled aria-busy=\"true\"" : "");
 
+  function itemActions(e) {
+    if (e.catalog) return `<span class="chip" title="${esc(t("org.catalogHint"))}">${svg("lock")}${t("org.catalog")}</span>`;
+    return `${statusChip(e.status)}<button type="button" class="btn btn-ghost btn-sm" data-org="edit" data-v="${esc(e.id)}" ${busyAttr()}>${svg("pen")}${t("org.edit")}</button>
+              <button type="button" class="pill-btn ${st.ask === "del:" + e.id ? "danger" : ""}" data-org="del" data-v="${esc(e.id)}" ${busyAttr()}>${st.ask === "del:" + e.id ? t("org.delSure") : t("org.del")}</button>`;
+  }
   function listHTML() {
-    const evs = st.list || [];
+    const evs = st.list || [], all = allScope();
     return `<article class="pcard" id="orgCard">
-      <header class="pcard-h"><div><span class="pcard-k">${t("org.kicker")}</span><h2 class="pcard-t">${t("org.title")}</h2><p class="text-mute text-[14px]" style="margin-top:4px">${t("org.lede")}</p></div>
+      <header class="pcard-h"><div><span class="pcard-k">${t(ctx.isAdmin() ? "org.kickerAdmin" : "org.kicker")}</span><h2 class="pcard-t">${t(all ? "org.titleAll" : "org.title")}</h2><p class="text-mute text-[14px]" style="margin-top:4px">${t(all ? "org.ledeAll" : "org.lede")}</p></div>
         <button type="button" class="btn btn-primary btn-sm" data-org="new" ${busyAttr()}>${svg("spark")}${t("org.create")}</button></header>
+      ${ctx.isAdmin() ? `<div class="me-seg org-scope" role="tablist" aria-label="${t("org.scopeLbl")}">${["mine", "all"].map((k) => `<button type="button" role="tab" class="me-seg-b" data-org="scope" data-v="${k}" aria-selected="${st.scope === k}" ${busyAttr()}>${svg(k === "mine" ? "pen" : "globe")}${t("org.scope." + k)}</button>`).join("")}</div>` : ""}
       ${msgHTML()}
       ${st.list === null || st.loading && !evs.length ? `<div class="dempty">${svg("clock")} ${t("org.loading")}</div>`
         : evs.length ? `<ul class="org-list">${evs.map((e) => `<li class="org-item" data-org-ev="${esc(e.id)}">
             <span class="org-cover" style="--a:${esc((e.info && e.info.tone && e.info.tone[0]) || "#1E1452")};--b:${esc((e.info && e.info.tone && e.info.tone[1]) || "#0E3A4A")}" aria-hidden="true">${esc((e.name || "?").slice(0, 1).toUpperCase())}</span>
             <div class="min-w-0"><div class="org-item-t">${esc(e.name)}</div>
-              <div class="me-meta"><span>${svg("pin")}${esc(e.city)}</span><span>${svg("calendar")}${esc(e.dateLabel || t("org.noDates"))}</span><span>${svg("mic")}${tn("org.countTalks", e.counts ? e.counts.sessions : 0)}</span><span>${svg("users")}${tn("org.countRegs", e.counts ? e.counts.registrations : 0)}</span></div></div>
-            <div class="org-item-a">${statusChip(e.status)}<button type="button" class="btn btn-ghost btn-sm" data-org="edit" data-v="${esc(e.id)}" ${busyAttr()}>${svg("pen")}${t("org.edit")}</button>
-              <button type="button" class="pill-btn ${st.ask === "del:" + e.id ? "danger" : ""}" data-org="del" data-v="${esc(e.id)}" ${busyAttr()}>${st.ask === "del:" + e.id ? t("org.delSure") : t("org.del")}</button></div>
+              <div class="me-meta">${all && notMine(e) ? `<span class="org-owner">${svg("users")}${esc(tf("org.by", e.owner.name || e.owner.email || "?"))}</span>` : ""}<span>${svg("pin")}${esc(e.city)}</span><span>${svg("calendar")}${esc(e.dateLabel || t("org.noDates"))}</span><span>${svg("mic")}${tn("org.countTalks", e.counts ? e.counts.sessions : 0)}</span><span>${svg("users")}${tn("org.countRegs", e.counts ? e.counts.registrations : 0)}</span></div></div>
+            <div class="org-item-a">${itemActions(e)}</div>
           </li>`).join("")}</ul>`
-        : `<div class="me-empty">${svg("calendar")}<span>${t("org.empty")}</span><button type="button" class="pill-btn" data-org="new">${t("org.create")} ${svg("arrow")}</button></div>`}
+        : `<div class="me-empty">${svg("calendar")}<span>${t(all ? "org.emptyAll" : "org.empty")}</span><button type="button" class="pill-btn" data-org="new">${t("org.create")} ${svg("arrow")}</button></div>`}
     </article>`;
   }
 
@@ -277,6 +286,7 @@ export function createOrganizer(ctx) {
     return `<article class="pcard" id="orgCard">
       <header class="pcard-h"><div><span class="pcard-k">${st.cur.id ? t("org.editing") : t("org.newEv")}</span><h2 class="pcard-t">${esc(st.cur.name || t("org.untitled"))}</h2></div>
         <div class="flex items-center gap-2">${st.cur.id ? statusChip(st.cur.status) : ""}<button type="button" class="btn btn-ghost btn-sm" data-org="back">${svg("chevl")}${t("org.back")}</button></div></header>
+      ${notMine(st.cur) ? `<p class="org-msg is-admin" role="note">${svg("shield")}<span>${esc(tf("org.adminEditing", st.cur.owner.name || st.cur.owner.email || "?"))}</span></p>` : ""}
       ${stepperHTML()}
       <section class="org-body" aria-labelledby="orgStepT"><h3 class="org-step-t" id="orgStepT">${tf("org.stepOf", st.step + 1, ORG_STEPS.length)} · ${t("org.step." + k)}</h3>${msgHTML()}${body}</section>
       ${st.cur.id ? `<div class="org-nav">${st.step > 0 ? `<button type="button" class="btn btn-ghost btn-sm" data-org="step" data-v="${st.step - 1}">${svg("chevl")}${t("org.prev")}</button>` : "<span></span>"}${st.step < ORG_STEPS.length - 1 ? `<button type="button" class="btn btn-ghost btn-sm" data-org="step" data-v="${st.step + 1}">${t("org.next")}${svg("chev")}</button>` : ""}</div>` : ""}
@@ -362,6 +372,7 @@ export function createOrganizer(ctx) {
     const k = b.dataset.org, v = b.dataset.v;
     if (k === "new") { startNew(); rr(); }
     else if (k === "edit") edit(v);
+    else if (k === "scope") { if (st.scope !== v) { st.scope = v === "all" ? "all" : "mine"; st.list = null; st.ask = null; setMsg(null); rr(); loadList(); } }
     else if (k === "del") del(v);
     else if (k === "back") backToList();
     else if (k === "step") { if (ORG_STEPS[st.step] === "days") readDaysForm(b.closest("#orgCard").querySelector("[data-org-form=days]")); st.step = Math.max(0, Math.min(ORG_STEPS.length - 1, +v)); setMsg(null); st.ask = null; rr(); }
@@ -407,7 +418,7 @@ export function createOrganizer(ctx) {
     return true;
   }
   /* Nueva sesión de otra cuenta o rol retirado: olvidar lo cargado */
-  function reset() { Object.assign(st, { list: null, loading: false, cur: null, step: 0, busy: false, msg: null, ask: null, days: null, agenda: null, sDay: 0, dirty: false }); }
+  function reset() { Object.assign(st, { list: null, loading: false, cur: null, step: 0, busy: false, msg: null, ask: null, days: null, agenda: null, sDay: 0, dirty: false, scope: "mine" }); }
 
   return { html, open, startNew, onClick, onSubmit, onInput, reset, get editing() { return !!st.cur; }, get dirty() { return st.dirty; } };
 }

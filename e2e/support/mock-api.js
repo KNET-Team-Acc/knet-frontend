@@ -45,17 +45,27 @@ export async function installMockApi(page, opts = {}) {
     consents: [],
     deleted: false,
     tokens: 0,
-    admin: new Map(),        // eventos del panel de creador: id → evento con info, venue, speakers, sessions, missions
+    // eventos del panel de creador: id → evento con info, venue, speakers, sessions, missions (owner: otro organizador; si no, el usuario)
+    admin: new Map((opts.adminEvents || []).map((e) => [e.id, { venueName: "", dateLabel: "", lat: null, lon: null, tags: [], industries: [], description: "", sourceUrl: null,
+      organizer: "", status: "draft", info: null, venue: null, days: [], speakers: [], sessions: [], missions: [], ...e }])),
     adminSeq: 0,
   };
 
   /* ---- /api/admin/* (forma de knet-backend/src/routes/admin/events.js) ---- */
-  const adminView = (e) => ({ ...publicEvent(e), status: e.status, ownerId: USER_ID, info: e.info, venue: e.venue, speakers: e.speakers, sessions: e.sessions, missions: e.missions,
+  const ownerOf = (e) => e.owner || { id: USER_ID, name: state.user.name, email: state.user.email };
+  const adminView = (e) => ({ ...publicEvent(e), status: e.status, ownerId: ownerOf(e).id, owner: ownerOf(e), catalog: false, info: e.info, venue: e.venue, speakers: e.speakers, sessions: e.sessions, missions: e.missions,
     counts: { sessions: e.sessions.length, speakers: e.speakers.length, missions: e.missions.length, registrations: 0 } });
   const invalid = (path, message) => [400, { error: "validation_error", message: "Datos inválidos", issues: [{ path, message }] }];
-  function adminRoute(method, path, body) {
+  // Un evento del catálogo sembrado tal como lo lista GET /api/admin/events?all=1 (solo lectura)
+  const CATALOG = { id: "and", name: "Andina Link Smart Cities Expo 2027", kind: "real", city: "Cartagena", days: [], tags: ["Datos"], industries: ["tech"], status: "published",
+    ownerId: null, owner: null, catalog: true, hosted: false, counts: { sessions: 0, speakers: 0, missions: 0, registrations: 0 } };
+  function adminRoute(method, path, body, query) {
     const b = body || {};
-    if (path === "/api/admin/events" && method === "GET") return [200, { events: [...state.admin.values()].map(adminView), role: state.user.accountRole }];
+    if (path === "/api/admin/events" && method === "GET") {
+      const all = state.user.accountRole === "admin" && query.get("all") === "1";
+      const evs = [...state.admin.values()].filter((e) => all || ownerOf(e).id === USER_ID).map(adminView);
+      return [200, { events: all ? [...evs, CATALOG] : evs, role: state.user.accountRole }];
+    }
     if (path === "/api/admin/events" && method === "POST") {
       if (!b.name || b.name.trim().length < 3) return invalid("name", "El nombre debe tener al menos 3 caracteres");
       const id = `o${String(++state.adminSeq).padStart(9, "0")}`;
@@ -66,6 +76,7 @@ export async function installMockApi(page, opts = {}) {
     const m = /^\/api\/admin\/events\/([a-z0-9]+)(?:\/([a-z]+))?(?:\/([a-z0-9-]+))?$/.exec(path);
     const e = m && state.admin.get(m[1]);
     if (!e) return [404, { error: "not_found", message: "No existe el evento" }];
+    if (ownerOf(e).id !== USER_ID && state.user.accountRole !== "admin") return [403, { error: "not_owner", message: "Solo puedes editar los eventos que creaste" }];
     const [, , sub, child] = m;
     if (!sub) {
       if (method === "GET") return [200, { event: adminView(e) }];
@@ -152,7 +163,7 @@ export async function installMockApi(page, opts = {}) {
     // Panel de creador de eventos (simplificado: un solo organizador; mismas formas que knet-backend)
     if (path.startsWith("/api/admin/")) {
       if (!["organizer", "admin"].includes(state.user.accountRole)) return json(403, { error: "forbidden_role", message: "Tu cuenta no tiene permisos de organizador de eventos" });
-      const r = adminRoute(method, path, body);
+      const r = adminRoute(method, path, body, url.searchParams);
       return json(r[0], r[1]);
     }
     if (state.deleted && path.startsWith("/api/me")) return json(401, { error: "invalid_token", message: "La cuenta ya no existe" });

@@ -186,3 +186,51 @@ test("textos del panel en inglés", async ({ page }) => {
   await expect(msg(page)).toHaveText("Enter a name of at least 3 characters.");
   await expect(card(page).locator(".org-step").first()).toContainText("Details");
 });
+
+test("admin: ve los eventos de todos los organizadores, edita el de otro y el catálogo queda en solo lectura", async ({ page }) => {
+  const OTHER = { id: "o000000077", name: "Feria de IA de Medellín", city: "Medellín", description: "Evento de otra organizadora para la prueba del admin.",
+    owner: { id: "99999999-0000-4000-8000-000000000077", name: "Laura Organizadora", email: "laura@knet.test" } };
+  const api = await installMockApi(page, { user: { accountRole: "admin" }, adminEvents: [OTHER] });
+  await seedSession(page);
+  await page.goto("/#miseventos");
+  await waitSync(api);
+  await expect.poll(async () => (await engineState(page)).accountRole).toBe("admin");
+  await page.locator("#orgTab").click();
+
+  // «Mis eventos»: solo los suyos (ninguno). «Todos los eventos»: el de la otra organizadora y el del catálogo
+  await expect(card(page).locator(".org-item")).toHaveCount(0);
+  await card(page).locator('[data-org="scope"][data-v="all"]').click();
+  await expect(card(page).locator(".pcard-t")).toHaveText("Todos los eventos");
+  const other = card(page).locator(`[data-org-ev="${OTHER.id}"]`);
+  await expect(other).toContainText("De Laura Organizadora");
+  const cat = card(page).locator('[data-org-ev="and"]');
+  await expect(cat).toContainText("Catálogo · solo lectura");
+  await expect(cat.locator('[data-org="edit"], [data-org="del"]')).toHaveCount(0);
+  expect(api.log.some((r) => r.path === "/api/admin/events" && r.method === "GET")).toBe(true);
+
+  // Edita el evento de otra persona: aviso de admin y el cambio se guarda en su evento
+  await other.locator('[data-org="edit"]').click();
+  await expect(card(page).locator(".org-msg.is-admin")).toContainText("Estás editando como admin un evento de Laura Organizadora");
+  const f1 = card(page).locator('[data-org-form="details"]');
+  await f1.locator('[name="venueName"]').fill("Plaza Mayor");
+  await f1.locator('[name="tags"]').fill("IA");
+  await f1.locator('[name="ind"][value="tech"]').check();
+  await f1.locator('button[type="submit"]').click();
+  await expect(card(page).locator(".org-step.is-cur")).toContainText("Días y agenda");
+  expect(api.admin.get(OTHER.id)).toMatchObject({ venueName: "Plaza Mayor", owner: { name: "Laura Organizadora" } });
+
+  // Al volver sigue en «Todos los eventos»
+  await card(page).locator('[data-org="back"]').click();
+  await expect(card(page).locator('[data-org="scope"][data-v="all"]')).toHaveAttribute("aria-selected", "true");
+  await expect(card(page).locator(`[data-org-ev="${OTHER.id}"]`)).toBeVisible();
+});
+
+test("un organizador no ve el selector de admin", async ({ page }) => {
+  const api = await installMockApi(page, { user: { accountRole: "organizer" } });
+  await seedSession(page);
+  await page.goto("/#miseventos");
+  await waitSync(api);
+  await page.locator("#orgTab").click();
+  await expect(card(page)).toBeVisible();
+  await expect(card(page).locator('[data-org="scope"]')).toHaveCount(0);
+});

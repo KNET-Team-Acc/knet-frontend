@@ -3457,6 +3457,8 @@ export function bootKnetApp() {
   function isOrganizer() { return apiEnabled && A.connected && A.apiLinked && accountReady() && ["organizer", "admin"].includes(A.accountRole); }
   const org = createOrganizer({
     api, ApiError, isOffline, t, tf, esc, svg, toast, avatarSVG, initialsOf, dayTxt,
+    isAdmin: () => A.accountRole === "admin",
+    myId: () => sessionUserId() || getUserId(),
     industries: () => IND,
     cities: () => CO_CITIES.map(c => c[0]),
     cityPos: (n) => { const c = CO_CITIES.find(x => x[0] === n); return c ? [c[1], c[2]] : null; },

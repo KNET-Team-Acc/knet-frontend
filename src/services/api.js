@@ -250,7 +250,8 @@ export const api = {
   // Panel de creador de eventos (solo accountRole organizer/admin; si no, 403 forbidden_role). Un organizador
   // solo edita sus eventos (403 not_owner). Los eventos nacen como borrador y salen en /api/events al publicarlos.
   admin: {
-    listEvents: () => request("GET", "/api/admin/events"),
+    // all: solo admin → eventos de todos los organizadores y los del catálogo (catalog: true, solo lectura)
+    listEvents: ({ all = false } = {}) => request("GET", `/api/admin/events${all ? "?all=1" : ""}`),
     createEvent: (body) => request("POST", "/api/admin/events", body),
     getEvent: (id) => request("GET", `/api/admin/events/${enc(id)}`),
     updateEvent: (id, patch) => request("PATCH", `/api/admin/events/${enc(id)}`, patch),

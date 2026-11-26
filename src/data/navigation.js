@@ -149,6 +149,10 @@ const ORG_ES = {
   "org.hostedChip": "Publicado en KNET", "org.agendaK": "Agenda oficial", "org.agendaLede": "Agenda publicada por el organizador en KNET. Cada check-in alimenta el resumen de este evento.",
   "org.agendaEmpty": "El organizador aún no ha publicado charlas para este día.", "org.with": "Con {0}", "org.topic": "Tema: {0}", "org.official": "Sesión de la agenda oficial",
   "org.roomTbc": "Sala por confirmar", "org.evMissions": "Misiones de tus eventos", "org.missionDone": "Completada",
+  "org.kickerAdmin": "Panel de admin", "org.scopeLbl": "Qué eventos ver", "org.scope.mine": "Mis eventos", "org.scope.all": "Todos los eventos", "org.titleAll": "Todos los eventos",
+  "org.ledeAll": "Como admin ves los eventos de todos los organizadores y puedes editarlos, publicarlos, volverlos a borrador o eliminarlos. Los del catálogo son de solo lectura.",
+  "org.emptyAll": "Aún no hay eventos creados por organizadores.", "org.by": "De {0}", "org.catalog": "Catálogo · solo lectura",
+  "org.catalogHint": "Los eventos del catálogo se gestionan en el repositorio (db/data) y se actualizan en cada despliegue.", "org.adminEditing": "Estás editando como admin un evento de {0}. Los cambios se guardan en su evento.",
   "org.countTalks.one": "1 charla", "org.countRegs.one": "1 inscrito", "org.chk.days.one": "1 día", "org.chk.sessions.one": "1 charla", "org.chk.speakers.one": "1 speaker", "org.chk.missions.one": "1 misión", "org.ven.zones.one": "1 zona",
 };
 const ORG_EN = {
@@ -211,6 +215,10 @@ const ORG_EN = {
   "org.hostedChip": "Published on KNET", "org.agendaK": "Official agenda", "org.agendaLede": "Agenda published by the organizer on KNET. Every check-in feeds this event’s summary.",
   "org.agendaEmpty": "The organizer hasn’t published talks for this day yet.", "org.with": "With {0}", "org.topic": "Topic: {0}", "org.official": "Official agenda session",
   "org.roomTbc": "Room to be confirmed", "org.evMissions": "Missions from your events", "org.missionDone": "Completed",
+  "org.kickerAdmin": "Admin dashboard", "org.scopeLbl": "Which events to show", "org.scope.mine": "My events", "org.scope.all": "All events", "org.titleAll": "All events",
+  "org.ledeAll": "As an admin you see every organizer’s events and can edit, publish, move back to draft or delete them. Catalog events are read-only.",
+  "org.emptyAll": "No organizer has created events yet.", "org.by": "By {0}", "org.catalog": "Catalog · read-only",
+  "org.catalogHint": "Catalog events are managed in the repository (db/data) and updated on every deploy.", "org.adminEditing": "You’re editing, as an admin, an event by {0}. Changes are saved to their event.",
   "org.countTalks.one": "1 talk", "org.countRegs.one": "1 registered", "org.chk.days.one": "1 day", "org.chk.sessions.one": "1 talk", "org.chk.speakers.one": "1 speaker", "org.chk.missions.one": "1 mission", "org.ven.zones.one": "1 zone",
 };
 Object.assign(I18N.es, ORG_ES);
