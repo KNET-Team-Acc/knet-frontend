@@ -211,8 +211,26 @@ export function bootKnetApp() {
   });
   showXp("onb");
 
-  /* ---------- Simulator ---------- */
-  const S = { ind: "tech", obj: "negocios", xp: 0, done: new Set(), view: "agenda", busy: false, badges: new Set() };
+  /* ---------- Simulator · «Vista previa de tu evento» ----------
+     Solo datos reales del catálogo (EVENTS / EV_INFO de src/data/events.js): sin charlas, salas ni cargos inventados.
+     Fase A = 100 % frontend; la vista previa con IA del servidor (endpoint público) llegará en otra PR del backend.
+     Textos con clave sim.* en I18N (src/data/navigation.js). LANG y t() se declaran más abajo, así que aquí se lee
+     el idioma del documento; applyLang() vuelve a pintar la vista previa (simRelang). */
+  const S = { ind: "tech", obj: "negocios", ev: null, xp: 0, done: new Set(), view: "evento", busy: false };
+  const SIM_VIEWS = ["evento", "formato", "misiones", "concierge"];
+  const SIM_OBJ = { aprender: "sim.objAprender", negocios: "sim.objNegocios", talento: "sim.objTalento" };
+  const SIM_TAKE = { aprender: 0, negocios: 1, talento: 1 }; // qué punto de «Lo que te llevas» resalta cada objetivo
+  const SIM_M = [["qr", "sim.m1", "sim.m1s", 100], ["users", "sim.m2", "sim.m2s", 200], ["star", "sim.m3", "sim.m3s", 80]];
+  const simLang = () => (document.documentElement.lang === "en" ? "en" : "es");
+  const st = (k, ...a) => String(I18N[simLang()][k] ?? I18N.es[k] ?? k).replace(/\{(\d+)\}/g, (_, i) => (a[+i] ?? ""));
+  const sEsc = (x) => String(x ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const sp = (x) => `<span>${sEsc(x)}</span>`; // cada dato en su nodo para que el traductor en vivo lo encuentre
+  const simUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : "");
+  const simAff = (ev, ind) => { const mine = IND_INTERESTS[ind] || [], overlap = (ev.tags || []).filter(x => mine.includes(x)), inInd = (ev.ind || []).includes(ind);
+    return { score: Math.min(97, 52 + overlap.length * 14 + (inInd ? 12 : 0)), overlap, inInd }; };
+  const simDays = (ev) => (ev.days || EV_DAYS[ev.id] || []).length ? 1 : 0;
+  const simRank = () => EVENTS.filter(e => !e.lvl && !e.demo).map((ev, i) => ({ ev, a: simAff(ev, S.ind), i }))
+    .sort((x, y) => y.a.score - x.a.score || simDays(y.ev) - simDays(x.ev) || x.i - y.i);
   const indGrid = $("#indGrid");
   indGrid.innerHTML = Object.entries(IND).map(([k, v]) => `<button class="ind-btn" aria-pressed="${k === S.ind}" data-ind="${k}"><span class="t">${v.label}</span><span class="d">${v.desc}</span></button>`).join("");
   indGrid.addEventListener("click", e => { const b = e.target.closest(".ind-btn"); if (!b || S.busy) return; S.ind = b.dataset.ind; $$(".ind-btn", indGrid).forEach(x => x.setAttribute("aria-pressed", x === b)); generate(); });
@@ -226,83 +244,103 @@ export function bootKnetApp() {
     $("#xpLabel").textContent = fmt(S.xp) + " XP";
     $("#lvlLabel").textContent = `Nivel ${lv} · ${LEVELS[Math.min(lv - 1, LEVELS.length - 1)]}`;
     $("#xpNext").textContent = `${fmt(500 - into)} XP para Nivel ${lv + 1}`;
-    $("#badges").innerHTML = BADGES.map(b => { const on = S.xp >= b.at || (b.at === 1); return `<div class="badge-tile ${on ? "" : "locked"}"><div class="ico-tile" style="background:${on ? "rgba(16,185,129,.16);color:var(--t-emerald)" : "rgba(var(--w-rgb),.06);color:var(--muted)"}">${svg(on ? b.icon : "lock")}</div><div class="font-semibold leading-tight">${b.name}</div><div class="text-[11px] text-mute">${on ? "Obtenida" : b.at + " XP"}</div></div>`; }).join("");
   };
+  const simCard = (inner) => `<div class="rounded-xl p-3 bg-white/[.035] border border-white/10 min-w-0">${inner}</div>`;
+  const simLabel = (k) => `<div class="mono text-[11px] uppercase tracking-[.12em] text-mute">${st(k)}</div>`;
   const renderViews = (skeleton) => {
-    const d = IND[S.ind];
-    $("#appRole").textContent = d.role;
-    $("#appInd").textContent = `${d.label} · Objetivo: ${OBJ[S.obj]}`;
+    const list = simRank(), top = list[0];
+    $(".sim-tabs").setAttribute("aria-label", st("sim.tabsAria"));
+    if (!top) {
+      S.ev = null; $("#evName").textContent = st("sim.empty"); $("#evSub").textContent = ""; $("#evTile").textContent = ""; $("#evSrc").hidden = true;
+      SIM_VIEWS.forEach(v => $("#view-" + v).innerHTML = ""); $("#evOthers").innerHTML = ""; return;
+    }
+    const ev = top.ev, I = EV_INFO[ev.id] || {}, d = IND[S.ind], tone = Array.isArray(I.tone) && I.tone.length === 2 ? I.tone : ["#A100FF", "#7500C0"];
+    S.ev = ev.id;
+    $("#evTile").style.background = `linear-gradient(135deg,${tone[0]},${tone[1]})`;
+    $("#evTile").textContent = String(ev.name || "").split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase();
+    $("#evName").textContent = ev.name;
+    $("#evSub").innerHTML = `${sp(ev.city)} · ${sp(ev.date)}`;
+    const src = simUrl(ev.url), srcA = $("#evSrc");
+    srcA.hidden = !src; if (src) { srcA.href = src; srcA.setAttribute("aria-label", st("sim.sourceAria", ev.name)); }
     if (skeleton) {
       const sk = '<div class="h-[68px] rounded-xl bg-white/[.04] border border-white/10 shimmer"></div>';
-      ["agenda", "misiones", "matches"].forEach(v => $("#view-" + v).innerHTML = sk + sk + sk);
+      ["evento", "formato", "misiones"].forEach(v => $("#view-" + v).innerHTML = sk + sk + sk);
       return;
     }
-    $("#view-agenda").innerHTML = d.agenda.map(([t, k, ttl, room, why]) => `
-      <div class="agenda-item"><div class="time tabular">${t}</div><div class="min-w-0">
-        <div class="flex flex-wrap items-center gap-2"><span class="chip">${k}</span><span class="text-[12px] text-mute flex items-center gap-1"><span class="ico" style="width:12px;height:12px">${svg("pin")}</span>${room}</span></div>
-        <div class="font-semibold mt-1.5 leading-snug">${ttl}</div>
-        <div class="text-[13px] text-accentsoft mt-1 flex gap-1.5 items-start"><span class="ico flex-none" style="width:14px;height:14px;margin-top:3px">${svg("spark")}</span><span>${why}</span></div>
-      </div></div>`).join("");
-    $("#view-misiones").innerHTML = `<p class="text-[13px] text-mute">Máximo 3 misiones activas, priorizadas por tu ubicación y agenda.</p>` + d.missions.map(([ic, ttl, sub, xp], i) => {
-      const id = S.ind + i, done = S.done.has(id);
-      return `<div class="mission ${done ? "done" : ""}" data-m="${id}">
+    const take = (I.llevas || [])[SIM_TAKE[S.obj]];
+    $("#view-evento").innerHTML = `
+      <p class="text-[14px] leading-relaxed">${sp(ev.desc)}</p>
+      ${simCard(`<div class="flex items-center justify-between gap-3"><span class="font-semibold leading-snug">${st("sim.aff")}</span><span class="mono tabular text-accentsoft" data-sim-aff>${top.a.score}%</span></div>
+        <div class="text-[13px] text-mute mt-1">${st("sim.affWhy", sp(d.label), top.a.overlap.length ? top.a.overlap.map(sp).join(", ") : st("sim.affNone"))}</div>`)}
+      <div class="flex flex-wrap gap-2">${(ev.tags || []).map(x => `<span class="chip">${sEsc(x)}</span>`).join("")}</div>
+      <div class="text-[13px] text-mute flex items-center gap-1.5"><span class="ico flex-none" style="width:14px;height:14px">${svg("pin")}</span>${sp(ev.venue)}</div>
+      ${ev.org ? `<div class="text-[13px] text-mute">${st("sim.org", sp(ev.org))}</div>` : ""}
+      ${take ? `<div class="text-[13px] text-accentsoft flex gap-1.5 items-start"><span class="ico flex-none" style="width:14px;height:14px;margin-top:3px">${svg("spark")}</span><span>${st("sim.goal", sEsc(st(SIM_OBJ[S.obj]).toLowerCase()), sp(take))}</span></div>` : ""}`;
+    $("#view-formato").innerHTML =
+      (Array.isArray(I.formato) ? `<div class="flex flex-wrap gap-2">${I.formato.map(x => `<span class="chip">${sEsc(x)}</span>`).join("")}</div>` : "")
+      + (Array.isArray(I.agenda) ? I.agenda.map(([k, kind, x]) => simCard(`<div class="flex flex-wrap items-center gap-2"><span class="chip">${sEsc(k)}</span>${kind ? `<span class="text-[12px] text-mute">${sEsc(kind)}</span>` : ""}</div><div class="font-semibold mt-1.5 leading-snug">${sp(x)}</div>`)).join("") : "")
+      + (I.para ? `<div>${simLabel("sim.for")}<p class="text-[14px] mt-1">${sp(I.para)}</p></div>` : "")
+      + (Array.isArray(I.llevas) && I.llevas.length ? `<div>${simLabel("sim.take")}<ul class="mt-1 grid gap-1 text-[14px] list-disc pl-5">${I.llevas.map(x => `<li>${sEsc(x)}</li>`).join("")}</ul></div>` : "")
+      + `<p class="text-[12px] text-mute" data-sim-note>${st("sim.agendaNote")}</p>`;
+    $("#view-misiones").innerHTML = `<p class="text-[13px] text-mute">${st("sim.mNote")}</p>` + SIM_M.map(([ic, tk, sk, xp], i) => {
+      const id = ev.id + ":" + i, done = S.done.has(id), ttl = st(tk);
+      return `<div class="mission ${done ? "done" : ""}" data-m="${sEsc(id)}">
         <span class="ico-tile" style="width:40px;height:40px;background:${done ? "rgba(16,185,129,.18);color:var(--t-emerald)" : "rgba(61,107,255,.1);color:var(--t-blue)"}">${svg(done ? "check" : ic)}</span>
-        <div class="min-w-0"><div class="font-semibold text-[14px] leading-snug">${ttl}</div><div class="text-[12px] ${done ? "text-[color:var(--t-emerald)]" : "text-mute"}">${done ? "Completada · +" + xp + " XP" : sub + " · +" + xp + " XP"}</div></div>
-        ${done ? `<span class="chip chip-emerald">${svg("check")}Hecho</span>` : `<button class="btn btn-emerald btn-sm" data-xp="${xp}" data-id="${id}" data-t="${ttl.replace(/"/g, "&quot;")}">Completar</button>`}
+        <div class="min-w-0"><div class="font-semibold text-[14px] leading-snug">${ttl}</div><div class="text-[12px] ${done ? "text-[color:var(--t-emerald)]" : "text-mute"}">${done ? st("sim.doneSub", xp) : st(sk) + " · +" + xp + " XP"}</div></div>
+        ${done ? `<span class="chip chip-emerald">${svg("check")}${st("sim.done")}</span>` : `<button class="btn btn-emerald btn-sm" data-xp="${xp}" data-id="${sEsc(id)}" data-t="${sEsc(ttl)}">${st("sim.complete")}</button>`}
       </div>`; }).join("");
-    $("#view-matches").innerHTML = `<div class="conn-empty">${svg("users")}<div><b>Tus matches serán asistentes reales</b><p class="text-mute text-[14px]">KNET solo te sugiere personas que de verdad se inscribieron en tu evento. Crea tu cuenta e inscríbete: aquí verás a quién te conviene conocer y por qué.</p></div></div>`;
     $("#view-concierge").innerHTML = `
-      <div class="grid gap-3" id="simChat"><div class="bubble ai">Hola. Tu agenda de ${d.label.toLowerCase()} está lista. ¿En qué te ayudo?</div></div>
-      <div class="flex flex-wrap gap-2">${["¿Quién está en la sala de al lado?", "¿Dónde es mi próxima sesión?", "¿Qué misión me da más XP ahora?"].map((q, i) => `<button class="pill-btn" data-sq="${i}">${q}</button>`).join("")}</div>`;
+      <div class="grid gap-3" id="simChat"><div class="bubble ai">${st("sim.hello", sp(ev.name))}</div></div>
+      <div class="flex flex-wrap gap-2">${["sim.q1", "sim.q2", "sim.q3"].map((q, i) => `<button class="pill-btn" data-sq="${i}">${st(q)}</button>`).join("")}</div>`;
+    $("#evOthers").innerHTML = list.slice(1, 4).map(({ ev: o, a: oa }) => `<div class="flex items-center justify-between gap-3 rounded-xl px-3 py-2 bg-white/[.035] border border-white/10" data-sim-other="${sEsc(o.id)}">
+      <div class="min-w-0"><div class="font-semibold text-[14px] leading-snug">${sp(o.name)}</div><div class="text-[12px] text-mute">${sp(o.city)} · ${sp(o.date)}</div></div>
+      <span class="mono text-[13px] tabular text-accentsoft">${oa.score}%</span></div>`).join("");
   };
-  const simAnswer = (i) => { const d = IND[S.ind]; const a = d.agenda[0];
-    const best = d.missions.map((x, k) => [x, S.ind + k]).filter(([, id]) => !S.done.has(id)).sort((p, q) => q[0][3] - p[0][3])[0];
+  const simAnswer = (i) => {
+    const list = simRank(), top = list.find(x => x.ev.id === S.ev) || list[0]; if (!top) return st("sim.empty");
+    const ev = top.ev, I = EV_INFO[ev.id] || {}, nx = list.find(x => x.ev.id !== ev.id);
     return [
-      "Cuando otros asistentes reales se inscriban en tu evento, te diré quién está en la sala de al lado y por qué te conviene conocerle.",
-      `<b>${a[2]}</b> a las ${a[0]} en <b>${a[3]}</b>. Estás a 3 minutos caminando.`,
-      best ? `“${best[0][1]}” te da <b>+${best[0][3]} XP</b>. Está en tu ruta hacia la próxima sesión.` : `Completaste todas tus misiones. Nuevas misiones se abren en el siguiente bloque.`
+      st("sim.a1", sp(ev.name), sp(ev.venue), sp(ev.date)),
+      st("sim.a2", sp(I.para || ev.desc)),
+      nx ? st("sim.a3", sp(nx.ev.name), sp(nx.ev.city), sp(nx.ev.date), nx.a.score) : st("sim.a3none")
     ][i]; };
-
   $("#app").addEventListener("click", async e => {
     const tab = e.target.closest(".sim-tab");
-    if (tab) { S.view = tab.dataset.view; $$(".sim-tab").forEach(t => t.setAttribute("aria-selected", t === tab)); ["agenda", "misiones", "matches", "concierge"].forEach(v => $("#view-" + v).hidden = v !== S.view); return; }
+    if (tab) { S.view = tab.dataset.view; $$(".sim-tab").forEach(t => t.setAttribute("aria-selected", t === tab)); SIM_VIEWS.forEach(v => $("#view-" + v).hidden = v !== S.view); return; }
     const mb = e.target.closest("button[data-xp]");
     if (mb) {
       const xp = +mb.dataset.xp, before = level(S.xp);
       const r = mb.getBoundingClientRect(), host = $("#app").getBoundingClientRect();
       const pop = document.createElement("span"); pop.className = "xp-pop"; pop.textContent = "+" + xp + " XP"; pop.style.left = (r.left - host.left) + "px"; pop.style.top = (r.top - host.top - 8) + "px"; $("#app").appendChild(pop); setTimeout(() => pop.remove(), 1200);
-      const prevBadges = BADGES.filter(b => S.xp >= b.at).length;
       S.done.add(mb.dataset.id); S.xp += xp; renderViews(); renderXp();
-      toast(`<b>Misión completada</b> · ${mb.dataset.t}<div class="mono text-[color:var(--t-emerald)] text-[13px]">+${xp} XP</div>`);
+      toast(`<b>Misión completada</b> · ${sEsc(mb.dataset.t)}<div class="mono text-[color:var(--t-emerald)] text-[13px]">+${xp} XP</div>`);
       if (level(S.xp) > before) setTimeout(() => toast(`<b>¡Subiste a Nivel ${level(S.xp)}!</b> · ${LEVELS[Math.min(level(S.xp) - 1, LEVELS.length - 1)]}`, "trophy"), 500);
-      const nowBadges = BADGES.filter(b => S.xp >= b.at);
-      if (nowBadges.length > prevBadges) setTimeout(() => toast(`<b>Insignia desbloqueada:</b> ${nowBadges[nowBadges.length - 1].name}`, "star"), 900);
       return;
     }
     const sq = e.target.closest("button[data-sq]");
     if (sq) { const box = $("#simChat"); const q = document.createElement("div"); q.className = "bubble me"; q.textContent = sq.textContent; box.appendChild(q);
-      const a = document.createElement("div"); a.className = "bubble ai"; a.innerHTML = '<span class="caret mono text-mute">Pensando</span>'; box.appendChild(a); await sleep(600); a.innerHTML = simAnswer(+sq.dataset.sq); }
+      const a = document.createElement("div"); a.className = "bubble ai"; a.innerHTML = `<span class="caret mono text-mute">${st("sim.thinking")}</span>`; box.appendChild(a); await sleep(600); a.innerHTML = simAnswer(+sq.dataset.sq); }
   });
 
   const con = $("#console"), stateChip = $("#agentState");
   const line = async (html, wait = 380) => { const l = document.createElement("div"); l.innerHTML = html; con.appendChild(l); await sleep(wait); };
   async function generate(instant) {
     if (S.busy) return; S.busy = true; const d = IND[S.ind];
-    $("#genBtn").disabled = true; stateChip.className = "chip chip-accent"; stateChip.innerHTML = svg("spark") + "Trabajando";
+    $("#genBtn").disabled = true; stateChip.className = "chip chip-accent"; stateChip.innerHTML = svg("spark") + st("sim.busy");
     con.innerHTML = ""; const t0 = performance.now();
     if (!instant) renderViews(true);
-    const w = instant ? 0 : 380;
-    await line(`<span class="p">▸</span> MCP <span class="k">profile.read</span> → rol: <b>${d.role}</b>`, w);
-    await line(`<span class="p">▸</span> Industria detectada: <b>${d.label}</b> · objetivo: ${OBJ[S.obj]}`, w);
-    await line(`<span class="p">▸</span> RAG: 148 sesiones indexadas → <span class="k">4 relevantes</span> sobre ${d.topic}`, w);
-    await line(`<span class="p">▸</span> Matchmaking: <span class="k">solo asistentes reales</span> de tu evento`, w);
-    await line(`<span class="p">▸</span> Misiones contextuales: <span class="k">3 activas</span> (máx. 3)`, w);
-    const secs = instant ? "1,8" : ((performance.now() - t0) / 1000).toFixed(1).replace(".", ",");
-    await line(`<span class="ok">✓ Agenda lista en ${secs} s</span><span class="caret"></span>`, 0);
+    const w = instant ? 0 : 380, list = simRank(), top = list[0];
+    await line(`<span class="p">▸</span> ${st("sim.l1", list.length)}`, w);
+    await line(`<span class="p">▸</span> ${st("sim.l2", sp(d.label), sEsc(st(SIM_OBJ[S.obj]).toLowerCase()))}`, w);
+    await line(`<span class="p">▸</span> ${st("sim.l3", list.filter(x => x.a.inInd).length)}`, w);
+    if (top) await line(`<span class="p">▸</span> ${st("sim.l4", sp(top.ev.name), top.a.score)}`, w);
+    let secs = Math.max(0.1, (performance.now() - t0) / 1000).toFixed(1); if (simLang() === "es") secs = secs.replace(".", ",");
+    await line(`<span class="ok">${top ? st("sim.l5", secs) : st("sim.empty")}</span><span class="caret"></span>`, 0);
     renderViews(); renderXp();
-    stateChip.className = "chip chip-emerald"; stateChip.innerHTML = svg("check") + "Listo";
+    stateChip.className = "chip chip-emerald"; stateChip.innerHTML = svg("check") + st("sim.ready");
     $("#genBtn").disabled = false; S.busy = false;
   }
+  const simRelang = () => { if (!S.busy) generate(true); };
   renderXp(); generate(true);
 
   /* ---------- Dynamic QR (ilustrativo) ---------- */
@@ -391,6 +429,7 @@ export function bootKnetApp() {
   const t = (k) => (I18N[LANG][k] !== undefined ? I18N[LANG][k] : I18N.es[k] !== undefined ? I18N.es[k] : k);
   function applyLang() {
     document.documentElement.lang = LANG;
+    simRelang();
     $$("[data-i18n],[data-i18n-html]").forEach(el => {
       const k = el.dataset.i18n || el.dataset.i18nHtml;
       if (el.dataset.es === undefined) el.dataset.es = el.innerHTML;
