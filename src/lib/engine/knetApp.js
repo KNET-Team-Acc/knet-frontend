@@ -997,10 +997,11 @@ export function bootKnetApp() {
   }
   function renderTabs() {
     const n = activeMissions().length, rw = FRAMES.filter(f => A.xp >= f.xp && !(A.frames || []).includes(f.id)).length + AV_XHAIR.concat(AV_XACC).filter(x => A.xp >= x[2] && !ownsItem(x[0])).length;
-    const badge = { quests: n, red: A.connections.length, recompensas: rw };
+    const inv = invPending(), badge = { quests: n, red: A.connections.length, recompensas: rw, miseventos: inv };
+    renderInvBtn();
     { const cur = TABS.find(x => x[0] === curTab) || TABS[0], tg = $("#sideToggle");
       if (tg) tg.innerHTML = `<span class="st-n">${cur[1]}</span><span class="st-l">${t(cur[2])}</span><span class="st-m">Menú</span><span class="st-i" aria-hidden="true"><i></i><i></i><i></i></span>`; }
-    $("#appTabs").innerHTML = TABS.map(([id, num, key, ic]) => `<button type="button" class="app-tab" data-tab="${id}" ${id === curTab ? 'aria-current="page"' : ""}><span class="app-tab-n">${num}</span>${svg(ic)}<span class="app-tab-l">${t(key)}</span>${badge[id] ? `<span class="app-tab-dot ${id === "recompensas" ? "gold" : id === "red" ? "cyan" : ""}" aria-label="${badge[id]}">${badge[id]}</span>` : ""}</button>`).join("");
+    $("#appTabs").innerHTML = TABS.map(([id, num, key, ic]) => `<button type="button" class="app-tab" data-tab="${id}" ${id === curTab ? 'aria-current="page"' : ""}><span class="app-tab-n">${num}</span>${svg(ic)}<span class="app-tab-l">${t(key)}</span>${badge[id] ? `<span class="app-tab-dot ${id === "recompensas" ? "gold" : id === "red" ? "cyan" : id === "miseventos" ? "inv" : ""}" aria-label="${id === "miseventos" ? tf("inv.tabDot", inv) : badge[id]}">${badge[id]}</span>` : ""}</button>`).join("");
   }
 
   /* ---- Exp 01 · Perfil + grafo ---- */
@@ -2057,6 +2058,7 @@ export function bootKnetApp() {
         <header class="pcard-h"><div><span class="pcard-k">Experiencia 03 · Mis eventos</span><h2 class="pcard-t">Todo lo que tienes agendado</h2><div class="text-mute text-[14px]">Elige un evento y un día para ver tu programa, tus actividades y tus resúmenes.</div></div></header>
         ${meStatsHTML(evs, exp, cafes)}
       </article>
+      ${invitesHTML()}
       ${evDayBar("main")}
       ${selEventHTML()}
       ${activitiesHTML()}
@@ -2259,6 +2261,39 @@ export function bootKnetApp() {
     return out;
   }
   const isEnded = (key) => !!(A.ended && A.ended[key]);
+  /* =================== Invitaciones: cafés por responder + invitaciones enviadas a mis eventos =================== */
+  const tf = (k, ...v) => v.reduce((s, x, i) => s.replace(`{${i}}`, x), t(k));
+  function invReceived() { return Object.entries(A.coffees || {}).filter(([n, c]) => c && c.role === "invitee" && c.status === "pending" && isConn(n)); }
+  function invEvents() { return myEvs().filter(e => e.status === "approved" && !isEnded("my:" + e.id)); }
+  const invWaiting = (ev) => Object.values(ev.invites || {}).filter(v => v === "invited").length;
+  function invPending() { return invReceived().length + invEvents().reduce((s, e) => s + invWaiting(e), 0); }
+  function renderInvBtn() {
+    const b = $("#invBtn"); if (!b) return; const n = invPending(), st = n ? (n === 1 ? t("inv.one") : tf("inv.many", n)) : t("inv.none");
+    b.setAttribute("aria-label", `${t("inv.go")} · ${st}`);
+    b.innerHTML = `${svg("users")}<span class="side-inv-l">${t("inv.btn")}</span>${n ? `<span class="app-tab-dot side-inv-n tabular" aria-hidden="true">${n}</span>` : `<span class="side-inv-s" aria-hidden="true">${t("inv.none")}</span>`}`;
+  }
+  function invitesHTML() {
+    const recv = invReceived(), evs = invEvents().slice().reverse(), n = invPending();
+    const row = (ic, title, sub, extra) => `<li class="ms-row"><span class="ms-ic">${svg(ic)}</span><div class="min-w-0"><b>${title}</b><span>${sub}</span></div>${extra}</li>`;
+    const recvRows = recv.map(([nm, c]) => row("coffee", esc(nm), tf("inv.coffee", esc((c.slot || "").replace(/^\s*·\s*/, ""))),
+      `<div class="me-actions"><button type="button" class="btn btn-emerald btn-sm" data-inv="yes" data-n="${esc(nm)}">${svg("check")}${t("inv.accept")}</button><button type="button" class="pill-btn" data-inv="no" data-n="${esc(nm)}">${t("inv.decline")}</button><button type="button" class="btn btn-ghost btn-sm" data-inv="chat" data-n="${esc(nm)}">${t("inv.chat")}</button></div>`));
+    const evRows = evs.map(ev => { const w = invWaiting(ev), yes = Object.values(ev.invites || {}).filter(v => v === "accepted").length;
+      return row("calendar", esc(ev.name), w || yes ? `${w ? tf("inv.waiting", w) : ""}${w && yes ? " · " : ""}${yes ? tf("inv.confirmed", yes) : ""}` : t("inv.noneSent"),
+        `<button type="button" class="btn btn-primary btn-sm" data-ne="invite" data-v="${ev.id}">${svg("users")}${t("inv.invite")}</button>`); });
+    return `<article class="pcard inv-card" id="invitesCard" tabindex="-1" aria-labelledby="invTitle">
+      <header class="pcard-h"><div><span class="pcard-k">${t("inv.kicker")}</span><h2 class="pcard-t" id="invTitle">${t("inv.btn")}</h2><div class="text-mute text-[14px]">${t("inv.desc")}</div></div><span class="chip tabular ${n ? "chip-cyan" : ""}">${svg("users")}${n ? (n === 1 ? t("inv.one") : tf("inv.many", n)) : t("inv.none")}</span></header>
+      ${recvRows.length ? `<h3 class="inv-h">${t("inv.recv")}</h3><ul class="ms-list">${recvRows.join("")}</ul>` : ""}
+      ${evRows.length ? `<h3 class="inv-h">${t("inv.sent")}</h3><ul class="ms-list">${evRows.join("")}</ul>` : ""}
+      ${recvRows.length || evRows.length ? "" : `<p class="ms-empty">${t("inv.empty")} ${t("inv.emptyHint")} <button type="button" class="pill-btn" data-ne="new">${t("inv.new")} ${svg("arrow")}</button></p>`}
+    </article>`;
+  }
+  panel.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-inv]"); if (!b) return; const n = b.dataset.n, k = b.dataset.inv;
+    if (k === "chat") { openChat(n); return; }
+    answerCoffee(n, k === "yes");
+    requestAnimationFrame(() => { const c = $("#invitesCard"); if (c) c.focus({ preventScroll: true }); });
+  });
+  $("#invBtn").addEventListener("click", () => { setSideMenu(false); meView = "mine"; showTab("miseventos", "invitesCard"); requestAnimationFrame(() => { const c = $("#invitesCard"); if (c) c.focus({ preventScroll: true }); }); });
   function sumData(key) {
     if (key.includes("@")) { const h = (A.history || []).find(x => x.id === key); if (h) return h.s; key = key.split("@")[0]; }
     const [kind, id] = key.split(":"), p = PERSONAS[A.ind], d = IND[A.ind], ins = INSIGHTS[A.ind], acts = ACTIONS[A.ind];
