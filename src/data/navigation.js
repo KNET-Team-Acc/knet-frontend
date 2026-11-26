@@ -44,9 +44,9 @@ export const I18N = {
 export const DM_PILLS = ["¡Hola! Qué bueno conectar.", "¿Vas a alguna sesión esta tarde?", "¿Nos tomamos un café?", "¿En qué estás trabajando?"];
 
 export const TOUR = [
-    ["perfil", "Tu perfil y tu avatar, los datos que autorizaste de LinkedIn y tus permisos de privacidad. Puedes cambiarlos cuando quieras."],
+    ["perfil", "En tu perfil encontrarás tus datos personales, avatar y permisos."],
     ["miseventos", "Tus eventos día a día, el recinto 3D de cada uno y la opción de explorar eventos reales próximos para inscribirte."],
-    ["red", "Tus contactos con contexto: los matches que te sugiere la IA y el grafo de personas y temas que los unen."],
+    ["red", "Tus contactos y los matches sugeridos por la IA."],
     ["agenda", "Las charlas que la IA eligió para tu rol, con check-in por QR en cada sesión."],
     ["quests", "Gana XP con misiones en el recinto, quizzes y experiencias presenciales, y sube de nivel."],
     ["concierge", "Tu asistente del Summit: pregúntale por tu agenda, a quién conocer o qué misión te conviene."],
