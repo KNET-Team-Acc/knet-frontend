@@ -2800,7 +2800,7 @@ export function bootKnetApp() {
     if (/lamps/.test(deco)) V.edges.forEach(([a, b]) => { const p = V.nodes[a], q2 = V.nodes[b]; for (let t = 0; t <= 1; t += .5) { const x = p[0] + (q2[0] - p[0]) * t, z = p[1] + (q2[1] - p[1]) * t; g.cyl(x, 0, z - V.aisle / 2 - .3, 0.1, 4, [60, 60, 70], 6, [255, 230, 150]); g.cyl(x, 0, z + V.aisle / 2 + .3, 0.1, 4, [60, 60, 70], 6, [255, 230, 150]); } });
     if (/pillars/.test(deco)) for (let x = fx0 + 4; x < fx1; x += 8) for (const z of [fz0 + .6, fz1 - .6]) g.box(x, 0, z, 0.8, 6, 0.8, [70, 70, 80], [110, 110, 120]);
     if (/columns/.test(deco)) Object.values(V.nodes).forEach(([x, z], i) => { if (Math.abs(z) > 15) return; [[1.6, 1.6], [-1.6, -1.6], [1.6, -1.6], [-1.6, 1.6]].forEach(([dx, dz]) => { if (Math.abs(x + dx) < 9.5 && Math.abs(z + dz) < 7.5) return; g.cyl(x + dx, 0, z + dz, 0.3, 3.4, [235, 225, 205], 8, [250, 245, 235]); }); });
-    if (/palms/.test(deco)) [[-30, -1], [-18, 0], [-4, 4], [5, -3], [17, 0], [30, 2], [-30, 20], [30, 19], [-14, -20], [14, -20.5], [-31, -14], [31, -6]].forEach(([x, z]) => { g.cyl(x, 0, z, 0.25, 4.2, [110, 80, 50], 6); g.box(x, 4.1, z, 3.2, 0.25, 0.9, [40, 130, 60], [60, 170, 80]); g.box(x, 4.1, z, 0.9, 0.25, 3.2, [40, 130, 60], [60, 170, 80]); });
+    if (/palms/.test(deco)) (Array.isArray(V.palms) ? V.palms.filter(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite)) : [[-30, -1], [-18, 0], [-4, 4], [5, -3], [17, 0], [30, 2], [-30, 20], [30, 19], [-14, -20], [14, -20.5], [-31, -14], [31, -6]]).forEach(([x, z]) => { g.cyl(x, 0, z, 0.25, 4.2, [110, 80, 50], 6); g.box(x, 4.1, z, 3.2, 0.25, 0.9, [40, 130, 60], [60, 170, 80]); g.box(x, 4.1, z, 0.9, 0.25, 3.2, [40, 130, 60], [60, 170, 80]); });
     // arco de entrada, orientado según el borde donde está la entrada
     const [ex, ez] = vnEnt(), onX = Math.min(Math.abs(ex - fx0), Math.abs(ex - fx1)) < Math.min(Math.abs(ez - fz0), Math.abs(ez - fz1)), hw = Math.min(3.4, V.aisle * .6);
     if (onX) { g.box(ex, 0, ez - hw, 0.6, 4, 0.6, ink); g.box(ex, 0, ez + hw, 0.6, 4, 0.6, ink); g.box(ex, 4, ez, 0.6, 0.6, hw * 2 + .6, [161, 0, 255], [190, 90, 255]); }
@@ -2832,7 +2832,7 @@ export function bootKnetApp() {
             <h2 class="pcard-t">${esc(ev.name)}</h2>
             <p class="vn-ev-meta">${svg("pin")}<span>${esc(ev.venue)} · ${esc(ev.city)}</span>${svg("calendar")}<span>${ev.date}</span>${svg("users")}<span>${VN.people.length} personas en el recinto</span></p>
           </div>
-          ${list.length > 1 && !reg ? `<label class="vn-ev-sel"><span class="vn-k">Cambiar de evento</span><select class="input" id="vnEvSel" aria-label="Elige el evento del recinto">${list.map(id => `<option value="${id}" ${id === ev.id ? "selected" : ""}>${esc(evById(id).name)} · ${esc(evById(id).city)}</option>`).join("")}</select></label>` : ""}
+          ${list.length > 1 ? `<label class="vn-ev-sel"><span class="vn-k">Cambiar de evento</span><select class="input" id="vnEvSel" aria-label="Elige el evento del recinto">${list.map(id => `<option value="${id}" ${id === ev.id ? "selected" : ""}>${esc(evById(id).name)} · ${esc(evById(id).city)}</option>`).join("")}</select></label>` : ""}
         </div>
         ${reg ? "" : `<p class="vn-ev-note">${svg("info")}<span>Aún no estás inscrito en ningún evento: ves el recinto de ejemplo. Inscríbete en Mis eventos y aquí aparecerá el recinto de cada uno.</span></p>`}
         ${nw ? `<div class="vn-now" style="--zc:${nw.q.hex}">
@@ -2857,11 +2857,11 @@ export function bootKnetApp() {
               <button type="button" class="btn btn-primary btn-sm" data-vnm="walk">${svg("pin")}Recorrer a pie</button>
               <button type="button" class="btn btn-ghost btn-sm" data-vnm="tour">${svg("play")}Tour dirigido</button>
               <button type="button" class="btn btn-ghost btn-sm" data-vnm="hf">${svg("bolt")}Manos libres</button>
-              <button type="button" class="btn btn-ghost btn-sm" data-vnm="vr" id="vnVR" ${xrOk ? "" : "disabled"}>${svg("layers")}Entrar en VR</button>
-              <button type="button" class="btn btn-ghost btn-sm" data-vnm="ar" id="vnAR" ${xrOk ? "" : "disabled"}>${svg("target")}Ver en mi mesa (AR)</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-vnm="vr" id="vnVR" aria-describedby="vnNote" ${xrOk ? "" : "disabled"}>${svg("layers")}Entrar en VR</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-vnm="ar" id="vnAR" aria-describedby="vnNote" ${xrOk ? "" : "disabled"}>${svg("target")}Ver en mi mesa (AR)</button>
             </div>
             <p class="vn-note" data-venue-note>Plano ilustrativo: no es el mapa oficial del recinto. Ubica salas y stands con la señalización del evento.</p>
-            <p class="vn-note" id="vnNote">VR y AR se activan en un visor WebXR (Meta Quest) o en Chrome para Android.</p>
+            <p class="vn-note" id="vnNote" role="status" aria-live="polite">VR y AR se activan en un visor WebXR (Meta Quest) o en Chrome para Android.</p>
           </div>
         </div>
       </article>
@@ -3027,14 +3027,20 @@ export function bootKnetApp() {
       if (md === "vr" || md === "ar") { startXR(md === "vr" ? "immersive-vr" : "immersive-ar"); return; }
       setMode(VN.mode === md ? "overview" : md); };
     card.addEventListener("click", onCard);
-    const evSel = $("#vnEvSel"); if (evSel) evSel.addEventListener("change", () => { VN.ev = evSel.value; vnEnsureEv(); if (myEvIds().includes(VN.ev)) { A.sel = A.sel || {}; A.sel.main = { ev: VN.ev, day: 0 }; save(); } setMode("overview"); renderTab(false); });
+    // Cambiar de evento: si estás inscrito, también pasa a ser tu evento activo (vnEnsureEv sigue a getSel("main"))
+    const evSel = $("#vnEvSel"); if (evSel) evSel.addEventListener("change", () => { VN.ev = evSel.value; setActiveEvent(VN.ev); vnEnsureEv(); setMode("overview"); renderTab(false); });
 
     /* WebXR: VR (recorrido a escala real) y AR (maqueta sobre la mesa) */
     const vrBtn = $("#vnVR"), arBtn = $("#vnAR"), note = $("#vnNote");
-    if (navigator.xr && navigator.xr.isSessionSupported) {
-      navigator.xr.isSessionSupported("immersive-vr").then(ok => { if (vrBtn) vrBtn.disabled = !ok; }).catch(() => { if (vrBtn) vrBtn.disabled = true; });
-      navigator.xr.isSessionSupported("immersive-ar").then(ok => { if (arBtn) arBtn.disabled = !ok; }).catch(() => { if (arBtn) arBtn.disabled = true; });
-    }
+    /* Soporte: además de deshabilitar los botones, la nota explica el motivo y qué hacer (vuelve a mostrarse al salir de la sesión) */
+    let xrMsg = note ? note.textContent : "";
+    const xrNote = (txt, warn) => { xrMsg = txt; if (note) { note.textContent = txt; note.classList.toggle("warn", !!warn); } };
+    const xrAvail = (vr, ar) => { if (vrBtn) vrBtn.disabled = !vr; if (arBtn) arBtn.disabled = !ar;
+      xrNote(t(vr && ar ? "vn.xr.ready" : ar ? "vn.xr.noVr" : vr ? "vn.xr.noAr" : "vn.xr.noBoth"), !ar); };
+    if (!window.isSecureContext) xrAvail(false, false), xrNote(t("vn.xr.insecure"), true);
+    else if (!navigator.xr || !navigator.xr.isSessionSupported) xrAvail(false, false), xrNote(t("vn.xr.none"), true);
+    else { const sup = (k) => navigator.xr.isSessionSupported(k).then(ok => !!ok, () => false);
+      Promise.all([sup("immersive-vr"), sup("immersive-ar")]).then(([vr, ar]) => { if (alive && !VN.xr) xrAvail(vr, ar); }); }
     async function startXR(kind) {
       if (VN.xr || !navigator.xr) return; let s;
       try { s = await navigator.xr.requestSession(kind, { optionalFeatures: ["local-floor"] }); }
@@ -3054,10 +3060,13 @@ export function bootKnetApp() {
         const pts = vnRoute([pos.x, pos.z], q); const nx = pts.length > 1 ? pts[1] : vzCenter(q); pos = { x: nx[0], z: nx[1] }; ref = place();
         if (Math.hypot(pos.x - vzCenter(q)[0], pos.z - vzCenter(q)[1]) < 1) { VN.you = vzCenter(q).slice(); VN.target = null; }
       });
-      s.addEventListener("end", () => { VN.xr = null; if (note) note.textContent = T("VR y AR se activan en un visor WebXR (Meta Quest) o en Chrome para Android."); last = performance.now(); vnRaf = requestAnimationFrame(frame); syncBar(); });
+      s.addEventListener("end", () => { VN.xr = null; if (note) note.textContent = xrMsg; last = performance.now(); vnRaf = requestAnimationFrame(frame); syncBar(); });
       const onXR = (now, fr) => {
         if (!VN.xr) return; s.requestAnimationFrame(onXR);
         const dt = Math.min(.05, (now - xlast) / 1000); xlast = now; dashT += dt * 1.6; stepPeople(dt);
+        // AR: maqueta de ~1,15 m en su lado mayor, centrada en el suelo del recinto activo (cada evento tiene su tamaño)
+        const [fcx, fcz] = vnFloorC(), sk = 1.15 / Math.max(VV.floor[1] - VV.floor[0], VV.floor[3] - VV.floor[2]);
+        const arWm = M4.mul(M4.tr(0, -0.45, -1.15), M4.mul(M4.ry(VN.arRot), M4.mul(M4.sc(sk, sk, sk), M4.tr(-fcx, 0, -fcz))));
         const pose = fr.getViewerPose(ref); if (!pose) return;
         // locomoción suave con el joystick (VR)
         if (isVR) for (const src of s.inputSources) { const gp = src.gamepad; if (!gp || gp.axes.length < 4) continue; const ax = gp.axes[2], ay = gp.axes[3]; if (Math.abs(ax) + Math.abs(ay) < .15) continue;
@@ -3068,7 +3077,7 @@ export function bootKnetApp() {
         const layer = s.renderState.baseLayer; gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
         if (isVR) { const bg = light ? [0.9, 0.88, 0.83] : [0.04, 0.03, 0.07]; gl.clearColor(bg[0], bg[1], bg[2], 1); } else gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        const Wm = isVR ? M4.id() : M4.mul(M4.tr(0, -0.45, -1.15), M4.mul(M4.ry(VN.arRot), M4.sc(1 / 55, 1 / 55, 1 / 55)));
+        const Wm = isVR ? M4.id() : arWm;
         for (const v of pose.views) { const vp = layer.getViewport(v); gl.viewport(vp.x, vp.y, vp.width, vp.height); draw(Array.from(v.projectionMatrix), Array.from(v.transform.inverse.matrix), Wm, now); }
       };
       s.requestAnimationFrame(onXR);
