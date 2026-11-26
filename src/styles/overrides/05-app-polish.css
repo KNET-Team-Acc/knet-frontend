@@ -17,30 +17,15 @@
 .side-tour:hover { background: rgba(161,0,255,.16); border-color: var(--accent); }
 .side-tour .ico, .side-tour svg { width: 18px; height: 18px; color: var(--accent-soft); flex: none; }
 
-/* Acceso rápido a Invitaciones (menú lateral, igual en escritorio, tablet y móvil) */
-.side-inv { width: 100%; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: var(--r-md, 14px); border: 1.5px solid var(--line-strong); background: rgba(var(--d-rgb),.94); color: var(--fg); font: inherit; font-weight: 600; font-size: 14px; text-align: left; cursor: pointer; transition: background .2s, border-color .2s; }
-.side-inv:empty { display: none; }
-.side-inv:hover { background: rgba(6,182,212,.12); border-color: rgba(6,182,212,.6); }
-.side-inv:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.side-inv svg { width: 18px; height: 18px; color: var(--t-cyan, #06B6D4); flex: none; }
-.side-inv-l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.side-inv-s { font-size: 12px; font-weight: 500; color: var(--muted); white-space: nowrap; }
-.app-tab-dot.inv, .side-inv-n { background: #06B6D4; color: #03141A; }
+/* Invitaciones: pestaña dentro de Mis eventos (selector .me-seg) con contador de pendientes */
+.app-tab-dot.inv { background: #06B6D4; color: #03141A; }
+.me-seg-b .me-seg-n { margin-left: 2px; }
 .inv-card { scroll-margin-top: calc(var(--nav-h, 68px) + 16px); }
 .inv-card:focus { outline: none; }
 .inv-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .inv-card .pcard-h { flex-wrap: wrap; gap: 12px; }
 .inv-h { margin: 14px 0 8px; font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
-.inv-card .me-actions { flex: 0 0 auto; max-width: 100%; display: flex; flex-wrap: wrap; gap: 8px; }
-/* Celular: el acceso va en la misma fila que el botón «Menú» (solo icono + contador; el nombre queda en aria-label) */
-@media (max-width: 639px) {
-  .app-layout > .app-side { grid-template-columns: minmax(0,1fr) auto; } /* este archivo carga antes que main/03-app.css */
-  .app-side > * { grid-column: 1 / -1; }
-  .app-side > .side-toggle { grid-column: 1; }
-  .app-side > .side-inv { grid-column: 2; width: auto; min-height: 50px; padding: 10px 14px; gap: 8px; box-shadow: 4px 4px 0 rgba(6,182,212,.55); }
-  .side-inv .side-inv-l, .side-inv .side-inv-s { display: none; }
-}
-.tour { position: fixed; inset: 0; z-index: 200; }
+.inv-card .me-actions { flex: 0 0 auto; max-width: 100%; display: flex; flex-wrap: wrap; gap: 8px; }.tour { position: fixed; inset: 0; z-index: 200; }
 .tour-dim { position: absolute; inset: 0; background: rgba(5,3,10,.55); }
 .tour-spot { position: fixed; border-radius: 14px; box-shadow: 0 0 0 9999px rgba(5,3,10,.62), 0 0 0 2px var(--accent), 0 0 30px 4px rgba(161,0,255,.55); transition: left .35s cubic-bezier(.2,.8,.2,1), top .35s cubic-bezier(.2,.8,.2,1), width .35s, height .35s, opacity .25s; pointer-events: none; }
 .tour-card { position: fixed; width: min(360px, calc(100vw - 32px)); padding: 20px; border-radius: 20px; background: linear-gradient(160deg, rgba(36,18,60,.98), rgba(14,10,24,.98)); border: 1px solid rgba(161,0,255,.55); box-shadow: 0 30px 80px -20px rgba(0,0,0,.8), 0 0 40px -10px rgba(161,0,255,.6); color: var(--fg); transition: left .35s cubic-bezier(.2,.8,.2,1), top .35s cubic-bezier(.2,.8,.2,1); }

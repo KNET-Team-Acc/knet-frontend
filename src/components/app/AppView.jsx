@@ -12,8 +12,6 @@ export default function AppView() {
           {" "}
           <nav className="app-tabs" aria-label="Secciones de KNET" id="appTabs" />
           {" "}
-          <button type="button" className="side-inv" id="invBtn" />
-          {" "}
           <button type="button" className="side-tour" id="tourBtn">
             <i className="ico" data-i="compass" />
             <span>Tour guiado por KNET</span>
