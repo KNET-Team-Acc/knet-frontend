@@ -11,9 +11,11 @@ export const SCENES = [
   ];
 
 export const VENUES = {
-    and: { size: 78, floor: [-31, 31, -22, 22], ground: "conv", aisle: 6, ent: "E", totems: ["N", "S", "W", "K"],
-      nodes: { E: [0, 20.5], S: [0, 10.5], C: [0, 0], N: [0, -10.5], W: [-15, 0], K: [15, 0] }, edges: [["E", "S"], ["S", "C"], ["C", "N"], ["C", "W"], ["C", "K"]],
-      z: [["Congreso", "stage", "purple", "Sesiones y cursos técnicos del congreso.", [-27, -3, -18, -3], [-3, -10.5], "N"], ["Feria de expositores", "booths", "lime", "Stands de telecomunicaciones, TIC y ciudades inteligentes.", [3, 27, -18, -3], [3, -10.5], "N"], ["Zona de networking", "lounge", "orange", "Encuentros de negocios y reuniones 1:1.", [-27, -3, 3, 18], [-3, 10.5], "S"], ["Salas técnicas", "labs", "blue", "Talleres y demostraciones de producto.", [3, 27, 3, 18], [3, 10.5], "S"]] },
+    // Centro de convenciones frente al mar: entrada lateral (oeste), malecón interior este-oeste y terrazas hacia el Caribe (sur)
+    and: { size: 78, floor: [-34, 34, -20, 20], ground: "sand", aisle: 5, ent: "E", totems: ["b", "n", "d"], deco: "palms water-front",
+      palms: [[-30, 19], [-20, 19], [-10, 19], [10, 19], [20, 19], [30, 19], [-1.5, 14], [-1.5, -17], [-33, -3], [-33, 11], [33, -18]],
+      nodes: { E: [-33, 4], b: [-18, 4], c: [-1.5, 4], n: [-1.5, -12], d: [17, 4] }, edges: [["E", "b"], ["b", "c"], ["c", "n"], ["c", "d"]],
+      z: [["Congreso", "stage", "orange", "Sesiones y cursos técnicos del congreso.", [-31, -5, -18, -2], [-18, -2], "b"], ["Feria de expositores", "booths", "blue", "Stands de telecomunicaciones, TIC y ciudades inteligentes.", [2, 31, -18, -2], [17, -2], "d"], ["Zona de networking", "lounge", "purple", "Encuentros de negocios y reuniones 1:1.", [2, 31, 10, 17], [17, 10], "d"], ["Salas técnicas", "labs", "lime", "Talleres y demostraciones de producto.", [-31, -5, 10, 17], [-18, 10], "b"]] },
     ais: { size: 60, floor: [-32, 32, -20, 20], ground: "stone", aisle: 5, ent: "E", totems: ["j", "a"],
       nodes: { E: [-31, 1], a: [-18, 1], b: [-12, 1], j: [9, 1], k: [9, -6], m: [9, 6.5], t: [15, 6.5] }, edges: [["E", "a"], ["a", "b"], ["b", "j"], ["j", "k"], ["j", "m"], ["m", "t"]],
       z: [["Escenario principal", "stage", "orange", "Charlas y paneles del summit.", [-30, 6, -18, -2], [-12, -2], "b"], ["Zona de aliados", "booths", "blue", "Stands de empresas del ecosistema de IA.", [12, 30, -18, 4], [12, -6], "k"], ["Salas de trabajo", "labs", "lime", "Sesiones prácticas en grupos pequeños.", [-30, -6, 4, 18], [-18, 4], "a"], ["Networking", "lounge", "purple", "Café y reuniones 1:1.", [0, 30, 9, 18], [15, 9], "t"]] },

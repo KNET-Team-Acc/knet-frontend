@@ -40,6 +40,7 @@ html.theme-light .vn-stage { background: #E6E0D5; border-color: rgba(10,7,16,.35
 .vn-mbtns { display: flex; flex-wrap: wrap; gap: 8px; }
 .vn-mbtns .btn.on { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
 .vn-note { margin-top: 8px; font: 500 11px var(--f-mono); color: var(--muted); }
+.vn-note.warn { padding: 8px 10px; border-left: 3px solid #FF5C1E; border-radius: 6px; background: rgba(255,92,30,.1); color: var(--t-soft); }
 .vn-zgrid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
 .vn-zc { display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: var(--r-md); border: 1.5px solid var(--line-strong); border-top: 5px solid var(--zc); background: linear-gradient(180deg, rgba(var(--w-rgb),.05), rgba(var(--w-rgb),.015)); box-shadow: 4px 4px 0 rgba(161,0,255,.4); }
 html.theme-light .vn-zc { background: #FBF9F4; }
