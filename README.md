@@ -386,11 +386,15 @@ Más detalle técnico en [`CLAUDE.md`](CLAUDE.md).
 
 | Elemento | Tipo |
 |---|---|
-| DevFest Bogotá 2026, DevFest Medellín 2026, Andina Link Smart Cities Expo 2027 | **Reales**: cada tarjeta muestra su fuente («Ver fuente»). Verifica fechas con los organizadores antes de una presentación. |
-| AI & Business Summit (evento principal del panel) | **Demostración**: no aparece en «Explorar»; alimenta la agenda, misiones, recinto y Dossier. |
-| Eventos exclusivos por nivel, ponentes, personas, matches, misiones | **Ficticios**, creados para la demo (los retratos son ilustraciones). |
-| Cuentas, Sign In with LinkedIn, IA (Claude), QR dinámico, NFC, cafés y chat | **Reales** con el backend. En modo local, LinkedIn, la IA y las respuestas de los contactos se simulan en el navegador. |
-| Contactos del catálogo (matches) | **Ficticios**: sus respuestas en el chat las da el simulador. Con otros asistentes reales, los mensajes son de verdad. |
+| Andina Link Smart Cities Expo 2027 (evento principal por defecto), Edutechnia 2027, AI Summit Colombia 2027, ANDICOM 2027 | **Reales**: cada tarjeta muestra su fuente («Ver fuente»). AI Summit y ANDICOM aún no publican días: aparecen como «Fecha por confirmar» (se puede inscribir, la agenda queda vacía). Sin restricción por nivel. |
+| Evento activo | El que eliges en el selector de Agenda / Mis eventos o con «Usar como evento activo»: de él dependen agenda, check-in, recinto, Concierge y Dossier. |
+| Recintos 3D | Planos ilustrativos por evento, no el mapa oficial del recinto. |
+| Experiencias presenciales (arte, cocina, deporte) | Ninguna: las publicará el organizador de cada evento. |
+| Ponentes | Solo los que devuelve `GET /api/events/:id`. Sin datos, la ficha del evento muestra un estado vacío y enlaza a la agenda oficial. |
+| Matches, ranking y grafo de contactos | Solo datos de la API (`GET /api/contacts`, `GET /api/me/connections`). El frontend ya no trae personas inventadas: sin registros se muestran estados vacíos. |
+| Misiones | Plantillas por industria (no son personas ni datos de terceros). |
+| Cuentas, Sign In with LinkedIn, IA (Claude), QR dinámico, NFC, cafés y chat | **Reales** con el backend. En modo local la IA responde en el navegador; sin LinkedIn configurado, el perfil se completa a mano (no se importa ningún perfil de ejemplo) y el escáner QR explica cómo activar la cuenta. |
+| Contactos del catálogo (matches) | Vienen del backend. Si un contacto no es usuario de KNET, sus respuestas en el chat son automáticas; con asistentes reales, los mensajes son de verdad. |
 | Perfil, progreso y consentimientos | En **PostgreSQL** con una cuenta, y siempre también en el **`localStorage`** del navegador (para seguir sin conexión). |
 
 ---

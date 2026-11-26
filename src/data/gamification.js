@@ -47,8 +47,5 @@ export const GROUP_M = [
     { id: "g3", ico: "bulb", title: "Reto de co-creación: propongan un caso de uso para su industria", sub: "En equipo · 45 min", xp: 200, tags: ["Open Finance", "Riesgo crediticio", "Transición energética", "Mantenimiento predictivo", "Plataformas internas", "Startups"] }
   ];
 
-export const EXPS = [
-    { id: "arte", emo: "🎨", ic: "palette", name: "Taller de arte digital", where: "Terraza del recinto", day: 0, time: "Día 1 · 18:00", desc: "Pinta un mural colectivo con herramientas de IA generativa." },
-    { id: "cocina", emo: "🍳", ic: "chef", name: "Clase de cocina colombiana", where: "Zona gastronómica", day: 0, time: "Día 1 · 19:00", desc: "Prepara arepas y ajiaco con un chef invitado." },
-    { id: "deporte", emo: "⚽", ic: "ball", name: "Partido de fútbol 5", where: "Cancha del recinto", day: 1, time: "Día 2 · 07:00", desc: "Equipos mixtos para arrancar el día 2 con energía." }
-  ];
+/** Experiencias presenciales (arte, cocina, deporte…): las publica el organizador de cada evento. Ninguno las ha publicado aún. */
+export const EXPS = [];

@@ -28,7 +28,7 @@ export async function installMockApi(page, opts = {}) {
     user: seedUser(opts.user),
     missions: new Map(),     // code → xp
     checkins: new Set(),
-    registrations: new Set(opts.registrations || ["bog"]),
+    registrations: new Set(opts.registrations || ["and"]),
     connections: opts.connections || [],
     coffees: [],
     coffeeXp: 0,             // veces que el servidor sumó los +50 XP de un café
@@ -77,7 +77,13 @@ export async function installMockApi(page, opts = {}) {
     if (path === "/api/auth/refresh" && method === "POST") return json(200, session());
     if (path === "/api/auth/logout") return json(204);
 
-    if (path === "/api/events") return json(200, { events: [] });
+    // Catálogo: opts.events = lista de GET /api/events; opts.eventDetails[id] = detalle de GET /api/events/:id
+    if (path === "/api/events") return json(200, { events: opts.events || [] });
+    const evDetail = /^\/api\/events\/([a-z0-9]+)$/.exec(path);
+    if (evDetail && method === "GET") {
+      const d = (opts.eventDetails || {})[evDetail[1]];
+      return d ? json(200, { event: d }) : json(404, { error: "not_found", message: `No existe el evento ${evDetail[1]}` });
+    }
     if (state.deleted && path.startsWith("/api/me")) return json(401, { error: "invalid_token", message: "La cuenta ya no existe" });
 
     // Perfil
@@ -184,7 +190,7 @@ export async function seedSession(page, { xp = 100, xpLocal = 100, extra = {} } 
     localStorage.setItem("knet-storage-pref", JSON.stringify({ preferencias: false, fecha: new Date().toISOString(), version: "1.2" }));
     localStorage.setItem("knet-auth", JSON.stringify({ accessToken: "acc-seed", refreshToken: "ref-seed-" + "x".repeat(30), userId: uid, email: "e2e@knet.test" }));
     localStorage.setItem("knet-demo-v1", JSON.stringify({
-      connected: true, ind: "tech", mv1: true, tourSeen: true, events: ["bog"], xp, xpLocal, xpSynced: [], outbox: [],
+      connected: true, ind: "tech", mv1: true, tourSeen: true, mv2: true, events: ["and"], xp, xpLocal, xpSynced: [], outbox: [],
       accountId: uid, accountEmail: "e2e@knet.test", apiLinked: true,
       profile: { name: "Paola Prueba", role: "Gerente de Producto", company: "Acme", seniority: "Gerencia", interests: ["Datos"], location: "Bogotá",
         src: { name: "manual", role: "manual", company: "manual", ind: "manual", seniority: "manual", interests: "manual", location: "manual" } },

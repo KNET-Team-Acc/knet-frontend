@@ -3,9 +3,9 @@
  */
 
 export const AI_ANS = [
-    "En <b>Sala Orbit</b> hay 3 personas de tu industria. <b>Laura M.</b> (92% afinidad) estará libre a las 11:15.",
+    "Cuando otros asistentes reales se inscriban en tu evento, te diré quién está cerca, en qué sala y por qué te conviene conocerle.",
     "Keynote en 3 ideas: 1) agentes medidos por resultado, 2) datos propios como ventaja, 3) gobierno desde el día uno. Lo añadí a tu Dossier.",
-    "Listo. Café con <b>Santiago A.</b> a las 11:00 en el Lounge B. Les envié a ambos el tema: evaluación de RAG. <b>+50 XP</b> por networking."
+    "Listo. Le propuse a tu match un café a las 11:00 en el Lounge B con el tema: evaluación de RAG. <b>+50 XP</b> por networking."
   ];
 
 export const INSIGHTS = {
@@ -60,4 +60,4 @@ export const TAG_IDEA = {
     "Cloud": "Migrar a la nube es el comienzo: el valor llega al modernizar datos y procesos."
   };
 
-export const SUM_INFO = "Resumen simulado para la demo. En producción, la IA lo redacta a partir de la transcripción del evento.";
+export const SUM_INFO = "Resumen preparado por KNET con los temas de las sesiones a las que asististe. Verifica cifras y citas con las fuentes del evento.";

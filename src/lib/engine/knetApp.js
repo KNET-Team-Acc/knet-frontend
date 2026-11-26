@@ -3,11 +3,20 @@
 import { VIDEO_URL, DUR, KEY, EXP_XP, LEGAL, APP_VERSION, SIC_URL, DOC_HASH, CONSENT_KEY, PREF_KEY } from "@/data/config.js";
 import { TEAM } from "@/data/team.js";
 import { P } from "@/data/icons.js";
-import { IND, OBJ, PERSONAS, MATCH_INFO, OTHERS, SENIORITY } from "@/data/industries.js";
+import { IND, OBJ, IND_INTERESTS, SENIORITY } from "@/data/industries.js";
 import { LEVELS, LVL_META, BADGES, XPS, ACTIONS, COMMON_M, FRAMES, GROUP_M, EXPS } from "@/data/gamification.js";
 import { AI_ANS, INSIGHTS, STEP_C, SRC_INFO, G_ROLES, G_SING, G_SUGGEST, G_WHY, HX_TYPE, TAG_IDEA, SUM_INFO } from "@/data/insights.js";
 import { SCENES, VENUES, GROUND } from "@/data/venues.js";
-import { SUMMIT_POOL, EVENTS, EV_DAYS, COL_OUTLINE, CO_CITIES, SPEAKER_NAMES, EV_SPEAKERS, EV_INFO, NE_TYPES, NE_CITIES } from "@/data/events.js";
+import { EVENTS, EV_DAYS, MAIN_EV, EV_ALIAS, COL_OUTLINE, CO_CITIES, EV_INFO, NE_TYPES, NE_CITIES } from "@/data/events.js";
+
+/* Sin personas inventadas en el código:
+   - PERSONAS = perfil base por industria, vacío (lo completa el usuario o su LinkedIn) con intereses sugeridos.
+   - IND[ind].matches / MATCH_INFO se llenan con GET /api/contacts y las conexiones del servidor (adoptContact).
+   - SPEAKERS[evento] = ponentes de GET /api/events/:id (undefined = sin pedir, null = en curso). */
+const PERSONAS = Object.fromEntries(Object.keys(IND).map(k => [k, { name: "", initials: "TÚ", company: "", seniority: "", interests: IND_INTERESTS[k].slice(), location: "" }]));
+Object.values(IND).forEach(d => { d.matches = []; });
+const MATCH_INFO = {};
+const SPEAKERS = {};
 import { TABS, TAB_DESC, PILLS, I18N, DM_PILLS, TOUR, NOTIF_T } from "@/data/navigation.js";
 import { P_FIELDS, evtTypeLbl, LI_FIELDS, LI_AUTH_TXT, PERM_SCOPES } from "@/data/privacy.js";
 import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
@@ -116,7 +125,7 @@ export function bootKnetApp() {
       <div class="flex items-center justify-between gap-3 flex-wrap"><span class="chip chip-cyan">${svg("link")}Paso 1 de 3 · Perfil</span><span class="mono text-[12px] text-mute">linkedin-mcp · profile.read</span></div>
       <div class="grid md:grid-cols-[1fr_auto_1fr] gap-4 items-center">
         <div class="lm-card rounded-2xl p-5 bg-white/[.04] border border-white/10">
-          <div class="lm-cover" aria-hidden="true"></div><div class="flex gap-3 items-center"><div class="lm-av" aria-hidden="true"><svg viewBox="0 0 64 64" width="56" height="56"><defs><linearGradient id="lmBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C77DFF"/><stop offset="1" stop-color="#5B1FA6"/></linearGradient><clipPath id="lmClip"><circle cx="32" cy="32" r="32"/></clipPath></defs><g clip-path="url(#lmClip)"><rect width="64" height="64" fill="url(#lmBg)"/><path d="M17 33c0-12 6-20 15-20s15 8 15 20v14H17z" fill="#2B1630"/><path d="M27 41h10v8H27z" fill="#D9A07F"/><path d="M8 64c2-11 11-16 24-16s22 5 24 16z" fill="#2E1550"/><path d="M26 48l6 9 6-9" fill="#F5F1FA"/><ellipse cx="32" cy="31" rx="10" ry="12" fill="#E8B796"/><path d="M21 30c1-10 6-14 12-14 6 0 10 4 11 11-5-1-9-4-11-8-2 5-6 9-12 11z" fill="#2B1630"/><circle cx="28" cy="32" r="1.2" fill="#2B1630"/><circle cx="36" cy="32" r="1.2" fill="#2B1630"/><path d="M29.5 37.5c1.6 1.2 3.4 1.2 5 0" stroke="#A0524B" stroke-width="1.3" fill="none" stroke-linecap="round"/></g></svg><span class="lm-in">in</span></div><div><div class="font-semibold flex items-center gap-1.5">Laura Méndez<span class="lm-ok" aria-label="Perfil verificado">${svg("check")}</span></div><div class="text-mute text-[13px]">VP de Plataforma en Retail Andino</div></div></div>
+          <div class="lm-cover" aria-hidden="true"></div><div class="flex gap-3 items-center"><div class="lm-av" aria-hidden="true"><svg viewBox="0 0 64 64" width="56" height="56"><defs><linearGradient id="lmBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C77DFF"/><stop offset="1" stop-color="#5B1FA6"/></linearGradient><clipPath id="lmClip"><circle cx="32" cy="32" r="32"/></clipPath></defs><g clip-path="url(#lmClip)"><rect width="64" height="64" fill="url(#lmBg)"/><path d="M17 33c0-12 6-20 15-20s15 8 15 20v14H17z" fill="#2B1630"/><path d="M27 41h10v8H27z" fill="#D9A07F"/><path d="M8 64c2-11 11-16 24-16s22 5 24 16z" fill="#2E1550"/><path d="M26 48l6 9 6-9" fill="#F5F1FA"/><ellipse cx="32" cy="31" rx="10" ry="12" fill="#E8B796"/><path d="M21 30c1-10 6-14 12-14 6 0 10 4 11 11-5-1-9-4-11-8-2 5-6 9-12 11z" fill="#2B1630"/><circle cx="28" cy="32" r="1.2" fill="#2B1630"/><circle cx="36" cy="32" r="1.2" fill="#2B1630"/><path d="M29.5 37.5c1.6 1.2 3.4 1.2 5 0" stroke="#A0524B" stroke-width="1.3" fill="none" stroke-linecap="round"/></g></svg><span class="lm-in">in</span></div><div><div class="font-semibold flex items-center gap-1.5">Tu nombre<span class="lm-ok" aria-label="Perfil verificado">${svg("check")}</span></div><div class="text-mute text-[13px]">Tu cargo en tu empresa</div></div></div>
           <div class="mt-4 grid gap-1.5 text-[13px] text-mute"><div class="h-2 rounded bg-white/10 w-11/12"></div><div class="h-2 rounded bg-white/10 w-9/12"></div><div class="h-2 rounded bg-white/10 w-10/12"></div></div>
           <div class="flex flex-wrap gap-1.5 mt-4"><span class="chip">Kubernetes</span><span class="chip">ML Ops</span><span class="chip">Liderazgo</span></div>
         </div>
@@ -149,15 +158,15 @@ export function bootKnetApp() {
       <div class="flex items-center justify-between gap-3 flex-wrap"><span class="chip chip-accent">${svg("bot")}AI Concierge</span><span class="mono text-[12px] text-mute">RAG · 148 sesiones indexadas</span></div>
       <div class="grid gap-3" id="chatBox">
         <div class="bubble me">Tengo 40 minutos libres. ¿Qué me conviene?</div>
-        <div class="bubble ai">Dos opciones: <b>“RAG que sí escala”</b> empieza en 8 min en Lab 3 (encaja con ML Ops), o un café con <b>Santiago A.</b> (Head de Data, 87% afinidad), que está libre hasta las 11:30.</div>
+        <div class="bubble ai">Dos opciones: <b>“RAG que sí escala”</b> empieza en 8 min en Lab 3 (encaja con ML Ops), o un café con <b>tu match de Data</b> (87% afinidad), que está libre hasta las 11:30.</div>
       </div>
       <div class="flex flex-wrap gap-2" id="aiPills">
         <button class="pill-btn" data-q="0">¿Quién está en la sala de al lado?</button>
         <button class="pill-btn" data-q="1">Resume el último keynote</button>
-        <button class="pill-btn" data-q="2">Agenda el café con Santiago</button>
+        <button class="pill-btn" data-q="2">Agenda el café con mi match</button>
       </div>`,
     dos: () => `
-      <div class="flex items-center justify-between gap-3 flex-wrap"><span class="chip" style="color:var(--t-lilac);border-color:rgba(117,0,192,.45);background:rgba(117,0,192,.12)">${svg("file")}Generado al cierre del Summit</span><span class="mono text-[12px] text-mute">Dossier · Laura Méndez</span></div>
+      <div class="flex items-center justify-between gap-3 flex-wrap"><span class="chip" style="color:var(--t-lilac);border-color:rgba(117,0,192,.45);background:rgba(117,0,192,.12)">${svg("file")}Generado al cierre del Summit</span><span class="mono text-[12px] text-mute">Dossier · Tu perfil</span></div>
       <div class="rounded-2xl p-5 sm:p-6 bg-white/[.035] border border-white/10 grid gap-5">
         <div><div class="mono text-[11px] text-mute uppercase tracking-[.12em]">Top aprendizajes</div>
           <ol class="mt-2 grid gap-1.5 text-[14px] list-decimal pl-5">
@@ -167,7 +176,7 @@ export function bootKnetApp() {
           </ol></div>
         <div class="grid sm:grid-cols-2 gap-4">
           <div><div class="mono text-[11px] text-mute uppercase tracking-[.12em]">Contactos clave</div>
-            <ul class="mt-2 grid gap-1.5 text-[14px]"><li class="flex gap-2 items-center"><span class="ico" style="width:16px;height:16px;color:var(--t-blue)">${svg("users")}</span>Santiago A. · seguimiento RAG</li><li class="flex gap-2 items-center"><span class="ico" style="width:16px;height:16px;color:var(--t-blue)">${svg("users")}</span>Camila P. · design partner</li></ul></div>
+            <ul class="mt-2 grid gap-1.5 text-[14px]"><li class="flex gap-2 items-center"><span class="ico" style="width:16px;height:16px;color:var(--t-blue)">${svg("users")}</span>Head de Data · seguimiento RAG</li><li class="flex gap-2 items-center"><span class="ico" style="width:16px;height:16px;color:var(--t-blue)">${svg("users")}</span>Founder de observabilidad · design partner</li></ul></div>
           <div><div class="mono text-[11px] text-mute uppercase tracking-[.12em]">Plan de 30 días</div>
             <ul class="mt-2 grid gap-1.5 text-[14px]"><li class="flex gap-2 items-center"><span class="ico" style="width:16px;height:16px;color:var(--t-emerald)">${svg("target")}</span>Piloto MCP con 2 herramientas</li><li class="flex gap-2 items-center"><span class="ico" style="width:16px;height:16px;color:var(--t-emerald)">${svg("target")}</span>Benchmark de costos de RAG</li></ul></div>
         </div>
@@ -240,18 +249,15 @@ export function bootKnetApp() {
         <div class="min-w-0"><div class="font-semibold text-[14px] leading-snug">${ttl}</div><div class="text-[12px] ${done ? "text-[color:var(--t-emerald)]" : "text-mute"}">${done ? "Completada · +" + xp + " XP" : sub + " · +" + xp + " XP"}</div></div>
         ${done ? `<span class="chip chip-emerald">${svg("check")}Hecho</span>` : `<button class="btn btn-emerald btn-sm" data-xp="${xp}" data-id="${id}" data-t="${ttl.replace(/"/g, "&quot;")}">Completar</button>`}
       </div>`; }).join("");
-    $("#view-matches").innerHTML = d.matches.map(([ini, n, r, sc, why], i) => `
-      <div class="match"><div class="avatar" style="background:${["linear-gradient(135deg,#A100FF,#7500C0)", "linear-gradient(135deg,#2F55E0,#7500C0)", "linear-gradient(135deg,#10B981,#2F55E0)"][i]}">${ini}</div>
-        <div class="min-w-0"><div class="font-semibold text-[14px]">${n} <span class="text-mute font-normal">· ${r}</span></div><div class="text-[12px] text-mute">${S.obj === "talento" ? "Posible aliado: " : S.obj === "aprender" ? "Puede enseñarte: " : "Oportunidad: "}${why}</div></div>
-        <span class="mono text-[13px] tabular text-[color:var(--t-blue)]">${sc}%</span></div>`).join("");
+    $("#view-matches").innerHTML = `<div class="conn-empty">${svg("users")}<div><b>Tus matches serán asistentes reales</b><p class="text-mute text-[14px]">KNET solo te sugiere personas que de verdad se inscribieron en tu evento. Crea tu cuenta e inscríbete: aquí verás a quién te conviene conocer y por qué.</p></div></div>`;
     $("#view-concierge").innerHTML = `
       <div class="grid gap-3" id="simChat"><div class="bubble ai">Hola. Tu agenda de ${d.label.toLowerCase()} está lista. ¿En qué te ayudo?</div></div>
       <div class="flex flex-wrap gap-2">${["¿Quién está en la sala de al lado?", "¿Dónde es mi próxima sesión?", "¿Qué misión me da más XP ahora?"].map((q, i) => `<button class="pill-btn" data-sq="${i}">${q}</button>`).join("")}</div>`;
   };
-  const simAnswer = (i) => { const d = IND[S.ind]; const m = d.matches[0]; const a = d.agenda[0];
+  const simAnswer = (i) => { const d = IND[S.ind]; const a = d.agenda[0];
     const best = d.missions.map((x, k) => [x, S.ind + k]).filter(([, id]) => !S.done.has(id)).sort((p, q) => q[0][3] - p[0][3])[0];
     return [
-      `En <b>Sala Orbit</b> está <b>${m[1]}</b> (${m[2]}, ${m[3]}% afinidad). ${m[4]}. ¿Te presento?`,
+      "Cuando otros asistentes reales se inscriban en tu evento, te diré quién está en la sala de al lado y por qué te conviene conocerle.",
       `<b>${a[2]}</b> a las ${a[0]} en <b>${a[3]}</b>. Estás a 3 minutos caminando.`,
       best ? `“${best[0][1]}” te da <b>+${best[0][3]} XP</b>. Está en tu ruta hacia la próxima sesión.` : `Completaste todas tus misiones. Nuevas misiones se abren en el siguiente bloque.`
     ][i]; };
@@ -288,7 +294,7 @@ export function bootKnetApp() {
     await line(`<span class="p">▸</span> MCP <span class="k">profile.read</span> → rol: <b>${d.role}</b>`, w);
     await line(`<span class="p">▸</span> Industria detectada: <b>${d.label}</b> · objetivo: ${OBJ[S.obj]}`, w);
     await line(`<span class="p">▸</span> RAG: 148 sesiones indexadas → <span class="k">4 relevantes</span> sobre ${d.topic}`, w);
-    await line(`<span class="p">▸</span> Matchmaking: 1.240 asistentes → <span class="k">3 conexiones</span>`, w);
+    await line(`<span class="p">▸</span> Matchmaking: <span class="k">solo asistentes reales</span> de tu evento`, w);
     await line(`<span class="p">▸</span> Misiones contextuales: <span class="k">3 activas</span> (máx. 3)`, w);
     const secs = instant ? "1,8" : ((performance.now() - t0) / 1000).toFixed(1).replace(".", ",");
     await line(`<span class="ok">✓ Agenda lista en ${secs} s</span><span class="caret"></span>`, 0);
@@ -353,7 +359,17 @@ export function bootKnetApp() {
   
   /* Multievento: cada evento tiene sus días reales (ISO) */
   
-  EVENTS.forEach(e => { e.days = EV_DAYS[e.id] || ["2026-12-10"]; });
+  EVENTS.forEach(e => { e.days = (EV_DAYS[e.id] || []).slice(); });
+  /* Cuánto falta, calculado desde hoy (o el mes anunciado si aún no hay días) */
+  const MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+  function whenOf(ev) {
+    const now = new Date(), today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+    if (!ev.days.length) { if (!ev.tbc) return "Fecha por confirmar"; const [y, m] = ev.tbc.split("-").map(Number); return `${MONTHS_ES[m - 1].replace(/^./, c => c.toUpperCase())} ${y} · por confirmar`; }
+    const d0 = Date.parse(ev.days[0] + "T00:00:00Z"), d1 = Date.parse(ev.days[ev.days.length - 1] + "T00:00:00Z"), n = Math.round((d0 - today) / 864e5);
+    if (today > d1) return "Finalizado"; if (n <= 0) return "En curso"; if (n === 1) return "Mañana"; if (n < 7) return "Esta semana"; if (n < 31) return `En ${Math.round(n / 7)} semana${Math.round(n / 7) > 1 ? "s" : ""}`;
+    const mo = Math.round(n / 30.4); return mo <= 1 ? "Próximo mes" : `En ${mo} meses`;
+  }
+  EVENTS.forEach(e => { e.when = whenOf(e); });
   
   
   const norm = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -392,10 +408,11 @@ export function bootKnetApp() {
 
   /* ---- Estado ---- */
   const esc = (x) => String(x).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const fresh = (ind = "tech") => ({ connected: false, ind, xp: 0, done: [], connections: [], attended: [], actions: {}, scopes: { profile: true, industry: true, interests: true, network: true }, dossierAt: null, extra: [], chat: [], graph: false, events: ["bog"], mv1: true, sel: {}, avatar: null, profile: null, requests: {}, coffees: {}, dms: {}, qrConn: [], frames: [], frame: null, items: [], gf: null, exp: null, notifs: [], notifDue: [], soonSeeded: false });
+  const fresh = (ind = "tech") => ({ connected: false, ind, xp: 0, done: [], connections: [], attended: [], actions: {}, scopes: { profile: true, industry: true, interests: true, network: true }, dossierAt: null, extra: [], chat: [], graph: false, events: [MAIN_EV], mv1: true, mv2: true, sel: {}, avatar: null, profile: null, requests: {}, coffees: {}, dms: {}, qrConn: [], frames: [], frame: null, items: [], gf: null, exp: null, notifs: [], notifDue: [], soonSeeded: false });
   let A = fresh();
   try { const raw = localStorage.getItem(KEY); if (raw) { const o = JSON.parse(raw); if (o && IND[o.ind]) A = Object.assign(fresh(o.ind), o); } } catch (e) {}
   if (A.connected && PERSONAS[A.ind] === undefined) A = fresh();
+  (A.apiEvents || []).forEach(addApiEvent); // eventos nuevos de la API ya vistos (ver mergeEvents)
   /* Limpieza de datos de versiones anteriores (se retiró el simulador Go Fest) */
   /* Migración a multievento: los check-ins pasan de índice a "evento:día:sesión" */
   if (!A.mv1) {
@@ -404,6 +421,23 @@ export function bootKnetApp() {
     (A.history || []).forEach(h => { if (/^ses:\d+$/.test(h.key)) h.key = "ses:bog:0:" + h.key.slice(4); });
     A.events = A.events || []; if (!A.events.includes("bog")) A.events.unshift("bog");
     A.sel = {}; A.mv1 = true;
+    try { localStorage.setItem(KEY, JSON.stringify(A)); } catch (e) {}
+  }
+  /* Catálogo real (issue #16): «bog» pasa a ser el evento principal (mismos índices de día y sesión) y se
+     quitan las referencias a eventos retirados (DevFest de 2026 y exclusivos por nivel x2–x5). */
+  if (!A.mv2) {
+    const U = (arr) => [...new Set(arr)], known = (id) => EVENTS.some(e => e.id === id), to = (id) => EV_ALIAS[id] || id;
+    const mapKey = (k) => { const m = /^(ses:|ev:)?([a-z0-9]+)(:[\s\S]*)?$/.exec(k); if (!m) return k; const id = to(m[2]); return known(id) ? (m[1] || "") + id + (m[3] || "") : null; };
+    const mapSes = (x) => { const [ev, ...rest] = String(x).split(":"); const id = to(ev); return known(id) ? [id, ...rest].join(":") : null; };
+    A.events = U((A.events || []).map(to).filter(known)); if (!A.events.length && A.connected) A.events = [MAIN_EV];
+    A.regLocal = U((A.regLocal || []).map(to).filter(known));
+    A.attended = U((A.attended || []).map(mapSes).filter(Boolean));
+    if (A.ended) A.ended = Object.fromEntries(Object.entries(A.ended).map(([k, v]) => [/^(ses|ev):/.test(k) ? mapKey(k) : k, v]).filter(([k]) => k));
+    A.history = (A.history || []).map(h => { if (!/^(ses|ev):/.test(h.key)) return h; const key = mapKey(h.key); if (!key) return null; const evId = h.s && h.s.evId ? to(h.s.evId) : null; return { ...h, key, s: h.s ? { ...h.s, evId: evId && known(evId) ? evId : undefined } : h.s }; }).filter(Boolean);
+    ["aiDossier"].forEach(f => { if (A[f]) A[f] = Object.fromEntries(Object.entries(A[f]).map(([k, v]) => [to(k), v]).filter(([k]) => known(k))); });
+    A.xpSynced = (A.xpSynced || []).map(k => k.startsWith("checkin:") ? (mapSes(k.slice(8)) ? "checkin:" + mapSes(k.slice(8)) : null) : k).filter(Boolean);
+    A.outbox = (A.outbox || []).map(o => o.t === "reg" || o.t === "dossier" ? { ...o, id: to(o.id) } : o.t === "checkin" ? { ...o, id: mapSes(o.id) } : o).filter(o => o.id && (!["reg", "dossier"].includes(o.t) || known(o.id)));
+    A.sel = {}; delete A.exp; A.mv2 = true;
     try { localStorage.setItem(KEY, JSON.stringify(A)); } catch (e) {}
   }
   (() => { const gfTxt = /go ?fest/i;
@@ -421,6 +455,21 @@ export function bootKnetApp() {
   const INTEREST_POOL = [...new Set([].concat(...Object.values(BASE_P).map(x => x.interests), ["Datos", "Ciberseguridad", "Experiencia de cliente", "Sostenibilidad"]))];
   
   const initialsOf = (n) => (String(n).trim().split(/\s+/).slice(0, 2).map(w => w[0] || "").join("") || "TÚ").toUpperCase();
+  /* Matches = contactos que devuelve la API. Sin afinidad del servidor se estima por intereses en común. */
+  function adoptContact(c, ind = A.ind) {
+    if (!c || !c.name || c.userId || !IND[ind]) return; // los usuarios reales van por qrConn (adoptRealPeer)
+    const mine = (PERSONAS[ind] || {}).interests || [], ints = Array.isArray(c.interests) ? c.interests : [];
+    const aff = Number.isFinite(c.affinity) ? c.affinity : Math.min(95, 50 + ints.filter(t => mine.includes(t)).length * 15);
+    const row = [c.initials || initialsOf(c.name), c.name, c.headline || "", aff, c.matchReason || "Comparte temas con tu perfil"];
+    const list = IND[ind].matches, i = list.findIndex(m => m[1] === c.name);
+    if (i >= 0) list[i] = row; else list.push(row);
+    MATCH_INFO[c.name] = { int: ints, likes: Array.isArray(c.likes) ? c.likes : [], goal: c.goal || "" };
+  }
+  function setContacts(ind, contacts, persist = true) {
+    if (!IND[ind] || !Array.isArray(contacts)) return;
+    IND[ind].matches = []; contacts.forEach(c => adoptContact(c, ind));
+    if (persist) A.cat = { ...(A.cat || {}), [ind]: contacts.slice(0, 60) };
+  }
   const profileFromPersona = (ind) => ({ name: BASE_P[ind].name, role: BASE_ROLE[ind], company: BASE_P[ind].company, seniority: BASE_P[ind].seniority, interests: BASE_P[ind].interests.slice(), location: BASE_P[ind].location, src: Object.fromEntries(P_FIELDS.map(f => [f, "mcp"])) });
   function applyProfile() {
     Object.keys(BASE_P).forEach(k => { PERSONAS[k] = { ...BASE_P[k], interests: BASE_P[k].interests.slice() }; IND[k].role = BASE_ROLE[k]; });
@@ -430,6 +479,7 @@ export function bootKnetApp() {
   }
   const profileMode = () => { const v = Object.values((A.profile && A.profile.src) || {}); return v.length && v.every(x => x === "manual") ? "manual" : v.some(x => x !== "mcp") ? "mixed" : "mcp"; };
   if (A.connected && !A.profile) A.profile = profileFromPersona(A.ind);
+  Object.entries(A.cat || {}).forEach(([ind, list]) => setContacts(ind, list, false)); // última lista de contactos del servidor
   applyProfile();
   let editField = null;
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(A)); } catch (e) {} };
@@ -445,12 +495,12 @@ export function bootKnetApp() {
      - XP híbrida: A.xp = XP del servidor + A.xpLocal (XP de flujos que la API aún no conoce:
        grafo, cafés, experiencias, onboarding…). Cuando la API confirma una misión, un check-in o
        una conexión aceptada, su XP pasa de A.xpLocal al servidor; el total visible no cambia.
-     - A.xpSynced: claves ("mission:c3", "checkin:bog:0:2", "conn:Laura M.") cuya XP ya cuenta el
+     - A.xpSynced: claves ("mission:c3", "checkin:and:0:2", "conn:<nombre>") cuya XP ya cuenta el
        servidor (evita restarla dos veces).
      - A.outbox: acciones hechas sin conexión; se reenvían en orden al volver la API.
      - A.apiLinked: false = el navegador manda en el próximo sync (sube perfil, inscripciones,
        misiones, check-ins, conexiones y dossier locales); true = el servidor manda al arrancar.
-     - A.regLocal: inscripciones que el servidor aún rechaza por nivel (su XP es menor); se conservan. */
+     - A.regLocal: inscripciones que el servidor aún no acepta (evento que no tiene en su catálogo); se conservan. */
   const API_FIELD = { name: "name", role: "role", company: "company", ind: "industry", seniority: "seniority", interests: "interests", location: "location" };
   const API_SRC = ["mcp", "manual", "edited"];
   const CHECKIN_XP = 40, CONN_XP = 100, COFFEE_XP = 50; // iguales a XP_REWARDS del backend
@@ -494,16 +544,82 @@ export function bootKnetApp() {
     if (Array.isArray(u.interests) && u.interests.length) pr.interests = u.interests.slice();
     if (u.fieldSources) pr.src = { ...pr.src, ...u.fieldSources };
   }
-  /* Actualiza en su sitio los eventos conocidos (el mapa y el recinto 3D guardan referencias a estos objetos) */
+  /* Eventos que publica la API y no están en el catálogo local (src/data/events.js). Solo se aceptan reales con
+     fuente oficial http(s); se guardan en A.apiEvents (con su ficha y recinto de GET /api/events/:id) para que sigan
+     disponibles al recargar u offline. Sin ficha: una genérica; sin recinto 3D: el recinto no lo ofrece.
+     Varias plantillas insertan estos textos sin escapar: todo lo que llega de la API (o de esa caché) se sanea aquí. */
+  function apiTxt(t, max = 400) { return typeof t === "string" ? t.replace(/[<>]/g, "").replace(/"/g, "”").replace(/\s+/g, " ").trim().slice(0, max) : ""; }
+  function apiUrl(u) { return typeof u === "string" && /^https?:\/\/[^\s"'<>`]+$/i.test(u) ? u : ""; }
+  function apiColor(c) { return typeof c === "string" && /^#[0-9a-f]{3,8}$/i.test(c); }
+  function apiTags(a) { return Array.isArray(a) ? a.map(t => apiTxt(t, 60)).filter(Boolean).slice(0, 12) : []; }
+  function apiDays(a) { return Array.isArray(a) ? a.filter(d => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)).slice(0, 14) : []; }
+  /* Copia profunda con los textos saneados (ficha y recinto vienen como JSON libre) */
+  function apiDeep(v, depth = 0) { return depth > 6 ? null : typeof v === "string" ? apiTxt(v, 600) : typeof v === "number" ? (Number.isFinite(v) ? v : 0) : typeof v === "boolean" ? v
+    : Array.isArray(v) ? v.slice(0, 60).map(x => apiDeep(x, depth + 1)) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).slice(0, 60).map(([k, x]) => [apiTxt(k, 40), apiDeep(x, depth + 1)])) : null; }
+  function venueColorOk(c) { return ["purple", "lime", "orange", "blue"].includes(c); } // claves de VC (recinto 3D)
+  function okVenue(v) { return !!(v && Array.isArray(v.floor) && v.floor.length === 4 && v.floor.every(n => typeof n === "number") && Array.isArray(v.z) && v.z.length && v.z.every(z => Array.isArray(z) && Array.isArray(z[4]) && venueColorOk(z[2])) && v.nodes && v.nodes[v.ent] && typeof v.size === "number"); }
+  function okInfo(i) { return !!(i && Array.isArray(i.tone) && i.tone.length === 2 && i.tone.every(apiColor) && apiColor(i.accent) && Array.isArray(i.formato) && Array.isArray(i.agenda) && i.agenda.every(r => Array.isArray(r) && r.length === 3) && Array.isArray(i.llevas)); }
+  function cleanInfo(i) { const c = apiDeep(i); return okInfo(c) ? c : null; }
+  function cleanVenue(v) { const c = apiDeep(v); return okVenue(c) ? c : null; }
+  function defaultInfo(ev) {
+    return { tone: ["#1E1452", "#0E3A4A"], accent: "#BE82FF", lema: ev.desc || ev.name, para: "Asistentes, empresas y líderes del sector.",
+      formato: ["Presencial", ev.days.length ? `${ev.days.length} día${ev.days.length > 1 ? "s" : ""}` : "Fecha por confirmar"], agenda: [], llevas: [] };
+  }
+  function addApiEvent(c) {
+    if (!c || typeof c.id !== "string" || !/^[a-z0-9]{1,24}$/.test(c.id) || EVENTS.some(e => e.id === c.id) || EV_ALIAS[c.id] || !apiUrl(c.url)) return null;
+    const cityName = apiTxt(c.city, 60), city = CO_CITIES.find(x => x[0] === cityName), tags = apiTags(c.tags), ind = Array.isArray(c.ind) ? c.ind.filter(k => IND[k]) : [];
+    const ev = { id: c.id, city: cityName || "Colombia", name: apiTxt(c.name, 120) || c.id, venue: apiTxt(c.venue, 160) || "Sede por confirmar", date: apiTxt(c.date, 60) || "Fecha por confirmar",
+      lat: Number.isFinite(c.lat) ? c.lat : city ? city[1] : 4.71, lon: Number.isFinite(c.lon) ? c.lon : city ? city[2] : -74.07,
+      tags: tags.length ? tags : ["Datos"], ind: ind.length ? ind : Object.keys(IND), desc: apiTxt(c.desc, 600), real: true, org: apiTxt(c.org, 120), url: apiUrl(c.url), days: apiDays(c.days), api: true };
+    EVENTS.push(ev);
+    EV_INFO[ev.id] = cleanInfo(c.info) || defaultInfo(ev);
+    const v = cleanVenue(c.venue3d); if (v) VENUES[ev.id] = v;
+    return ev;
+  }
+  const apiEventCache = (ev) => ({ id: ev.id, city: ev.city, name: ev.name, venue: ev.venue, date: ev.date, lat: ev.lat, lon: ev.lon, tags: ev.tags, ind: ev.ind, desc: ev.desc,
+    org: ev.org, url: ev.url, days: ev.days, info: EV_INFO[ev.id], venue3d: VENUES[ev.id] || null });
+  function saveApiEvents() { A.apiEvents = EVENTS.filter(e => e.api).map(apiEventCache); }
+  /* Ficha y recinto de un evento nuevo (una vez por carga; los ponentes los pide loadSpeakers) */
+  const apiEvDetail = new Set();
+  async function loadApiEventDetail(id) {
+    if (apiEvDetail.has(id)) return; apiEvDetail.add(id);
+    try {
+      const r = await api.getEvent(id), d = r && r.event; if (!d || !evById(id)) return;
+      const info = cleanInfo(d.info), venue = cleanVenue(d.venue);
+      if (info) EV_INFO[id] = info;
+      if (venue) VENUES[id] = venue;
+      if (info || venue) { saveApiEvents(); save(); refresh(); }
+    } catch (e) { apiEvDetail.delete(id); apiLog("sin ficha del evento " + id, e); }
+  }
+  /* Actualiza en su sitio los eventos conocidos (el mapa y el recinto 3D guardan referencias a estos objetos) e
+     integra los nuevos que publique la API. Los eventos nuevos que la API deja de publicar se retiran. */
   function mergeEvents(list) {
-    (list || []).forEach(s => {
-      const ev = EVENTS.find(e => e.id === s.id); if (!ev) return; // eventos sin recinto/ficha local: más adelante
-      Object.assign(ev, { name: s.name || ev.name, city: s.city || ev.city, venue: s.venueName || ev.venue, date: s.dateLabel || ev.date,
-        lat: s.lat ?? ev.lat, lon: s.lon ?? ev.lon, tags: s.tags && s.tags.length ? s.tags : ev.tags, ind: s.industries && s.industries.length ? s.industries : ev.ind, desc: s.description || ev.desc });
-      if (s.days && s.days.length) ev.days = s.days.slice();
-      if (s.minLevel > 1) ev.lvl = s.minLevel; else delete ev.lvl;
-      if (s.kind === "real") Object.assign(ev, { real: true, org: s.organizer || ev.org, url: s.sourceUrl || ev.url });
+    if (!Array.isArray(list)) return;
+    const listed = new Set(list.map(s => s && s.id));
+    list.forEach(s => {
+      if (!s || typeof s.id !== "string") return;
+      let ev = EVENTS.find(e => e.id === s.id);
+      if (!ev) {
+        if (s.kind !== "real") return; // catálogo: solo eventos reales con fuente oficial (addApiEvent exige la URL)
+        ev = addApiEvent({ id: s.id, city: s.city, name: s.name, venue: s.venueName, date: s.dateLabel, lat: s.lat, lon: s.lon, tags: s.tags, ind: s.industries,
+          desc: s.description, org: s.organizer, url: s.sourceUrl, days: s.days });
+        if (!ev) return;
+      }
+      const tags = apiTags(s.tags), ind = Array.isArray(s.industries) ? s.industries.filter(k => IND[k]) : [], days = apiDays(s.days);
+      Object.assign(ev, { name: apiTxt(s.name, 120) || ev.name, city: apiTxt(s.city, 60) || ev.city, venue: apiTxt(s.venueName, 160) || ev.venue, date: apiTxt(s.dateLabel, 60) || ev.date,
+        lat: Number.isFinite(s.lat) ? s.lat : ev.lat, lon: Number.isFinite(s.lon) ? s.lon : ev.lon, tags: tags.length ? tags : ev.tags, ind: ind.length ? ind : ev.ind, desc: apiTxt(s.description, 600) || ev.desc });
+      if (days.length) ev.days = days;
+      delete ev.lvl; // sin restricción por nivel: cualquier asistente puede inscribirse
+      if (s.kind === "real") Object.assign(ev, { real: true, org: apiTxt(s.organizer, 120) || ev.org, url: apiUrl(s.sourceUrl) || ev.url });
+      if (ev.api) loadApiEventDetail(ev.id);
     });
+    // Un evento nuevo que la API ya no publica se retira (los del catálogo local se quedan)
+    if (listed.size) for (let i = EVENTS.length - 1; i >= 0; i--) {
+      const e = EVENTS[i]; if (!e.api || listed.has(e.id)) continue;
+      EVENTS.splice(i, 1); delete EV_INFO[e.id]; delete VENUES[e.id];
+      A.events = A.events.filter(id => id !== e.id); A.regLocal = (A.regLocal || []).filter(id => id !== e.id);
+    }
+    saveApiEvents();
   }
   /* La acción `key` ya cuenta en el servidor: sus `amount` XP salen de xpLocal (una sola vez).
      serverXp = total real del servidor si se conoce; si no, el próximo sync lo corrige. */
@@ -579,8 +695,8 @@ export function bootKnetApp() {
     }
     try { await api.register(id); A.regLocal = (A.regLocal || []).filter(x => x !== id); }
     catch (e) {
-      if (!(e instanceof ApiError && e.status === 403)) throw e;
-      A.regLocal = uniq((A.regLocal || []).concat(id)); apiLog(`el servidor aún no habilita ${id} por nivel; la inscripción queda local`, e);
+      if (!(e instanceof ApiError && (e.status === 403 || e.status === 404))) throw e;
+      A.regLocal = uniq((A.regLocal || []).concat(id)); apiLog(`el servidor aún no tiene ${id}; la inscripción queda local`, e);
     }
     return "ok";
   }
@@ -729,9 +845,9 @@ export function bootKnetApp() {
           if (!A.apiLinked) await linkLocalToApi(); else await flushOutbox();
           // Cafés: opcional (un backend sin /api/me/coffees responde 404 y el resto del sync sigue)
           const optional = (p, what) => p.catch(e => { if (isOffline(e)) throw e; apiLog(`sin ${what} en el servidor`, e); return null; });
-          const [me, ms, ck, cn, ds, cf] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers(), optional(api.listCoffees(), "cafés")]);
+          const [me, ms, ck, cn, ds, cf, ct] = await Promise.all([api.getMe(), api.listMissions(), api.listCheckins(), api.listConnections(), api.listDossiers(), optional(api.listCoffees(), "cafés"), optional(api.listContacts(A.ind), "contactos")]);
           applyServerUser(me.user); applyProfile();
-          const regs = (me.registrations || []).filter(id => EVENTS.some(e => e.id === id));
+          const regs = uniq((me.registrations || []).map(id => EV_ALIAS[id] || id).filter(id => EVENTS.some(e => e.id === id)));
           A.events = uniq(regs.concat(A.regLocal || []));
           // Misiones y check-ins: unión de lo local y lo del servidor, sin contar dos veces la XP
           (ms.missions || []).filter(m => m.completed).forEach(m => {
@@ -740,13 +856,15 @@ export function bootKnetApp() {
             adoptServerAction("checkin:" + c.sessionCode, CHECKIN_XP, A.attended.includes(c.sessionCode)); if (!A.attended.includes(c.sessionCode)) A.attended.push(c.sessionCode); });
           // Conexiones aceptadas en el servidor: solo se suman las que esta industria sabe mostrar
           connIndex = indexConnections(cn.connections);
+          if (ct) setContacts(A.ind, ct.contacts);
+          (cn.connections || []).forEach(c => { if (c.contact && !c.contact.userId) adoptContact(c.contact); });
           (cn.connections || []).filter(c => c.status === "accepted").forEach(c => {
             const n = c.contact.name, local = A.connections.includes(n), real = !!c.contact.userId;
             if (!local && !real && !IND[A.ind].matches.some(m => m[1] === n) && !qrPerson(n)) return;
             if (real) adoptRealPeer(c, !local && Date.now() - (Date.parse(c.acceptedAt || c.createdAt) || 0) < 9e5); // solo avisa de las recientes
             adoptServerAction("conn:" + n, CONN_XP, local); if (!local) A.connections.push(n); });
           if (cf) mergeCoffees(cf.coffees);
-          // Mensajes: solo los hilos con usuarios reales (con contactos del catálogo las respuestas son simuladas y locales)
+          // Mensajes: solo los hilos con usuarios reales (los contactos del catálogo responden en local)
           const threads = [...connIndex].filter(([n, c]) => c.userId && c.status === "accepted" && A.connections.includes(n));
           const pages = await Promise.all(threads.map(([, c]) => optional(api.listMessages(c.id, { limit: 30 }), "mensajes")));
           threads.forEach(([n], i) => { if (pages[i]) mergeMessages(n, pages[i].messages); });
@@ -800,7 +918,8 @@ export function bootKnetApp() {
     const rs = getSel("res"), ids = rs.ev === "all" ? myEvIds() : [rs.ev], body = dossierPayload();
     ids.forEach(id => apiRun({ t: "dossier", id, body }));
   }
-  const board = () => OTHERS.map(([n, x]) => ({ n, x })).concat([{ n: first(PERSONAS[A.ind].name) + " (tú)", x: A.xp, me: true }]).sort((a, b) => b.x - a.x);
+  /* Ranking: solo con datos reales. Mientras la API no publique la XP de otros asistentes, solo estás tú. */
+  const board = () => [{ n: PERSONAS[A.ind].name ? first(PERSONAS[A.ind].name) + " (tú)" : "Tú", x: A.xp, me: true }];
   const rank = () => board().findIndex(r => r.me) + 1;
   const insights = (sess) => { const out = [], seen = new Set();
     (sess || A.attended.map(id => sessionById(id)).filter(Boolean)).forEach(s => { const x = s.insight; if (!seen.has(x)) { seen.add(x); out.push({ text: x, src: `${s.ttl} · ${evById(s.ev).city}, Día ${s.day + 1}` }); } });
@@ -818,7 +937,7 @@ export function bootKnetApp() {
       { i: "users", n: "Primer match", ok: A.connections.length >= 1, got: `Conectaste con ${A.connections[0] || "tu primer match"}.`, need: "Conecta con 1 match en el AI Concierge." },
       { i: "check", n: "Asistente fiel", ok: A.attended.length >= 2, got: "Hiciste check-in en 2 charlas.", need: `Haz check-in en ${left} charla${left === 1 ? "" : "s"} más de tu agenda.` },
       { i: "star", n: "Mente activa", ok: A.xp >= 500 || A.done.length >= 3, got: A.xp >= 500 ? "Superaste los 500 XP." : "Completaste 3 misiones.", need: `Te faltan ${fmt(Math.max(0, 500 - A.xp))} XP o completar ${Math.max(0, 3 - A.done.length)} ${3 - A.done.length === 1 ? "misión" : "misiones"}.` },
-      { i: "trophy", n: "Top 3", ok: rank() <= 3, got: "Estás en el top 3 del Summit.", need: `Faltan ${fmt(Math.max(1, third.x - A.xp + 1))} XP para superar a ${third.n}.` },
+      { i: "trophy", n: "Top 3", ok: !!third && rank() <= 3, got: "Estás en el top 3 del Summit.", need: third ? `Faltan ${fmt(Math.max(1, third.x - A.xp + 1))} XP para superar a ${third.n}.` : "Se activa cuando haya al menos 3 asistentes reales con XP en tu evento." },
       { i: "file", n: "Dossier listo", ok: !!A.dossierAt, got: "Generaste tu Dossier post-Summit.", need: "Genera tu resumen en la pestaña Mi perfil." },
       { i: "spark", n: "Avatar listo", ok: !!A.avatar, got: "Creaste tu avatar del Summit.", need: "Crea tu avatar desde el banner del panel." }];
   };
@@ -901,8 +1020,8 @@ export function bootKnetApp() {
     if (!sc.network) net = `<article class="pcard pcard-locked" id="networkCard"><div class="locked-row"><span class="ico-tile" style="background:rgba(var(--w-rgb),.06);color:var(--muted)">${svg("lock")}</span><div><h2 class="pcard-t" style="margin:0">Grafo de contactos</h2><p class="text-mute text-[14px]">Activa <b>Red de contactos</b> en Permisos MCP para ver quién conoce a quién en el Summit.</p></div></div></article>`;
     else net = `<article class="pcard" id="networkCard"><header class="pcard-h"><div><span class="pcard-k">Red de contactos</span><h2 class="pcard-t">Tu red dentro del Summit</h2></div><span class="chip chip-emerald" id="graphStats">${svg("users")}Grafo listo</span></header>
         ${graphRolesHTML()}
-        <div class="graph-wrap"><canvas id="netGraph" role="img" aria-label="Grafo de contactos: tú en el centro, tus matches alrededor y sus contactos en el Summit"></canvas><div class="graph-tip" id="graphTip" hidden></div></div>
-        <div class="graph-legend"><span><i style="background:#A100FF"></i>Tú</span><span><i style="background:#10B981"></i>Conectado</span><span><i style="background:#3D6BFF"></i>Match sugerido</span><span><i style="background:#8B86A8"></i>2º grado</span><span class="gr-leg-sep">Borde = rol:</span>${G_ROLES.map(([, l, , c]) => `<span><i style="background:transparent;box-shadow:inset 0 0 0 2.5px rgb(${c})"></i>${l}</span>`).join("")}</div>
+        <div class="graph-wrap"><canvas id="netGraph" role="img" aria-label="Grafo de contactos: tú en el centro y alrededor tus matches y conexiones reales"></canvas><div class="graph-tip" id="graphTip" hidden></div></div>
+        <div class="graph-legend"><span><i style="background:#A100FF"></i>Tú</span><span><i style="background:#10B981"></i>Conectado</span><span><i style="background:#3D6BFF"></i>Match sugerido</span><span class="gr-leg-sep">Borde = rol:</span>${G_ROLES.map(([, l, , c]) => `<span><i style="background:transparent;box-shadow:inset 0 0 0 2.5px rgb(${c})"></i>${l}</span>`).join("")}</div>
         <div class="graph-info" id="graphInfo" aria-live="polite">Toca o pasa el cursor sobre un nodo para ver cómo llegas a esa persona.</div></article>`;
     return {
       data: `<article class="pcard">
@@ -928,7 +1047,7 @@ export function bootKnetApp() {
   
   
   function roleOf(name, sub) {
-    if (SPEAKER_NAMES.includes(name)) return "speaker";
+    if (Object.values(SPEAKERS).some(l => (l || []).some(s => s.n === name))) return "speaker";
     if (/founder|fundador|startup|consultor/i.test(sub)) return "partner";
     if (/cto|head de data|head de ia|data scientist|arquitect|investigador|ciberseguridad|datos ·/i.test(sub)) return "experto";
     return "cliente";
@@ -954,15 +1073,10 @@ export function bootKnetApp() {
   function graphData() {
     const d = IND[A.ind], p = PERSONAS[A.ind];
     const rnd = seeded([...A.ind].reduce((a, c) => a + c.charCodeAt(0), 0) * 97 + 11);
-    const nodes = [{ label: first(p.name) + " (tú)", sub: `${d.role} · ${p.company}`, type: "me", role: myRole() }];
+    const nodes = [{ label: p.name ? first(p.name) + " (tú)" : "Tú", sub: [d.role, p.company].filter(Boolean).join(" · "), type: "me", role: myRole() }];
     d.matches.forEach(m => nodes.push({ label: m[1], sub: m[2], type: A.connections.includes(m[1]) ? "conn" : "match", role: roleOf(m[1], m[2]) }));
-    const pool = SUMMIT_POOL.slice();
-    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
-    pool.slice(0, 12).forEach(([n, r]) => nodes.push({ label: n, sub: r, type: "summit", role: roleOf(n, r) }));
-    const edges = [];
-    for (let i = 1; i <= 3; i++) edges.push([0, i]);
-    for (let k = 4; k < nodes.length; k++) { const a = 1 + Math.floor(rnd() * 3); edges.push([a, k]); if (rnd() < .45) edges.push([1 + (a % 3), k]); }
-    for (let k = 0; k < 7; k++) { const a = 4 + Math.floor(rnd() * 12), b = 4 + Math.floor(rnd() * 12); if (a !== b && !edges.some(e => (e[0] === a && e[1] === b) || (e[0] === b && e[1] === a))) edges.push([a, b]); }
+    (A.qrConn || []).filter(q => A.connections.includes(q.name) && !d.matches.some(m => m[1] === q.name)).forEach(q => nodes.push({ label: q.name, sub: q.role || "Conectado por QR", type: "conn", role: roleOf(q.name, q.role || "") }));
+    const edges = nodes.slice(1).map((_, i) => [0, i + 1]);
     nodes.forEach(n => { n.ph = rnd() * 6.283; n.j = rnd(); });
     return { nodes, edges };
   }
@@ -970,7 +1084,7 @@ export function bootKnetApp() {
     cancelAnimationFrame(graphRaf); if (graphRO) graphRO.disconnect();
     const cv = $("#netGraph"); if (!cv) return;
     const ctx = cv.getContext("2d"), { nodes, edges } = graphData(), tip = $("#graphTip"), info = $("#graphInfo");
-    const see = seeRoles(), sel0 = (i) => i === 0 || see.includes(nodes[i].role), vis = (i) => i <= 3 || sel0(i);
+    const see = seeRoles(), sel0 = (i) => i === 0 || see.includes(nodes[i].role), vis = sel0;
     const nb = (i) => edges.filter(e => (e[0] === i || e[1] === i) && vis(e[0]) && vis(e[1])).map(e => e[0] === i ? e[1] : e[0]);
     const COL = { me: "139,92,246", conn: "16,185,129", match: "6,182,212", summit: "139,134,168" };
     const R = { me: 15, conn: 10, match: 10, summit: 6 };
@@ -980,8 +1094,7 @@ export function bootKnetApp() {
     const layout = () => { const cx = W / 2, cy = H / 2, m = Math.min(W, H), sx = Math.min(1.6, W / H);
       nodes.forEach((n, i) => {
         if (n.type === "me") { n.bx = cx; n.by = cy; return; }
-        if (i <= 3) { const a = -Math.PI / 2 + (i - 1) * 2 * Math.PI / 3; n.bx = cx + Math.cos(a) * m * .24 * sx; n.by = cy + Math.sin(a) * m * .24; return; }
-        const a = (i - 4) / 12 * 2 * Math.PI + .26, rr = m * (.39 + n.j * .05);
+        const k = Math.max(1, nodes.length - 1), a = -Math.PI / 2 + (i - 1) * 2 * Math.PI / k, rr = m * (k > 6 ? .34 : .26);
         n.bx = Math.max(18, Math.min(W - 18, cx + Math.cos(a) * rr * sx)); n.by = Math.max(18, Math.min(H - 18, cy + Math.sin(a) * rr));
       }); };
     const pos = (n, t) => reduce ? [n.bx, n.by] : [n.bx + Math.sin(t * .0007 + n.ph) * 3, n.by + Math.cos(t * .0009 + n.ph) * 3];
@@ -1015,18 +1128,17 @@ export function bootKnetApp() {
     };
     const pick = (ev) => { const r = cv.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top, now = performance.now(); let best = -1, bd = 1e9;
       nodes.forEach((n, i) => { if (!vis(i)) return; const [x, y] = pos(n, now), dd = Math.hypot(x - mx, y - my); if (dd < R[n.type] + 10 && dd < bd) { bd = dd; best = i; } }); return [best, mx, my]; };
-    const shown = nodes.filter((n, i) => i > 3 && sel0(i)).length, direct = nb(0).filter(sel0).length;
-    const describe = (i) => { const n = nodes[i]; if (n.type === "me") return `<b>${n.label}</b> · ${n.sub} · <b>${G_SING[n.role]}</b>. Ves ${direct} contactos directos y ${shown} de segundo grado con los roles elegidos.`;
-      const via = nb(i).filter(j => j >= 1 && j <= 3).map(j => nodes[j].label);
+    const direct = nb(0).filter(sel0).length;
+    const describe = (i) => { const n = nodes[i]; if (n.type === "me") return `<b>${n.label}</b> · ${n.sub} · <b>${G_SING[n.role]}</b>. Ves ${direct} contactos directos con los roles elegidos.`;
       const rl = `<span class="gr-tag" style="--c:${G_ROLE[n.role][3]}">${G_ROLE[n.role][1]}</span>`;
-      if (i <= 3) return `${rl} <b>${n.label}</b> · ${n.sub}. ${n.type === "conn" ? "Conexión directa confirmada." : "Match sugerido: aún no conectan."} Conoce a ${nb(i).filter(j => j > 3).length} personas más del Summit.`;
-      return `${rl} <b>${n.label}</b> · ${n.sub}. Contacto de 2º grado, a través de ${via.join(" y ") || "otros asistentes"}.`; };
+      return `${rl} <b>${esc(n.label)}</b> · ${esc(n.sub)}. ${n.type === "conn" ? "Conexión directa confirmada." : "Match sugerido: aún no conectan."}`; };
     cv.addEventListener("mousemove", (ev) => { const [i, mx, my] = pick(ev); hover = i; cv.style.cursor = i >= 0 ? "pointer" : "default";
       if (i >= 0) { tip.hidden = false; tip.innerHTML = `<b>${nodes[i].label}</b><span>${nodes[i].sub}</span><span style="color:rgb(${G_ROLE[nodes[i].role][3]})">${i === 0 ? "Tú · " : ""}${G_ROLE[nodes[i].role][1]}</span>`; tip.style.left = Math.min(mx + 12, W - 180) + "px"; tip.style.top = (my + 12) + "px"; } else tip.hidden = true; });
     cv.addEventListener("mouseleave", () => { hover = -1; tip.hidden = true; });
     cv.addEventListener("click", (ev) => { const [i] = pick(ev); sel = i === sel ? -1 : i; info.innerHTML = sel >= 0 ? describe(sel) : "Toca o pasa el cursor sobre un nodo para ver cómo llegas a esa persona."; });
-    $("#graphStats").innerHTML = `${svg("users")}${direct} directos · ${shown} de 2º grado`;
-    if (!see.length) info.innerHTML = "Elige al menos un rol en <b>Quiero ver</b> para mostrar personas en el grafo.";
+    $("#graphStats").innerHTML = `${svg("users")}${direct} directos`;
+    if (nodes.length === 1) info.innerHTML = "Tu grafo crece con cada conexión real: escanea credenciales QR o conecta con tus matches cuando aparezcan en tu evento.";
+    else if (!see.length) info.innerHTML = "Elige al menos un rol en <b>Quiero ver</b> para mostrar personas en el grafo.";
     size(); graphRO = new ResizeObserver(() => size()); graphRO.observe(cv);
     graphRaf = requestAnimationFrame(draw);
   }
@@ -1092,13 +1204,14 @@ export function bootKnetApp() {
   });
 
   /* ---- Misión especial: experiencia presencial (arte, cocina, deporte) ---- */
-  /* Las experiencias presenciales pertenecen al AI & Business Summit (bog) y a un día concreto */
+  /* Las experiencias presenciales las publica el organizador del evento principal (MAIN_EV), por día */
   
   
   let expPick = false, expAsk = null;
   const expConfirmHTML = () => { if (!expAsk || !A.exp) return ""; const from = EXPS.find(e => e.id === A.exp.id), to = EXPS.find(e => e.id === expAsk);
     return `<div class="exp-confirm" role="alertdialog" aria-label="Confirmar cambio de actividad">${svg("info")}<span>¿Estás seguro de cambiar <b>${from.name}</b> por <b>${to.name}</b>? Liberarás tu cupo en la actividad actual.</span><span class="exp-confirm-btns"><button type="button" class="btn btn-ghost btn-sm" data-act="expno">Cancelar</button><button type="button" class="btn btn-primary btn-sm" data-act="expjoin" data-v="${to.id}" data-confirm="1">Sí, cambiar</button></span></div>`; };
   function expMissionHTML() {
+    if (!EXPS.length) return "";
     const cur = A.exp && EXPS.find(e => e.id === A.exp.id);
     return `<div class="mission special exp-mission ${cur ? "done" : ""}"><span class="ico-tile" style="width:40px;height:40px;background:rgba(251,146,60,.14);color:var(--t-orange);font-size:19px">${svg(cur ? cur.ic : "ticket")}</span>
       <div class="min-w-0"><div class="font-semibold text-[14px] leading-snug">Inscríbete en una experiencia presencial (arte, cocina, deporte)</div><div class="text-[12px] ${cur ? "" : "text-mute"}" ${cur ? 'style="color:var(--t-emerald)"' : ""}>${cur ? `Inscrito: ${cur.name} · ${cur.time}` : `Elige una actividad · +${EXP_XP} XP`}</div></div>
@@ -1118,9 +1231,10 @@ export function bootKnetApp() {
       </li>`; }).join("")}</ul>${expConfirmHTML()}</div>`;
   }
   function expCardHTML() {
+    if (!EXPS.length) return "";
     const cur = A.exp && EXPS.find(e => e.id === A.exp.id);
     return `<article class="pcard" id="expCard">
-      <header class="pcard-h"><div><span class="pcard-k">Misión especial · AI &amp; Business Summit</span><h2 class="pcard-t">Experiencias presenciales</h2><div class="text-mute text-[14px]">${cur ? `Estás inscrito en <b>${cur.name}</b>. Puedes cambiarla cuando quieras.` : `Elige una actividad de arte, cocina o deporte y suma +${EXP_XP} XP.`}</div></div><span class="chip ${cur ? "chip-emerald" : ""} tabular">${svg("users")}${cur ? 1 : 0}/1</span></header>
+      <header class="pcard-h"><div><span class="pcard-k">Misión especial · ${esc(evById(MAIN_EV).name)}</span><h2 class="pcard-t">Experiencias presenciales</h2><div class="text-mute text-[14px]">${cur ? `Estás inscrito en <b>${cur.name}</b>. Puedes cambiarla cuando quieras.` : `Elige una actividad de arte, cocina o deporte y suma +${EXP_XP} XP.`}</div></div><span class="chip ${cur ? "chip-emerald" : ""} tabular">${svg("users")}${cur ? 1 : 0}/1</span></header>
       ${expGridHTML(cur)}
     </article>`;
   }
@@ -1204,8 +1318,9 @@ export function bootKnetApp() {
           </div>
         </article>
         <article class="pcard">
-          <header class="pcard-h"><div><span class="pcard-k">Summit 2026</span><h2 class="pcard-t">Ranking de asistentes</h2></div><span class="chip chip-accent">#${me + 1} de ${b.length}</span></header>
-          <div class="grid gap-1">${rows.map(r => `<div class="lb-row ${r.me ? "me" : ""}"><span class="lb-pos tabular">#${r.pos}</span><span class="min-w-0 ${r.me ? "font-semibold" : ""}">${r.n}</span><span class="mono tabular text-[13px] ${r.me ? "" : "text-mute"}">${fmt(r.x)} XP</span></div>`).join("")}</div>
+          <header class="pcard-h"><div><span class="pcard-k">Summit 2026</span><h2 class="pcard-t">Ranking de asistentes</h2></div><span class="chip chip-accent">${b.length > 1 ? `#${me + 1} de ${b.length}` : "Solo tú por ahora"}</span></header>
+          <div class="grid gap-1">${rows.map(r => `<div class="lb-row ${r.me ? "me" : ""}"><span class="lb-pos tabular">#${r.pos}</span><span class="min-w-0 ${r.me ? "font-semibold" : ""}">${esc(r.n)}</span><span class="mono tabular text-[13px] ${r.me ? "" : "text-mute"}">${fmt(r.x)} XP</span></div>`).join("")}</div>
+          ${b.length > 1 ? "" : `<div class="conn-empty" style="margin-top:12px">${svg("trophy")}<div><b>El ranking se llena con asistentes reales</b><p class="text-mute text-[14px]">Cuando más personas de tu evento sumen XP, verás aquí tu posición. Mientras tanto, cada misión y cada conexión suma a tu nivel.</p></div></div>`}
         </article>
       </div>
     </div>
@@ -1230,6 +1345,7 @@ export function bootKnetApp() {
   }
   function personHTML(n, state) {
     const d = IND[A.ind], p = PERSONAS[A.ind], m = d.matches.find(x => x[1] === n), info = MATCH_INFO[n] || { int: [], likes: [], goal: "" }, idx = d.matches.indexOf(m), sc = m[3];
+    if (!info.likes) info.likes = [];
     const common = info.int.filter(x => p.interests.includes(x));
     const shared = [idx, 3].filter((v, i, a) => a.indexOf(v) === i).map(i => d.agenda[i]);
     const parts = [["Intereses en común", 35, Math.round(sc * .35), common.length ? common.join(" · ") : "Temas cercanos a tus intereses"], ["Industria y mercado", 25, Math.round(sc * .25), `${d.label} · ${(m[2].split("·")[1] || "").trim() || "mismo sector"}`], ["Rol y seniority", 20, Math.round(sc * .2), `Ambos con rol de decisión (${p.seniority.toLowerCase()})`]];
@@ -1243,7 +1359,7 @@ export function bootKnetApp() {
       <div class="person-grid">
         <div class="aff">
           <div class="aff-ring"><svg viewBox="0 0 110 110" width="120" height="120" aria-hidden="true"><circle cx="55" cy="55" r="46" stroke="rgba(255,255,255,.08)" stroke-width="8" fill="none"/><circle cx="55" cy="55" r="46" stroke="url(#ringApp2)" stroke-width="8" fill="none" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - sc / 100)}" transform="rotate(-90 55 55)"/><defs><linearGradient id="ringApp2" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#A100FF"/><stop offset="1" stop-color="#3D6BFF"/></linearGradient></defs></svg><div class="ring-c"><div class="font-display font-extrabold text-[28px] leading-none tabular">${sc}%</div><div class="mono text-[10px] text-mute">AFINIDAD</div></div></div>
-          <p class="text-[13px] text-mute" style="text-align:center">Busca ${info.goal}.</p>
+          ${info.goal ? `<p class="text-[13px] text-mute" style="text-align:center">Busca ${esc(info.goal)}.</p>` : ""}
         </div>
         <div class="grid gap-3 min-w-0">
           <div class="mono text-[11px] uppercase tracking-[.12em] text-mute">Por qué ${sc}%</div>
@@ -1253,7 +1369,7 @@ export function bootKnetApp() {
       </div>
       <div class="person-cols">
         <div><div class="mono text-[11px] uppercase tracking-[.12em] text-mute">Intereses</div><div class="flex flex-wrap gap-2" style="margin-top:8px">${info.int.map(x => `<span class="chip ${common.includes(x) ? "chip-accent" : ""}">${common.includes(x) ? svg("check") : ""}${x}</span>`).join("")}</div></div>
-        <div><div class="mono text-[11px] uppercase tracking-[.12em] text-mute">Gustos</div><div class="flex flex-wrap gap-2" style="margin-top:8px">${info.likes.map(x => `<span class="chip">${svg("star")}${x}</span>`).join("")}</div></div>
+        ${info.likes.length ? `<div><div class="mono text-[11px] uppercase tracking-[.12em] text-mute">Gustos</div><div class="flex flex-wrap gap-2" style="margin-top:8px">${info.likes.map(x => `<span class="chip">${svg("star")}${esc(x)}</span>`).join("")}</div></div>` : ""}
         <div><div class="mono text-[11px] uppercase tracking-[.12em] text-mute">Sesiones que comparten</div><div class="grid gap-1.5" style="margin-top:8px">${shared.map(a => `<div class="text-[13px]"><span class="mono text-accentsoft">${a[0]}</span> ${a[2]}</div>`).join("")}</div></div>
       </div>
       <div class="person-actions">${personActions(n)}</div>`;
@@ -1342,7 +1458,9 @@ export function bootKnetApp() {
     if (isPending(n)) return `<span class="chip chip-cyan"><span class="pend-dot"></span>Esperando aprobación</span>`;
     return act("connect", n, `${svg("handshake")}Conectar · +100 XP`, "btn btn-primary btn-sm");
   }
-  function openPerson(n) { $("#personBody").innerHTML = personHTML(n); if ($("#m-person").hidden) openModal("person"); }
+  function openPerson(n) {
+    if (!IND[A.ind].matches.some(m => m[1] === n)) { if (isConn(n)) openChat(n); return; } // sin ficha de la API: solo el chat
+    $("#personBody").innerHTML = personHTML(n); if ($("#m-person").hidden) openModal("person"); }
   $("#m-person").addEventListener("click", (e) => { const b = e.target.closest("[data-pact]"); if (!b) return; const n = b.dataset.v;
     if (b.dataset.pact === "connect") connectMatch(n);
     if (b.dataset.pact === "cancel") cancelRequest(n);
@@ -1393,12 +1511,13 @@ export function bootKnetApp() {
   let dmFor = null, dmBusy = false;
   
   function dmReply(n, q) {
-    const t = norm(q), info = MATCH_INFO[n] || { int: ["innovación"], goal: "conocer gente" }, d = IND[A.ind], idx = d.matches.findIndex(m => m[1] === n), ses = d.agenda[Math.max(0, idx)], me = first(PERSONAS[A.ind].name);
+    const t = norm(q), info = MATCH_INFO[n] || { int: [] }, d = IND[A.ind], idx = d.matches.findIndex(m => m[1] === n), ses = d.agenda[Math.max(0, idx) % d.agenda.length], me = first(PERSONAS[A.ind].name || "");
+    const i0 = String(info.int[0] || "innovación").toLowerCase(), i1 = String(info.int[1] || "datos").toLowerCase();
     if (/cafe|tinto/.test(t)) { const c = coffeeOf(n); return c && c.status === "accepted" ? `¡Sí! Ya lo tenemos: ${c.slot}. Nos vemos allá.` : c && c.status === "pending" ? "Ya vi tu invitación, déjame revisar mi agenda y te confirmo." : "¡Me encantaría! Envíame la invitación desde mi perfil y la acepto."; }
-    if (/hola|buen|que bueno|gusto/.test(t)) return `¡Hola, ${me}! El gusto es mío. Vine al Summit sobre todo por ${info.int[0].toLowerCase()}. ¿Tú qué estás buscando?`;
+    if (/hola|buen|que bueno|gusto/.test(t)) return `¡Hola, ${me}! El gusto es mío. Vine al Summit sobre todo por ${i0}. ¿Tú qué estás buscando?`;
     if (/sesion|charla|tarde|agenda/.test(t)) return `Voy a «${ses[2]}» a las ${ses[0]} en ${ses[3]}. ¿Te veo allí?`;
-    if (/trabaj|proyecto|haces/.test(t)) return `Ahora mismo trabajo en ${info.int[0].toLowerCase()} y ${info.int[1].toLowerCase()}. ¿Cómo lo están abordando en ${PERSONAS[A.ind].company || "tu equipo"}?`;
-    return ["Interesante. Me gustaría saber más; ¿lo hablamos en persona?", "¡Totalmente de acuerdo! Después del próximo bloque te escribo.", `Eso conecta con lo que hago en ${info.int[0].toLowerCase()}. Te comparto mis notas al final del día.`][(A.dms[n] || []).length % 3];
+    if (/trabaj|proyecto|haces/.test(t)) return `Ahora mismo trabajo en ${i0} y ${i1}. ¿Cómo lo están abordando en ${PERSONAS[A.ind].company || "tu equipo"}?`;
+    return ["Interesante. Me gustaría saber más; ¿lo hablamos en persona?", "¡Totalmente de acuerdo! Después del próximo bloque te escribo.", `Eso conecta con lo que hago en ${i0}. Te comparto mis notas al final del día.`][(A.dms[n] || []).length % 3];
   }
   function renderDm() {
     const n = dmFor, d = IND[A.ind], q = qrPerson(n), m = d.matches.find(x => x[1] === n) || [initialsOf(n), n, q ? q.role + " · conectado por QR" : ""], idx = Math.max(0, d.matches.indexOf(m)), msgs = (A.dms || {})[n] || [], real = isRealPeer(n);
@@ -1409,7 +1528,7 @@ export function bootKnetApp() {
       ${real ? dmCoffeeHTML(n) : ""}
       <div class="flex flex-wrap gap-2">${DM_PILLS.map(q => `<button type="button" class="pill-btn" data-dmq="${esc(q)}">${esc(q)}</button>`).join("")}</div>
       <form id="dmForm" class="chat-form" autocomplete="off"><label for="dmIn" class="sr-only">Mensaje para ${esc(n)}</label><input id="dmIn" class="select" maxlength="300" placeholder="Escribe un mensaje…"><button class="btn btn-primary btn-sm" type="submit">${svg("arrow")}<span>Enviar</span></button></form>
-      <p class="text-[12px] text-mute">${real ? "Tus mensajes se guardan en KNET y le llegan a la otra persona. No compartas datos sensibles." : "Conversación simulada para la demo. No compartas datos sensibles."}</p>`;
+      <p class="text-[12px] text-mute">${real ? "Tus mensajes se guardan en KNET y le llegan a la otra persona. No compartas datos sensibles." : "Este contacto aún no usa la app de KNET: sus respuestas son automáticas. No compartas datos sensibles."}</p>`;
     const log = $("#dmLog"); log.scrollTop = log.scrollHeight;
   }
   /* Café dentro del chat con un usuario real (con contactos del catálogo se propone desde su perfil) */
@@ -1461,10 +1580,11 @@ export function bootKnetApp() {
     const free = d.matches.filter(m => !A.connections.includes(m[1]));
     const btn = (a, v, l) => `<div style="margin-top:8px">${act(a, v, l)}</div>`;
     const named = d.matches.find(m => tq.includes(m[1].toLowerCase()));
-    if (named && /present|hablar|abord|romper/.test(tq)) { const info = MATCH_INFO[named[1]]; return `Con <b>${named[1]}</b> abre por su objetivo: ${info.goal}. Un buen arranque: “Vi que te interesa ${info.int[0].toLowerCase()}; en ${PERSONAS[A.ind].company} estamos trabajando en ${PERSONAS[A.ind].interests[0].toLowerCase()}.” Si fluye, propón un café de 15 min.`; }
-    if (/sala|lado|cerca/.test(tq)) { const m = free[0] || d.matches[0]; return `En <b>Sala Orbit</b>, a 30 m, está <b>${m[1]}</b> (${m[2]}, ${m[3]}% afinidad). ${m[4]}.` + (free.length ? btn("connect", m[1], `Enviar solicitud a ${first(m[1])}`) : btn("person", m[1], "Ver perfil")); }
+    if (named && /present|hablar|abord|romper/.test(tq)) { const info = MATCH_INFO[named[1]] || { int: [] }, mine = PERSONAS[A.ind]; return `Con <b>${esc(named[1])}</b> abre por ${info.goal ? "su objetivo: " + esc(info.goal) : "lo que comparten"}. Un buen arranque: “Vi que te interesa ${esc(String(info.int[0] || "lo mismo que a mí").toLowerCase())}; en ${esc(mine.company || "mi equipo")} estamos trabajando en ${esc(String(mine.interests[0] || "IA").toLowerCase())}.” Si fluye, propón un café de 15 min.`; }
+    const noMatches = "Todavía no hay asistentes reales de tu evento para sugerirte. Cuando se inscriban personas afines, te diré quién está cerca y por qué te conviene conocerle." + btn("goto", "eventos", "Explorar eventos");
+    if (/sala|lado|cerca/.test(tq)) { if (!d.matches.length) return noMatches; const m = free[0] || d.matches[0]; return `En <b>Sala Orbit</b>, a 30 m, está <b>${m[1]}</b> (${m[2]}, ${m[3]}% afinidad). ${m[4]}.` + (free.length ? btn("connect", m[1], `Enviar solicitud a ${first(m[1])}`) : btn("person", m[1], "Ver perfil")); }
     if (/agenda|sesi|pr[oó]xim|charla/.test(tq)) { if (!selM) return "Aún no estás inscrito en ningún evento. Inscríbete y armo tu agenda por día." + btn("goto", "eventos", "Explorar eventos"); const evS = evById(selM.ev); if (!nextS) return `Ya hiciste check-in en todas tus sesiones del <b>Día ${selM.day + 1}</b> de ${evS.name}.` + btn("goto", "agenda", "Ver mi agenda"); return `Tu próxima sesión en <b>${evS.name}</b> (Día ${selM.day + 1}, ${dayTxt(evS.days[selM.day])}): <b>${nextS.ttl}</b>, a las ${nextS.tm} en <b>${nextS.room}</b>. ${nextS.why}.` + (isEnded("ev:" + evS.id) ? "" : btn("attend", nextS.id, "Hacer check-in · +40 XP")); }
-    if (/match|conect|network|qui[eé]n|conocer/.test(tq)) { if (!free.length) return "Ya conectaste con tus 3 matches prioritarios. Te aviso si llega alguien con alta afinidad."; const m = free[0]; return `Te recomiendo a <b>${m[1]}</b>, ${m[2]} (${m[3]}% afinidad): ${m[4]}.` + btn("connect", m[1], "Enviar solicitud de conexión") + btn("person", m[1], "Ver perfil completo") + btn("goto", "red:matchesCard", "Ver todos en Mi red"); }
+    if (/match|conect|network|qui[eé]n|conocer/.test(tq)) { if (!d.matches.length) return noMatches; if (!free.length) return "Ya conectaste con todos tus matches sugeridos. Te aviso si llega alguien con alta afinidad."; const m = free[0]; return `Te recomiendo a <b>${m[1]}</b>, ${m[2]} (${m[3]}% afinidad): ${m[4]}.` + btn("connect", m[1], "Enviar solicitud de conexión") + btn("person", m[1], "Ver perfil completo") + btn("goto", "red:matchesCard", "Ver todos en Mi red"); }
     if (/misi|xp|punto|nivel|insignia/.test(tq)) { const m = activeMissions().sort((a, b) => b.xp - a.xp)[0]; return m ? `La misión con más impacto ahora: <b>${m.title}</b> (+${m.xp} XP). Llevas ${fmt(A.xp)} XP.` + btn("goto", "quests", "Ver misiones") : "Completaste todas las misiones de la temporada."; }
     if (/resum|keynote|aprend|idea|insight/.test(tq)) { const ins = INSIGHTS[A.ind][0]; if (!A.extra.includes(ins)) A.extra.push(ins); return `Resumen del keynote: “${ins}” Lo guardé en tu Dossier.` + btn("goto", "dossier", "Ver Dossier"); }
     if (/evento|bogot|medell|barranq|pr[oó]ximo summit/.test(tq)) { const top = EVENTS.filter(e => !e.demo && (!e.lvl || lvl() >= e.lvl)).map(ev => [ev, evAffinity(ev).score]).sort((a, b) => b[1] - a[1])[0]; return `El evento más afín a tu perfil es <b>${top[0].name}</b> en ${top[0].city} (${top[0].date}), con ${top[1]}% de afinidad.` + btn("goto", "eventos", "Ver mapa de eventos"); }
@@ -1627,21 +1747,30 @@ export function bootKnetApp() {
   }
 
   /* ---- Banners y resúmenes de eventos ---- */
-  /* Ponentes y expertos por evento (perfiles ficticios para la demo; retratos ilustrados con el generador de avatares) */
-  
+  /* Ponentes y expertos por evento: solo los que publica la API (GET /api/events/:id). Sin datos, estado vacío. */
+  async function loadSpeakers(id) {
+    if (SPEAKERS[id] !== undefined || !apiEnabled) return;
+    SPEAKERS[id] = null;
+    try {
+      const r = await api.getEvent(id);
+      SPEAKERS[id] = ((r && r.event && r.event.speakers) || []).filter(x => x && x.name).map(x => ({ n: x.name, role: x.role || "", org: x.org || "", ses: x.session || "", talk: x.talk || "", bio: x.bio || "", tags: Array.isArray(x.tags) ? x.tags : [], av: x.avatar && typeof x.avatar === "object" ? x.avatar : null }));
+    } catch (e) { if (isOffline(e)) delete SPEAKERS[id]; else SPEAKERS[id] = []; apiLog("sin ponentes del evento " + id, e); }
+    const box = document.getElementById("spk-" + id); if (box) box.outerHTML = speakersHTML(id);
+  }
   function speakersHTML(id) {
-    const list = EV_SPEAKERS[id] || [], mine = PERSONAS[A.ind].interests;
-    if (!list.length) return "";
-    return `<section><h4>${svg("mic")}Ponentes y expertos</h4>
+    const list = SPEAKERS[id], mine = PERSONAS[A.ind].interests, ev = EVENTS.find(e => e.id === id) || {};
+    if (list === null) return `<section id="spk-${id}"><h4>${svg("mic")}Ponentes y expertos</h4><div class="h-[68px] rounded-xl bg-white/[.04] border border-white/10 shimmer"></div></section>`;
+    if (!list || !list.length) return `<section id="spk-${id}"><h4>${svg("mic")}Ponentes y expertos</h4>
+      <div class="conn-empty">${svg("mic")}<div><b>El organizador aún no ha publicado los ponentes</b><p class="text-mute text-[14px]">Cuando el evento confirme su agenda, aquí verás quién habla y qué temas coinciden con tus intereses.</p>${ev.real && ev.url ? `<a href="${esc(ev.url)}" target="_blank" rel="noopener" class="ev-src">${svg("link")}Consultar la agenda oficial</a>` : ""}</div></div></section>`;
+    return `<section id="spk-${id}"><h4>${svg("mic")}Ponentes y expertos</h4>
       <div class="spk-grid">${list.map(sp => { const fit = sp.tags.filter(t => mine.includes(t));
         return `<article class="spk">
-          <div class="spk-top"><span class="spk-av">${avatarSVG(sp.av, 64)}</span><div class="min-w-0"><div class="spk-name">${sp.n}</div><div class="spk-role">${sp.role}</div><div class="spk-org">${sp.org}</div></div></div>
-          <div class="spk-talk"><span class="spk-ses">${svg("clock")}${sp.ses}</span><b>“${sp.talk}”</b></div>
-          <p class="spk-bio">${sp.bio}</p>
-          <div class="spk-tags">${sp.tags.map(t => `<span class="${fit.includes(t) ? "fit" : ""}">${fit.includes(t) ? svg("check") : ""}${t}</span>`).join("")}</div>
+          <div class="spk-top"><span class="spk-av">${sp.av ? avatarSVG(sp.av, 64) : `<span class="team-avatar" style="width:64px;height:64px;font-size:22px">${esc(initialsOf(sp.n))}</span>`}</span><div class="min-w-0"><div class="spk-name">${esc(sp.n)}</div><div class="spk-role">${esc(sp.role)}</div><div class="spk-org">${esc(sp.org)}</div></div></div>
+          ${sp.talk ? `<div class="spk-talk">${sp.ses ? `<span class="spk-ses">${svg("clock")}${esc(sp.ses)}</span>` : ""}<b>“${esc(sp.talk)}”</b></div>` : ""}
+          ${sp.bio ? `<p class="spk-bio">${esc(sp.bio)}</p>` : ""}
+          <div class="spk-tags">${sp.tags.map(t => `<span class="${fit.includes(t) ? "fit" : ""}">${fit.includes(t) ? svg("check") : ""}${esc(t)}</span>`).join("")}</div>
           ${fit.length ? `<div class="spk-fit">${svg("spark")}Afín a tus intereses</div>` : ""}
         </article>`; }).join("")}</div>
-      <p class="text-[12px] text-mute" style="margin-top:8px">Ponentes ficticios con retratos ilustrados, creados para la demo.</p>
     </section>`;
   }
   
@@ -1675,6 +1804,7 @@ export function bootKnetApp() {
   /* ---- Eventos exclusivos según el nivel alcanzado ---- */
   const isLockedEv = (ev) => !!(ev && ev.lvl && lvl() < ev.lvl);
   function exclusiveHTML() {
+    if (!EVENTS.some(e => e.lvl)) return "";
     const ex = EVENTS.filter(e => e.lvl).sort((a, b) => a.lvl - b.lvl), open = ex.filter(e => !isLockedEv(e)).length;
     return `<article class="pcard xev-panel" id="exclusiveCard">
       <header class="pcard-h"><div><span class="pcard-k">Solo para tu nivel</span><h2 class="pcard-t">Eventos exclusivos por nivel</h2><div class="text-mute text-[14px]">Sube de nivel ganando XP para desbloquear experiencias reservadas.</div></div>
@@ -1695,6 +1825,7 @@ export function bootKnetApp() {
   }
 
   function openEvent(id) {
+    loadSpeakers(id);
     const ev = EVENTS.find(e => e.id === id), I = EV_INFO[id], a = evAffinity(ev), d = IND[A.ind], saved = A.events.includes(id);
     const loc = norm(PERSONAS[A.ind].location), me = CO_CITIES.find(c => loc && loc.includes(norm(c[0])));
     const dist = me ? (norm(me[0]) === norm(ev.city) ? 0 : kmBetween([me[1], me[2]], [ev.lat, ev.lon])) : null;
@@ -1717,8 +1848,7 @@ export function bootKnetApp() {
         ${speakersHTML(id)}
         <section><h4>${svg("clock")}Así es el evento</h4><ol class="evm-tl">${I.agenda.map(([t, k, x]) => `<li><span class="evm-t mono">${t}</span><b>${k}</b><span class="text-mute">${x}</span></li>`).join("")}</ol></section>
         <section><h4>${svg("bolt")}Te llevas</h4><ul class="evm-take">${I.llevas.map(x => `<li>${svg("star")}<span>${x}</span></li>`).join("")}</ul></section>
-        <p class="text-[12px] text-mute">Contenido, fechas y sedes de referencia para la demo.</p>
-        <div class="av-foot">${ev.lvl ? `<span class="xev-lvl">${lvlBadge(ev.lvl, 24, isLockedEv(ev))}<span>Exclusivo nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</span></span>` : `<button type="button" class="btn btn-ghost btn-sm" data-eact="map" data-v="${id}">${svg("map")}Ver en el mapa</button>`}${isLockedEv(ev) ? `<button type="button" class="btn btn-ghost" disabled>${svg("lock")}Se desbloquea en nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</button>` : `<button type="button" class="btn ${saved ? "btn-ghost is-saved" : "btn-primary"}" data-eact="save" data-v="${id}">${saved ? `${svg("check")}Inscrito` : `${svg("calendar")}Inscribirse`}</button>`}</div>
+        <div class="av-foot">${ev.lvl ? `<span class="xev-lvl">${lvlBadge(ev.lvl, 24, isLockedEv(ev))}<span>Exclusivo nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</span></span>` : `<button type="button" class="btn btn-ghost btn-sm" data-eact="map" data-v="${id}">${svg("map")}Ver en el mapa</button>`}${isLockedEv(ev) ? `<button type="button" class="btn btn-ghost" disabled>${svg("lock")}Se desbloquea en nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</button>` : `${saved && getSel("main").ev !== id ? `<button type="button" class="btn btn-ghost btn-sm" data-eact="active" data-v="${id}">${svg("calendar")}Usar como evento activo</button>` : ""}<button type="button" class="btn ${saved ? "btn-ghost is-saved" : "btn-primary"}" data-eact="save" data-v="${id}">${saved ? `${svg("check")}Inscrito` : `${svg("calendar")}Inscribirse`}</button>`}</div>
       </div>`;
     if ($("#m-event").hidden) openModal("event");
   }
@@ -1726,6 +1856,7 @@ export function bootKnetApp() {
     const b = e.target.closest("[data-eact]"); if (!b) return; const id = b.dataset.v;
     if (b.dataset.eact === "map") { closeModal($("#m-event")); selEvent = id; refresh(); const m = $(".map-card"); if (m) { scrollToEl(m); flash(m); } return; }
     if (b.dataset.eact === "save") { const ev = EVENTS.find(x => x.id === id); if (!ev || isLockedEv(ev)) return; toggleRegistration(ev); refresh(); openEvent(id); }
+    if (b.dataset.eact === "active") { setActiveEvent(id); closeModal($("#m-event")); showTab("agenda"); }
   });
 
   /* =================== AVATAR =================== */
@@ -1817,9 +1948,9 @@ export function bootKnetApp() {
   /* ---- Mis conexiones: lista y opción de remover ---- */
   let connAsk = null;
   function connInfo(n) {
-    const m = IND[A.ind].matches.find(x => x[1] === n), q = (A.qrConn || []).find(x => x.name === n), pool = SUMMIT_POOL.find(x => x[0] === n);
+    const m = IND[A.ind].matches.find(x => x[1] === n), q = (A.qrConn || []).find(x => x.name === n);
     const initials = m ? m[0] : n.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
-    return { initials, role: m ? m[2] : q ? q.role : pool ? pool[1] : "Asistente del Summit", aff: m ? m[3] : null, match: !!m,
+    return { initials, role: m ? m[2] : q ? q.role : "Asistente del evento", aff: m ? m[3] : null, match: !!m,
       via: q ? `QR · ${q.lugar}` : m ? "AI Concierge" : "Summit" };
   }
   function renderConns() {
@@ -1898,9 +2029,9 @@ export function bootKnetApp() {
       made: ["Eventos que creaste", "Los meetups, talleres o charlas que propusiste al equipo del Summit. Cuando los aprueban, puedes invitar a tu red.", "myEventsCard",
         made.map(e => row("spark", esc(e.name), `${e.type} · ${new Date(e.date + "T12:00:00").toLocaleDateString("es-CO", { day: "numeric", month: "short" })} · ${e.status === "approved" ? "Aprobado" : "En revisión"}`)),
         "Todavía no has propuesto ningún evento. Puedes crear uno en la sección «Eventos que creaste»."],
-      act: ["Actividades presenciales", "Las experiencias de arte, cocina o deporte en las que te inscribiste y los cafés de networking que te aceptaron.", "actCard",
+      act: ["Actividades presenciales", "Las experiencias presenciales en las que te inscribiste y los cafés de networking que te aceptaron.", "actCard",
         (ex ? [row(ex.ic, `${ex.name}`, `Día ${ex.day + 1} · ${ex.time} · ${ex.where}`)] : []).concat(caf.map(([n, c]) => row("coffee", `Café con ${esc(n)}`, esc(c.slot)))),
-        "No tienes actividades presenciales. Elige una experiencia de arte, cocina o deporte en el AI &amp; Business Summit."],
+        "No tienes actividades presenciales. Los cafés que confirmes con tus conexiones aparecerán aquí."],
       hist: ["Tu historial", "Los eventos, sesiones y actividades que ya terminaron. En cada uno puedes ver el resumen con IA y responder la encuesta.", "historyCard",
         hist.slice(0, 5).map(h => row("clock", esc(h.s.title), `${esc(h.s.kind || "Evento")} · ${new Date(h.at).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`)),
         "Aún no tienes eventos terminados. Cuando termine uno, aparecerá aquí con su resumen."]
@@ -1972,7 +2103,7 @@ export function bootKnetApp() {
   /* Historial modular: filtrable por evento, con fecha de cierre y acceso directo al resumen IA */
   let histF = "all";
   
-  function histEv(h) { const [k, id] = h.key.split(":"); return h.s.evId || (k === "ev" || k === "ses" ? id : k === "exp" ? "bog" : null); }
+  function histEv(h) { const [k, id] = h.key.split(":"); return h.s.evId || (k === "ev" || k === "ses" ? id : k === "exp" ? MAIN_EV : null); }
   function historyHTML() {
     A.history = A.history || [];
     Object.entries(A.ended || {}).forEach(([key, at]) => { if (!A.history.some(h => h.key === key && h.at === at)) A.history.push({ id: key + "@" + at, key, at, s: sumData(key) }); });
@@ -2135,7 +2266,7 @@ export function bootKnetApp() {
     const when = ended.toLocaleString("es-CO", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
     const forYou = `Para tu rol de ${d.role} en ${d.label}: ${ins[0]} ${ins[1] || ""}`.trim();
     if (kind === "ev") {
-      const ev = EVENTS.find(e => e.id === id), I = EV_INFO[id], sp = EV_SPEAKERS[id] || [], tags = [...new Set(sp.flatMap(s => s.tags).concat(ev.tags))].slice(0, 8);
+      const ev = EVENTS.find(e => e.id === id), I = EV_INFO[id], sp = SPEAKERS[id] || [], tags = [...new Set(sp.flatMap(s => s.tags).concat(ev.tags))].slice(0, 8);
       return { title: ev.name, kind: "Evento presencial", meta: `${ev.date} · ${ev.city} · ${ev.venue}`, when, tags, evId: ev.id,
         resumen: `Durante ${I.formato[1]}, ${ev.name} reunió en ${ev.city} a ${I.para.charAt(0).toLowerCase() + I.para.slice(1).replace(/\.$/, "")}. ${I.lema} La agenda combinó ${I.agenda.map(a => a[1].toLowerCase()).join(", ")}, y los ponentes coincidieron en que el valor de la IA aparece cuando cada caso tiene dueño, datos confiables y una métrica de impacto.`,
         puntos: I.agenda.map(a => `${a[0]} · ${a[1]}: ${a[2]}.`).concat(sp.map(s => `${s.n} (${s.role}) presentó "${s.talk}".`)),
@@ -2144,7 +2275,7 @@ export function bootKnetApp() {
         personas: sp.map(s => `${s.n} · ${s.role}, ${s.org}`).concat(d.matches.slice(0, 2).map(m => `${m[1]} · ${m[2]} (afinidad ${m[3]}%)`)) };
     }
     if (kind === "ses") {
-      const sid = key.slice(4), se = sessionById(sid) || sessionById("bog:0:0"), sev = evById(se.ev);
+      const sid = key.slice(4), se = sessionById(sid) || sessionById(`${MAIN_EV}:0:0`), sev = evById(se.ev);
       return { title: se.ttl, kind: `${se.kind} · ${sev.name}`, meta: `${sev.city} · Día ${se.day + 1} (${dayTxt(sev.days[se.day])}) · ${se.tm} · ${se.room}`, when, evId: sev.id, day: se.day,
         tags: [...new Set([se.tag].filter(Boolean).concat(p.interests))].slice(0, 4),
         resumen: `La sesión "${se.ttl}" (${se.kind.toLowerCase()}, ${se.room}) del Día ${se.day + 1} de ${sev.name} se centró en cómo pasar de la idea a resultados medibles. Se discutieron casos reales, errores frecuentes y criterios para decidir qué escalar. ${se.why}.`,
@@ -2160,8 +2291,8 @@ export function bootKnetApp() {
         paraTi: forYou, acciones: [`Enviar a los asistentes un resumen y los próximos pasos`, acts[0], `Agendar la siguiente edición de ${ev.name}`],
         personas: att.length ? att.map(n => `${n} · ${connInfo(n).role}`) : ["Invita a tu red a la próxima edición desde Mis eventos."] };
     }
-    const e = EXPS.find(x => x.id === id) || EXPS[0];
-    return { title: e.name, kind: "Experiencia presencial", meta: `${e.time} · ${e.where}`, when, tags: ["Networking", "Experiencia"], evId: "bog", day: e.day,
+    const e = EXPS.find(x => x.id === id) || { name: "Experiencia presencial", time: "", where: "", desc: "", day: 0 };
+    return { title: e.name, kind: "Experiencia presencial", meta: `${e.time} · ${e.where}`, when, tags: ["Networking", "Experiencia"], evId: MAIN_EV, day: e.day,
       resumen: `${e.desc} Fue un espacio informal para conocer a otros asistentes fuera de las salas, donde surgieron conversaciones sobre ${p.interests.slice(0, 2).join(" y ")}.`,
       puntos: ["Actividad práctica en grupo, con participantes de distintas industrias.", "Conversaciones informales que facilitaron nuevas conexiones."], ideas: [],
       paraTi: `Las experiencias presenciales generan confianza más rápido que una reunión formal: aprovecha para retomar el contacto con quienes conociste.`,
@@ -2222,7 +2353,7 @@ export function bootKnetApp() {
       const desc = add(`<< /Type /FontDescriptor /FontName /${F.name} /Flags 32 /FontBBox [${F.bbox.join(" ")}] /ItalicAngle 0 /Ascent ${F.asc} /Descent ${F.desc} /CapHeight ${F.cap} /StemV ${k === "b" ? 120 : 80} /FontFile2 ${file} 0 R >>`);
       return add(`<< /Type /Font /Subtype /TrueType /BaseFont /${F.name} /FirstChar 32 /LastChar 255 /Widths [${F.w.join(" ")}] /Encoding /WinAnsiEncoding /FontDescriptor ${desc} 0 R >>`); };
     const f1 = ttf("r"), f2 = ttf("b");
-    const kids = pages.map((o, i) => { const foot = `BT /F1 8 Tf 0.42 0.45 0.5 rg ${M} 30 Td (${pdfEsc(`KNET · Prototipo del Reto 03 de Accenture · Página ${i + 1} de ${pages.length}`)}) Tj ET`;
+    const kids = pages.map((o, i) => { const foot = `BT /F1 8 Tf 0.42 0.45 0.5 rg ${M} 30 Td (${pdfEsc(`KNET · Dossier de evento · Página ${i + 1} de ${pages.length}`)}) Tj ET`;
       const stream = o.concat(foot).join("\n"); const c = add(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
       return add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 ${f1} 0 R /F2 ${f2} 0 R >> >> /Contents ${c} 0 R >>`); });
     objs[cat - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R >>`;
@@ -2303,11 +2434,12 @@ export function bootKnetApp() {
   function evById(id) { return EVENTS.find(e => e.id === id); }
   function dayTxt(iso, o) { return new Date(iso + "T12:00:00").toLocaleDateString("es-CO", o || { weekday: "short", day: "numeric", month: "short" }); }
   /* Eventos en los que estoy inscrito (incluye los finalizados), en orden cronológico */
-  function myEvIds() { return EVENTS.filter(e => A.events.includes(e.id)).sort((a, b) => a.days[0].localeCompare(b.days[0])).map(e => e.id); }
+  const evSortKey = (e) => e.days[0] || (e.tbc ? e.tbc + "-99" : "9999");
+  function myEvIds() { return EVENTS.filter(e => A.events.includes(e.id)).sort((a, b) => evSortKey(a).localeCompare(evSortKey(b))).map(e => e.id); }
   /* 4 sesiones recomendadas por la IA para cada evento y día (deterministas por perfil) */
   function sessionsFor(evId, di) {
     const ev = evById(evId), d = IND[A.ind], p = PERSONAS[A.ind]; if (!ev || di < 0 || di >= ev.days.length) return [];
-    if (evId === "bog" && di === 0) return d.agenda.map(([tm, kind, ttl, room, why], i) => ({ id: `bog:0:${i}`, ev: evId, day: 0, i, tm, kind, ttl, room, why, tag: p.interests[i % p.interests.length], insight: INSIGHTS[A.ind][i] || INSIGHTS[A.ind][0] }));
+    if (evId === MAIN_EV && di === 0) return d.agenda.map(([tm, kind, ttl, room, why], i) => ({ id: `${MAIN_EV}:0:${i}`, ev: evId, day: 0, i, tm, kind, ttl, room, why, tag: p.interests[i % p.interests.length], insight: INSIGHTS[A.ind][i] || INSIGHTS[A.ind][0] }));
     const TIMES = ["08:30", "10:15", "14:00", "16:30"], KINDS = ["Keynote", "Panel", "Taller", "Charla"];
     const ROOMS = ["Auditorio principal", "Sala Orbit", "Lab 3 · Zona de talleres", "Sala Quantum", "Sala Nova", "Terraza del pabellón"];
     const TPL = [t => `${t}: del piloto a producción`, t => `Casos reales de ${t} en Latinoamérica`, t => `Taller práctico: ${t} en 90 minutos`, t => `Panel: lo que nadie cuenta sobre ${t}`, t => `Demo en vivo: ${t} aplicado al negocio`, t => `${t} con métricas de impacto`];
@@ -2320,6 +2452,8 @@ export function bootKnetApp() {
   }
   function sessionById(id) { const [ev, di, i] = String(id).split(":"); return sessionsFor(ev, +di)[+i] || null; }
   /* Selección activa. "main" la comparten Agenda y Mis eventos; "res" es la de Resúmenes (admite "todos") */
+  /* Evento activo = selección "main": la usan Agenda, Mis eventos, Recinto, Concierge y Dossier */
+  function setActiveEvent(id) { if (!A.events.includes(id)) return; A.sel = A.sel || {}; A.sel.main = { ev: id, day: 0 }; save(); }
   function getSel(scope) {
     A.sel = A.sel || {}; const ids = myEvIds(), all = scope === "res"; let s = A.sel[scope] || {};
     if (!(all && s.ev === "all") && !ids.includes(s.ev)) s = { ev: all ? "all" : (ids.find(id => !isEnded("ev:" + id)) || ids[0] || null), day: all ? -1 : 0 };
@@ -2329,7 +2463,7 @@ export function bootKnetApp() {
   function resSessions() {
     const s = getSel("res");
     return A.attended.map(sessionById).filter(x => x && (s.ev === "all" || (x.ev === s.ev && (s.day === -1 || x.day === s.day))))
-      .sort((a, b) => evById(a.ev).days[0].localeCompare(evById(b.ev).days[0]) || a.day - b.day || a.i - b.i);
+      .sort((a, b) => evSortKey(evById(a.ev)).localeCompare(evSortKey(evById(b.ev))) || a.day - b.day || a.i - b.i);
   }
   function resScopeLabel(s) { if (s.ev === "all") return "Todos mis eventos"; const ev = evById(s.ev); return `${ev.name}${s.day >= 0 ? ` · Día ${s.day + 1}` : ""}`; }
 
@@ -2345,7 +2479,7 @@ export function bootKnetApp() {
         <label class="evbar-sel"><span class="evbar-k">${svg("calendar")}Evento</span>
           <span class="evbar-select"><select class="input" data-evsel="${scope}" aria-label="Elige un evento">${all ? `<option value="all" ${s.ev === "all" ? "selected" : ""}>Todos mis eventos (${ids.length})</option>` : ""}${ids.map(id => { const e = evById(id); return `<option value="${id}" ${s.ev === id ? "selected" : ""}>${esc(e.name)} · ${e.city}${isEnded("ev:" + id) ? " · finalizado" : ""}</option>`; }).join("")}</select></span></label>
         <div class="evbar-meta">${ev
-          ? `<span>${svg("pin")}${esc(ev.city)} · ${esc(ev.venue.split(" · ")[0])}</span><span>${svg("calendar")}${ev.date} · ${ev.days.length} día${ev.days.length > 1 ? "s" : ""}</span>${isEnded("ev:" + ev.id) ? `<span class="chip sum-done">${svg("check")}Finalizado</span>` : `<span class="chip chip-cyan">${svg("clock")}${ev.when}</span>`}`
+          ? `<span>${svg("pin")}${esc(ev.city)} · ${esc(ev.venue.split(" · ")[0])}</span><span>${svg("calendar")}${ev.days.length ? `${ev.date} · ${ev.days.length} día${ev.days.length > 1 ? "s" : ""}` : ev.date}</span>${isEnded("ev:" + ev.id) ? `<span class="chip sum-done">${svg("check")}Finalizado</span>` : `<span class="chip chip-cyan">${svg("clock")}${ev.when}</span>`}`
           : `<span>${svg("layers")}Vista consolidada de ${ids.length} evento${ids.length > 1 ? "s" : ""}</span>`}</div>
       </div>
       ${ev ? `<div class="evbar-days" role="tablist" aria-label="Días de ${esc(ev.name)}">${all ? dayBtn(-1, "Todos", `${ev.days.length} día${ev.days.length > 1 ? "s" : ""}`) : ""}${ev.days.map((d, i) => dayBtn(i, `Día ${i + 1}`, dayTxt(d), `${cnt(ev.id, i)}/4 check-in`)).join("")}</div>` : ""}
@@ -2366,10 +2500,12 @@ export function bootKnetApp() {
     const d = IND[A.ind];
     if (!myEvIds().length) return `<article class="pcard" id="agendaCard"><div class="me-empty">${svg("calendar")}<span>Aún no estás inscrito en ningún evento. Inscríbete y la IA armará tu agenda para cada día.</span>${act("goto", "eventos", `Explorar eventos ${svg("arrow")}`, "pill-btn")}</div></article>`;
     const s = getSel("main"), ev = evById(s.ev), list = sessionsFor(ev.id, s.day), ended = isEnded("ev:" + ev.id), done = list.filter(x => A.attended.includes(x.id)).length;
+    if (!ev.days.length) return `${evDayBar("main")}${tbcCardHTML(ev, "agendaCard")}`;
     return `${evDayBar("main")}
       <article class="pcard" id="agendaCard">
         <header class="pcard-h"><div><span class="pcard-k">Agenda IA · ${esc(ev.city)} · Día ${s.day + 1} de ${ev.days.length}</span><h2 class="pcard-t">${esc(ev.name)}</h2><div class="text-mute text-[14px]">${dayTxt(ev.days[s.day], { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · configurada para ${d.role}</div></div><span class="chip chip-emerald tabular">${svg("check")}${done}/${list.length} check-ins</span></header>
         <p class="text-mute text-[14px]" style="margin-top:-6px">${ended ? "Este evento ya terminó: puedes revisar a qué sesiones asististe y abrir sus resúmenes." : "La IA eligió 4 sesiones de este día según tu rol, tu industria y tus intereses. Cada check-in alimenta el resumen de este evento."}</p>
+        <p class="ai-note text-mute text-[13px] flex flex-wrap items-center gap-x-2 gap-y-1" data-ai-note><span class="ico" style="width:14px;height:14px">${svg("info")}</span><span>Recomendación orientativa: la IA propone estas sesiones con los temas del evento; no son la agenda oficial. Confirma horarios y salas con el organizador.</span>${ev.url ? `<a href="${esc(ev.url)}" target="_blank" rel="noopener" class="ev-src">${svg("link")}Consultar la agenda oficial</a>` : ""}</p>
         <div class="grid gap-3">${list.map(x => { const ok = A.attended.includes(x.id);
           return `<div class="agenda-item ${ok ? "is-done" : ""}"><div class="time tabular">${x.tm}</div><div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2"><span class="chip">${x.kind}</span><span class="text-[12px] text-mute flex items-center gap-1"><span class="ico" style="width:12px;height:12px">${svg("pin")}</span>${esc(x.room)}</span></div>
@@ -2377,16 +2513,23 @@ export function bootKnetApp() {
             <div class="text-[13px] text-accentsoft mt-1 flex gap-1.5 items-start"><span class="ico flex-none" style="width:14px;height:14px;margin-top:3px">${svg("spark")}</span><span>${esc(x.why)}</span></div>
             <div class="me-actions" style="margin-top:10px">${ok ? `<span class="chip chip-emerald">${svg("check")}Asististe · +40 XP</span>${sumCtl("ses:" + x.id)}` : ended ? `<span class="chip">${svg("lock")}No hiciste check-in</span>` : act("attend", x.id, `${svg("qr")}Check-in QR · +40 XP`, "btn btn-emerald btn-sm") + (nfcOk() ? act("nfcattend", x.id, `${svg("nfc")}Check-in NFC`, "btn btn-ghost btn-sm") : "")}</div>
           </div></div>`; }).join("")}</div>
-        <div class="pcard-foot">${svg("users")}<span>${d.matches.filter(m => !isConn(m[1])).length ? `${d.matches.filter(m => !isConn(m[1])).length} conexiones estratégicas te esperan en Mi red.` : "Ya conectaste con todos tus matches sugeridos."}</span>${act("goto", "red:matchesCard", `Ver matches ${svg("arrow")}`, "pill-btn")}</div>
+        <div class="pcard-foot">${svg("users")}<span>${!d.matches.length ? "Tus matches aparecerán en Mi red cuando haya asistentes reales afines." : d.matches.filter(m => !isConn(m[1])).length ? `${d.matches.filter(m => !isConn(m[1])).length} conexiones estratégicas te esperan en Mi red.` : "Ya conectaste con todos tus matches sugeridos."}</span>${act("goto", "red:matchesCard", `Ver matches ${svg("arrow")}`, "pill-btn")}</div>
       </article>`;
   }
 
+  /* Evento inscrito sin días publicados: se puede explorar, pero no hay agenda ni check-in todavía */
+  function tbcCardHTML(ev, id) {
+    return `<article class="pcard" id="${id}"><header class="pcard-h"><div><span class="pcard-k">${esc(ev.city)} · ${esc(ev.date)}</span><h2 class="pcard-t">${esc(ev.name)}</h2></div><span class="chip chip-cyan">${svg("clock")}Fecha por confirmar</span></header>
+      <div class="conn-empty">${svg("calendar")}<div><b>El organizador aún no ha publicado los días</b><p class="text-mute text-[14px]">Ya estás inscrito. Cuando ${esc(ev.org || "el organizador")} confirme fechas y sede, la IA armará tu agenda por día y podrás hacer check-in en cada sesión.</p>
+        <div class="flex flex-wrap gap-2" style="margin-top:10px">${act("evinfo", ev.id, `${svg("file")}Ver detalles`)}${ev.url ? `<a href="${esc(ev.url)}" target="_blank" rel="noopener" class="pill-btn">${svg("link")}Sitio oficial</a>` : ""}${myEvIds().some(x => evById(x).days.length) ? act("evactive", myEvIds().find(x => evById(x).days.length), `${svg("calendar")}Ir a un evento con agenda`) : act("goto", "eventos", `${svg("map")}Explorar eventos`)}</div></div></div>
+    </article>`;
+  }
   /* 03 · Mis eventos: tarjeta del evento seleccionado + programa del día */
   function selEventHTML() {
     if (!myEvIds().length) return `<article class="pcard"><div class="me-empty">${svg("calendar")}<span>Aún no te has inscrito en ningún evento.</span>${act("goto", "eventos", `Ver próximos eventos ${svg("arrow")}`, "pill-btn")}</div></article>`;
     const s = getSel("main"), ev = evById(s.ev), a = evAffinity(ev), info = EV_INFO[ev.id], ended = isEnded("ev:" + ev.id), list = sessionsFor(ev.id, s.day);
     return `<article class="pcard" id="selEvCard">
-      <header class="pcard-h"><div><span class="pcard-k">Evento seleccionado · Día ${s.day + 1} de ${ev.days.length}</span><h2 class="pcard-t">${esc(ev.name)}</h2></div><span class="chip chip-emerald">${a.score}% afinidad</span></header>
+      <header class="pcard-h"><div><span class="pcard-k">Evento activo · ${ev.days.length ? `Día ${s.day + 1} de ${ev.days.length}` : "Fecha por confirmar"}</span><h2 class="pcard-t">${esc(ev.name)}</h2></div><span class="chip chip-emerald">${a.score}% afinidad</span></header>
       <div class="me-ev">
         <button type="button" class="me-ev-banner" data-act="evinfo" data-v="${ev.id}" aria-label="Ver detalles de ${esc(ev.name)}">${evBanner(ev)}</button>
         <div class="me-ev-body">
@@ -2395,29 +2538,26 @@ export function bootKnetApp() {
           <div class="me-actions">${act("vnopen", ev.id, `${svg("map")}Ver recinto`, "btn btn-ghost btn-sm")}${act("evinfo", ev.id, `${svg("file")}Ver detalles`, "btn btn-ghost btn-sm")}${ended ? "" : act("evsave", ev.id, `${svg("x")}Cancelar inscripción`, "btn btn-ghost btn-sm")}${sumCtl("ev:" + ev.id)}</div>
         </div>
       </div>
-      <div class="sev-day">
+      ${!ev.days.length ? `<div class="sev-day"><div class="me-tip" style="margin-top:0">${svg("clock")}<span>El organizador aún no ha publicado los días. Tu agenda aparecerá aquí cuando los confirme.</span></div></div>` : `<div class="sev-day">
         <div class="sev-day-h"><b>Tu programa del Día ${s.day + 1} · ${dayTxt(ev.days[s.day], { weekday: "long", day: "numeric", month: "long" })}</b>${act("goto", "agenda", `Abrir agenda ${svg("arrow")}`, "pill-btn")}</div>
         <ol class="sev-list">${list.map(x => { const ok = A.attended.includes(x.id);
           return `<li class="${ok ? "ok" : ""}"><span class="sev-tm mono tabular">${x.tm}</span><span class="min-w-0"><b>${esc(x.ttl)}</b><small>${x.kind} · ${esc(x.room)}</small></span><span class="chip ${ok ? "chip-emerald" : ""}">${ok ? `${svg("check")}Check-in` : ended ? "Sin check-in" : "Pendiente"}</span></li>`; }).join("")}</ol>
-      </div>
+      </div>`}
     </article>`;
   }
   /* Actividades presenciales del evento y día seleccionados */
   function activitiesHTML() {
     const ids = myEvIds(); if (!ids.length) return "";
-    const s = getSel("main"), ev = evById(s.ev), isMain = ev.id === "bog";
+    const s = getSel("main"), ev = evById(s.ev), isMain = ev.id === MAIN_EV;
     const exp = A.exp && !isEnded("exp:" + A.exp.id) && EXPS.find(e => e.id === A.exp.id);
     const cafes = Object.entries(A.coffees || {}).filter(([, c]) => c.status === "accepted").map(([n, c]) => ({ n, txt: c.slot }));
     const expHere = isMain && exp && exp.day === s.day, cafHere = isMain && s.day === 0 ? cafes : [];
     const n = (expHere ? 1 : 0) + cafHere.length;
-    let body;
-    if (!isMain) body = `<div class="me-tip" style="margin-top:0">${svg("info")}<span>${esc(ev.name)} no tiene actividades presenciales adicionales. Las experiencias de arte, cocina y deporte son del AI &amp; Business Summit.</span>${ids.includes("bog") ? `<button type="button" class="pill-btn" data-evjump="bog:0">Ver ese evento ${svg("arrow")}</button>` : ""}</div>`;
-    else body = `${expHere ? `<div class="me-exp"><span class="me-exp-emo">${svg(exp.ic)}</span><div class="min-w-0"><div class="gf-ag-type">Experiencia presencial</div><div class="font-semibold text-[15px]">${exp.name}</div><div class="text-[13px] text-mute">${exp.desc}</div><div class="me-meta" style="margin-top:6px"><span>${svg("clock")}${exp.time}</span><span>${svg("pin")}${exp.where}</span></div><div class="me-actions" style="margin-top:8px">${sumCtl("exp:" + exp.id)}</div></div>${act("mepick", "", mePick ? "Cerrar" : "Cambiar", "btn btn-ghost btn-sm")}</div>${mePick ? mePickerHTML(exp) : ""}` : ""}
+    const body = `${expHere ? `<div class="me-exp"><span class="me-exp-emo">${svg(exp.ic)}</span><div class="min-w-0"><div class="gf-ag-type">Experiencia presencial</div><div class="font-semibold text-[15px]">${esc(exp.name)}</div><div class="text-[13px] text-mute">${esc(exp.desc)}</div></div></div>` : ""}
       ${cafHere.map(c => `<div class="me-exp"><span class="me-exp-emo">${svg("coffee")}</span><div class="min-w-0"><div class="gf-ag-type">Café de networking</div><div class="font-semibold text-[15px]">Café con ${esc(c.n)}</div><div class="me-meta" style="margin-top:4px"><span>${svg("clock")}${esc(c.txt)}</span></div></div></div>`).join("")}
-      ${!expHere ? (exp ? `<div class="me-tip">${svg("calendar")}<span>Tu experiencia <b>${exp.name}</b> es el <b>Día ${exp.day + 1}</b>.</span><button type="button" class="pill-btn" data-evjump="bog:${exp.day}">Ir al Día ${exp.day + 1} ${svg("arrow")}</button>${act("mepick", "", mePick ? "Cerrar" : "Cambiar", "btn btn-ghost btn-sm")}</div>${mePick ? mePickerHTML(exp) : ""}`
-        : `<div class="me-tip">${svg("spark")}<span>${n ? "¿Te animas a una experiencia de arte, cocina o deporte?" : "No tienes actividades presenciales este día. Inscríbete en una experiencia de arte, cocina o deporte."}${A.exp ? "" : ` +${EXP_XP} XP la primera vez.`}</span>${act("mepick", "", mePick ? "Cerrar" : "Elegir actividad", "btn btn-primary btn-sm")}</div>${mePick ? mePickerHTML(null) : ""}`) : ""}`;
+      ${n ? "" : `<div class="me-tip" style="margin-top:0">${svg("info")}<span>${esc(ev.name)} aún no ha publicado actividades presenciales (talleres, deporte, gastronomía). Los cafés que confirmes con tus conexiones aparecerán aquí.</span></div>`}`;
     return `<article class="pcard" id="actCard">
-      <header class="pcard-h"><div><span class="pcard-k">En el recinto · ${esc(ev.city)} · Día ${s.day + 1}</span><h2 class="pcard-t">Actividades presenciales</h2></div><span class="chip chip-emerald tabular">${svg("users")}${n}</span></header>
+      <header class="pcard-h"><div><span class="pcard-k">En el recinto · ${esc(ev.city)}${ev.days.length ? ` · Día ${s.day + 1}` : ""}</span><h2 class="pcard-t">Actividades presenciales</h2></div><span class="chip chip-emerald tabular">${svg("users")}${n}</span></header>
       ${body}
     </article>`;
   }
@@ -2450,17 +2590,18 @@ export function bootKnetApp() {
     if (/taller|lab/.test(k) || /lab|taller|maker/.test(r)) return "labs"; if (/keynote|panel/.test(k) || /auditorio|principal/.test(r)) return "stage"; if (/demo/.test(k) || /stand|expo|pabell/.test(r)) return "booths"; if (/terraza|lounge|foyer|caf/.test(r)) return "lounge"; return "stage"; };
   let VZ = [];
   let VV = null;
-  function vnBuildZones(evId) { VV = VENUES[evId] || VENUES.bog; VZ = VV.z.map(([name, type, c, desc, r, door, node, extra], i) => ({ id: "ABCD"[i], name, type, col: VC[c][0], hex: VC[c][1], desc, x0: r[0], x1: r[1], z0: r[2], z1: r[3], door, node, ...(extra || {}) })); return VZ; }
+  function vnBuildZones(evId) { VV = VENUES[evId] || VENUES[MAIN_EV]; VZ = VV.z.map(([name, type, c, desc, r, door, node, extra], i) => ({ id: "ABCD"[i], name, type, col: VC[c][0], hex: VC[c][1], desc, x0: r[0], x1: r[1], z0: r[2], z1: r[3], door, node, ...(extra || {}) })); return VZ; }
   const vnFloorC = () => [(VV.floor[0] + VV.floor[1]) / 2, (VV.floor[2] + VV.floor[3]) / 2];
   const vnEnt = () => VV.nodes[VV.ent].slice();
   const vnClamp = (o) => { o.x = Math.max(VV.floor[0] + .5, Math.min(VV.floor[1] - .5, o.x)); o.z = Math.max(VV.floor[2] + .5, Math.min(VV.floor[3] - .5, o.z)); };
-  vnBuildZones("bog");
+  vnBuildZones(MAIN_EV);
   const VN = { ev: null, mode: "overview", target: null, you: [0, 19.5], yaw: 0.78, pitch: 0.66, dist: 108, walk: { x: 0, z: 19.5, yaw: 0, pitch: -0.05 }, people: null, tourT: 0, hf: null, xr: null, arRot: 0, voice: false };
   let vnRaf = 0, vnStopFn = null;
-  function vnEvList() { const ids = myEvIds(); return ids.length ? ids : ["bog", "med", "baq"]; }
+  function vnEvList() { const ids = myEvIds().filter(id => VENUES[id]); return ids.length ? ids : EVENTS.filter(e => VENUES[e.id]).map(e => e.id); }
   function vnEnsureEv() { const list = vnEvList(), m = myEvIds().length ? getSel("main").ev : null; let ev = list.includes(m) ? m : list.includes(VN.ev) ? VN.ev : list[0];
     if (ev !== VN.ev || !VZ.length || VZ._ev !== ev) { VN.ev = ev; vnBuildZones(ev); VZ._ev = ev; VN.people = null; VN.target = null; VN.you = vnEnt(); VN.dist = Math.max(48, 1.7 * Math.max(VV.floor[1] - VV.floor[0], VV.floor[3] - VV.floor[2])); VN.yaw = 0.78; } return evById(ev); }
   function vnStatus(ev) { const today = new Date(), iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    if (!ev.days.length) return { k: "soon", t: "Fecha por confirmar" };
     if (isEnded("ev:" + ev.id) || iso > ev.days[ev.days.length - 1]) return { k: "done", t: "Finalizado" };
     if (ev.days.includes(iso)) return { k: "live", t: "En vivo hoy", day: ev.days.indexOf(iso) };
     const n = Math.round((new Date(ev.days[0] + "T12:00:00") - new Date(iso + "T12:00:00")) / 864e5); return { k: "soon", t: n === 1 ? "Empieza mañana" : `Faltan ${n} días` }; }
@@ -2567,7 +2708,7 @@ export function bootKnetApp() {
   function vnPersonGeo() { const g = vnGeo(); g.cyl(0, 0, 0, 0.26, 1.25, [255, 255, 255], 8); g.cyl(0, 1.3, 0, 0.2, 0.36, [255, 255, 255], 8); return new Float32Array(g.d); }
   function vnBeaconGeo() { const g = vnGeo(); g.box(0, 0, 0, 0.5, 0.5, 0.5, [255, 255, 255]); return new Float32Array(g.d); }
   function vnInitPeople() {
-    if (VN.people) return; const P = []; let seed = 7 + (VN.ev || "bog").split("").reduce((a, c) => a + c.charCodeAt(0), 0); const total = (VENUES[VN.ev] || VENUES.bog).size; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    if (VN.people) return; const P = []; let seed = 7 + (VN.ev || MAIN_EV).split("").reduce((a, c) => a + c.charCodeAt(0), 0); const total = (VENUES[VN.ev] || VENUES[MAIN_EV]).size; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
     VZ.forEach((q, qi) => { const n = Math.round(total * [.28, .22, .25, .18][qi]); for (let i = 0; i < n; i++) { const x = q.x0 + 1.5 + rnd() * (q.x1 - q.x0 - 3), z = q.z0 + 1.5 + rnd() * (q.z1 - q.z0 - 3); P.push({ x, z, tx: x, tz: z, q, sp: .5 + rnd() * .6, w: rnd() * 3 }); } });
     const keys = Object.keys(VV.nodes); for (let i = 0; i < Math.max(2, Math.round(total * .07)); i++) { const k = keys[Math.floor(rnd() * keys.length)], [x, z] = VV.nodes[k]; P.push({ x, z, tx: x, tz: z, q: null, node: k, sp: .9, w: rnd() * 2 }); }
     VN.people = P; VN.rnd = rnd;
@@ -2594,7 +2735,7 @@ export function bootKnetApp() {
         ${reg ? "" : `<p class="vn-ev-note">${svg("info")}<span>Aún no estás inscrito en ningún evento: ves el recinto de ejemplo. Inscríbete en Mis eventos y aquí aparecerá el recinto de cada uno.</span></p>`}
         ${nw ? `<div class="vn-now" style="--zc:${nw.q.hex}">
           <span class="vn-now-k">${nw.live ? "Ahora en este recinto" : "Vista previa del evento"} · Día ${nw.day + 1} · ${nw.s.tm}</span>
-          <div class="vn-now-row"><span class="vn-zl">${nw.q.id}</span><div class="min-w-0"><b>${esc(nw.s.ttl)}</b><span>${esc(nw.s.kind)} · ${esc(nw.q.name)}${ev.id === "bog" ? ` · ${esc(nw.s.room)}` : ""}</span></div><button type="button" class="btn btn-primary btn-sm" data-vnz="${nw.q.id}">${svg("pin")}Trazar ruta</button></div>
+          <div class="vn-now-row"><span class="vn-zl">${nw.q.id}</span><div class="min-w-0"><b>${esc(nw.s.ttl)}</b><span>${esc(nw.s.kind)} · ${esc(nw.q.name)}${ev.id === MAIN_EV ? ` · ${esc(nw.s.room)}` : ""}</span></div><button type="button" class="btn btn-primary btn-sm" data-vnz="${nw.q.id}">${svg("pin")}Trazar ruta</button></div>
         </div>` : ""}
         <div class="vn-stage" id="vnStage">
           <canvas id="venueCanvas" tabindex="0" role="img" aria-label="Mapa 3D del recinto de ${esc(ev.name)} con cuatro zonas: ${VZ.map(q => esc(q.name)).join(", ")}. Arrastra para girar y usa la rueda para acercar."></canvas>
@@ -2617,6 +2758,7 @@ export function bootKnetApp() {
               <button type="button" class="btn btn-ghost btn-sm" data-vnm="vr" id="vnVR" ${xrOk ? "" : "disabled"}>${svg("layers")}Entrar en VR</button>
               <button type="button" class="btn btn-ghost btn-sm" data-vnm="ar" id="vnAR" ${xrOk ? "" : "disabled"}>${svg("target")}Ver en mi mesa (AR)</button>
             </div>
+            <p class="vn-note" data-venue-note>Plano ilustrativo: no es el mapa oficial del recinto. Ubica salas y stands con la señalización del evento.</p>
             <p class="vn-note" id="vnNote">VR y AR se activan en un visor WebXR (Meta Quest) o en Chrome para Android.</p>
           </div>
         </div>
@@ -2844,7 +2986,7 @@ export function bootKnetApp() {
       <div class="red-cred-r">${esc(d.role)}${p.company ? " · " + esc(p.company) : ""}</div>
       <p class="red-cred-s">${live ? `Muéstrala para que te escaneen. Sirve una sola vez y se renueva en <b class="tabular" id="qrLeft">${left}</b> s.` : `Muéstrala para que te escaneen. Es firmada y se renueva en <b class="tabular" id="qrLeft">${left}</b> s.`}</p>
       ${live ? `<p class="red-cred-s" id="qrErr" role="status" ${qrLiveErr ? "" : "hidden"}>${esc(qrLiveErr)}</p>` : ""}
-      <div class="red-cred-f"><span class="mono tabular">${n} por QR</span>${live ? act("qrcam", "", `${svg("qr")}Escanear QR`, "btn btn-ghost btn-sm") : act("qrscan", "", `${svg("spark")}Simular escaneo`, "btn btn-ghost btn-sm")}</div>
+      <div class="red-cred-f"><span class="mono tabular">${n} por QR</span>${live ? act("qrcam", "", `${svg("qr")}Escanear QR`, "btn btn-ghost btn-sm") : act("qrscan", "", `${svg("qr")}Escanear QR`, "btn btn-ghost btn-sm")}</div>
     </article>`;
   }
   function redChipsHTML() {
@@ -2856,7 +2998,7 @@ export function bootKnetApp() {
     const d = IND[A.ind], pend = d.matches.filter(m => !isConn(m[1]));
     return `<section class="red-sec" id="matchesCard" aria-labelledby="redMatchT">
       <div class="red-sec-h"><h2 id="redMatchT" class="red-k">Matches sugeridos</h2><span class="red-link" style="border:0">Calculados con tu rol, industria, intereses y agenda</span></div>
-      ${pend.length ? `<div class="red-mgrid">${pend.map(([ini, n, r, sc, why]) => { const i = d.matches.findIndex(m => m[1] === n); return `<article class="rm">
+      ${!d.matches.length ? `<div class="conn-empty">${svg("users")}<div><b>Aún no hay matches en tu evento</b><p class="text-mute text-[14px]">KNET solo te sugiere asistentes reales. Cuando más personas se inscriban en tus eventos, verás aquí a quién te conviene conocer y por qué. Mientras tanto, escanea la credencial QR de quien conozcas en persona.</p><div class="flex flex-wrap gap-2" style="margin-top:10px">${act("goto", "eventos", `${svg("map")}Explorar eventos`)}</div></div></div>` : pend.length ? `<div class="red-mgrid">${pend.map(([ini, n, r, sc, why]) => { const i = d.matches.findIndex(m => m[1] === n); return `<article class="rm">
         <div class="rm-top"><div class="avatar rm-av" style="background:${avatarBg(i)}">${ini}</div><div class="min-w-0 flex-1"><div class="rm-name">${n}</div><div class="rm-role">${r}</div></div><div class="rm-aff"><b class="tabular">${sc}%</b><span>Afinidad</span></div></div>
         <p class="rm-why">${why}</p>
         <div class="mcard-actions">${matchActions(n)}${act("person", n, "Detalle", "btn btn-ghost btn-sm")}</div>
@@ -2865,7 +3007,7 @@ export function bootKnetApp() {
   }
   /* ---- QR dinámico real: con una cuenta sincronizada se muestra el token firmado de GET /api/me/qr-token
      (caduca en segundos, sirve una sola vez y se pide otro cada `refreshIn` s). Sin API, sin cuenta o con un
-     backend que aún no tiene el endpoint (404) se mantiene la demo: QR decorativo y escaneo simulado con SUMMIT_POOL. */
+     backend que aún no tiene el endpoint (404) el QR es decorativo y «Escanear» explica cómo activar el real. */
   let qrLive = null, qrLiveErr = "", qrNextAt = 0, qrFetching = false, qrApiMissing = false;
   const qrLiveMode = () => apiEnabled && A.connected && accountReady() && !!A.apiLinked && !qrApiMissing;
   async function renewQr() {
@@ -2876,7 +3018,7 @@ export function bootKnetApp() {
       qrLiveErr = ""; qrNextAt = qrLive.refreshAt;
     } catch (e) {
       qrNextAt = Date.now() + 10000;
-      if (e instanceof ApiError && e.status === 404) { qrApiMissing = true; apiLog("el servidor aún no emite QR dinámicos; se usa la demo", e); }
+      if (e instanceof ApiError && e.status === 404) { qrApiMissing = true; apiLog("el servidor aún no emite QR dinámicos", e); }
       else if (e instanceof ApiError && e.status === 403) { qrLive = null; qrLiveErr = "Desactivaste el permiso «Red de contactos»: actívalo en Permisos para compartir tu QR."; }
       else { if (qrLive && qrLive.expiresAt <= Date.now()) qrLive = null; qrLiveErr = isOffline(e) ? "Sin conexión: tu QR se actualizará al volver la red." : "No pudimos generar tu QR. Lo reintentamos en unos segundos."; }
     } finally { qrFetching = false; }
@@ -2920,7 +3062,7 @@ export function bootKnetApp() {
           </div>
         </div>
       </div>` : ""}
-      <div class="flex flex-wrap gap-2">${act("qrtoggle", "", `${svg("qr")}${qrOpen ? "Ocultar mi QR" : "Mostrar mi QR"}`, "btn btn-primary btn-sm")}${act("qrscan", "", `${svg("spark")}Simular escaneo de QR`, "btn btn-ghost btn-sm")}</div>
+      <div class="flex flex-wrap gap-2">${act("qrtoggle", "", `${svg("qr")}${qrOpen ? "Ocultar mi QR" : "Mostrar mi QR"}`, "btn btn-primary btn-sm")}${act("qrscan", "", `${svg("qr")}Escanear QR`, "btn btn-ghost btn-sm")}</div>
       ${list.length ? `<div class="grid gap-2"><div class="av-lbl" style="margin:0">Conexiones recientes por QR</div>${list.map(c => `<button type="button" class="qr-recent" data-act="chat" data-v="${esc(c.name)}"><span class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,#2F55E0,#7500C0)">${initialsOf(c.name)}</span><span class="min-w-0"><b>${esc(c.name)}</b><span class="block text-[12px] text-mute">${esc(c.role)} · ${esc(c.hora)} · ${esc(c.lugar)}</span></span>${svg("msg")}</button>`).join("")}</div>` : ""}
     </article>`;
   }
@@ -3151,34 +3293,18 @@ export function bootKnetApp() {
       toast(`<b>${esc(n)}</b><div class="text-[13px] text-mute">${esc(body.slice(0, 120))}</div>`, "msg");
     }
   }
+  /* Sin QR dinámico (sin API, sin cuenta o servidor sin el endpoint) no hay asistentes reales a los que conectar:
+     se explica cómo activarlo en vez de inventar a alguien. */
   async function simulateScan() {
-    const my = ++scanRun, p = PERSONAS[A.ind], used = (A.qrConn || []).map(x => x.name).concat(A.connections);
-    const pool = SUMMIT_POOL.filter(([n]) => !used.includes(n));
-    const body = $("#qsBody");
-    if (!pool.length) { body.innerHTML = `<div class="mh"><h3 id="qsTitle" class="font-display font-bold text-xl">Ya conectaste con todos</h3><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div><p class="text-mute">En esta demo no quedan más asistentes por escanear tu QR.</p>`; if ($("#m-qrscan").hidden) openModal("qrscan"); return; }
-    const [n, role] = pool[Math.floor(Math.random() * pool.length)], now = new Date();
-    const shared = p.interests.slice(0, Math.random() < .5 ? 1 : 2);
-    scanCur = { name: n, role, lugar: QR_PLACES[Math.floor(Math.random() * QR_PLACES.length)], hora: now.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" }), fecha: now.toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" }), at: now.getTime(), interests: shared };
-    body.innerHTML = `
-      <div class="mh"><div><span class="chip chip-cyan">${svg("qr")}Simulación en vivo</span><h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">Escaneando tu QR…</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
-      <div class="qs-scan"><div class="qs-phone"><div class="qs-cam">${qrSVG(p.name + "|" + qrEpochNow(), "scan")}<span class="qs-beam"></span><span class="ar-corner tl"></span><span class="ar-corner tr"></span><span class="ar-corner bl"></span><span class="ar-corner br"></span></div></div>
-        <p class="text-[14px] text-mute" style="text-align:center"><b class="text-ink">${esc(n)}</b> está escaneando tu código desde su app KNET.</p></div>`;
+    ++scanRun; scanCur = null;
+    const linked = accountReady() && !!A.apiLinked, canAuth = apiEnabled && !linked;
+    const why = !apiEnabled ? "Esta versión de KNET funciona sin servidor, así que no hay otros asistentes con quién conectar. Abre KNET con tu cuenta para escanear credenciales reales."
+      : linked ? "El servidor de KNET aún no emite códigos QR firmados. Vuelve a intentarlo en unos minutos."
+      : "Inicia sesión o crea tu cuenta: tu credencial mostrará un código firmado y podrás escanear el de otros asistentes.";
+    $("#qsBody").innerHTML = `<div class="mh"><div><span class="chip chip-cyan">${svg("qr")}Conexión por QR</span><h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">Conecta con asistentes reales</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
+      <div class="conn-empty">${svg("users")}<div><b>El escáner necesita tu cuenta KNET en línea</b><p class="text-mute text-[14px]">${why}</p></div></div>
+      ${canAuth ? `<div class="av-foot"><button type="button" class="btn btn-primary" data-qs="auth">${svg("link")}Iniciar sesión o crear cuenta</button></div>` : ""}`;
     if ($("#m-qrscan").hidden) openModal("qrscan");
-    await sleep(1800); if (my !== scanRun || $("#m-qrscan").hidden) return;
-    const c = scanCur;
-    body.innerHTML = `
-      <div class="mh"><div><span class="chip chip-accent"><span class="pend-dot"></span>Nueva solicitud de conexión</span><h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">${esc(first(n))} quiere conectar contigo</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
-      <div class="qs-req reveal-in">
-        <div class="flex items-center gap-3"><span class="avatar" style="width:52px;height:52px;font-size:17px;background:linear-gradient(135deg,#2F55E0,#7500C0)">${initialsOf(n)}</span><div class="min-w-0"><div class="font-display font-bold text-[18px]">${esc(n)}</div><div class="text-[13px] text-mute">${esc(role)}</div></div></div>
-        <div class="qs-log">
-          <div><span>Hora</span><b class="tabular">${c.hora}</b></div>
-          <div><span>Lugar</span><b>${esc(c.lugar)}</b></div>
-          <div><span>Método</span><b>QR dinámico de KNET</b></div>
-        </div>
-        <div><div class="av-lbl" style="margin-bottom:6px">Contexto que intercambian</div><div class="flex flex-wrap gap-1.5">${shared.map(x => `<span class="chip chip-accent">${svg("check")}${esc(x)}</span>`).join("")}<span class="chip">${svg("users")}Perfil profesional</span></div></div>
-      </div>
-      <div class="av-foot"><button type="button" class="btn btn-ghost btn-sm" data-qs="decline">${svg("x")}Rechazar</button><button type="button" class="btn btn-emerald" data-qs="accept">${svg("check")}Aceptar conexión · +100 XP</button></div>`;
-    const acc = $('[data-qs="accept"]'); if (acc) acc.focus();
   }
   function acceptScan() {
     const c = scanCur; if (!c) return; scanCur = null;
@@ -3208,6 +3334,7 @@ export function bootKnetApp() {
     if (b.dataset.qs === "accept") acceptScan();
     if (b.dataset.qs === "decline") { const n = scanCur && scanCur.name; scanCur = null; closeModal($("#m-qrscan")); toast(`<b>Solicitud rechazada</b>${n ? `<div class="text-[13px] text-mute">${esc(n)} no verá tus datos.</div>` : ""}`, "x"); }
     if (b.dataset.qs === "again") simulateScan();
+    if (b.dataset.qs === "auth") { closeModal($("#m-qrscan")); openAuth(); }
     if (b.dataset.qs === "cam") startCamScan();
     if (b.dataset.qs === "chat") { closeModal($("#m-qrscan")); openChat(b.dataset.v); }
   });
@@ -3811,8 +3938,8 @@ export function bootKnetApp() {
   /* ---- Importación automática (2 s), solo con los campos autorizados ---- */
   async function connectFlow(ind, opts = {}) {
     ind = ind || (A.connected ? A.ind : "tech");
-    const sc = opts.scopes || { work: true, industry: true, skills: true }, demo = !!opts.incomplete;
     const my = ++runId, p = BASE_P[ind], role = BASE_ROLE[ind], d = IND[ind], modal = $("#m-mcp");
+    const sc = opts.scopes || { work: true, industry: true, skills: true }, demo = !!opts.incomplete || !p.name; // sin LinkedIn real no hay datos que importar
     const alive = () => my === runId && !modal.hidden;
     if (modal.hidden) openModal("mcp");
     showPane("mcpAuto"); $("#mcpDone").hidden = true;
@@ -3822,7 +3949,7 @@ export function bootKnetApp() {
     bar.style.transition = reduce ? "none" : "width 2s linear"; bar.style.width = "100%";
     const NA = "No autorizado", ND = "No disponible";
     const steps = ["Handshake OAuth con linkedin-mcp", "profile.read → nombre" + (sc.work ? ", cargo y empresa" : ""), sc.industry ? "Clasificando industria y seniority" : "Industria: sin permiso", sc.skills ? "interests.infer → temas clave" : "Intereses: sin permiso"];
-    const fields = [["Nombre", p.name], ["Rol", sc.work ? role : NA], ["Empresa", !sc.work ? NA : demo ? ND : p.company], ["Industria", sc.industry ? d.label : NA], ["Intereses", !sc.skills ? NA : demo ? ND : p.interests.slice(0, 2).join(" · ")]];
+    const fields = [["Nombre", p.name || ND], ["Rol", !sc.work ? NA : demo ? ND : role], ["Empresa", !sc.work ? NA : demo ? ND : p.company], ["Industria", sc.industry ? d.label : NA], ["Intereses", !sc.skills ? NA : demo ? ND : p.interests.slice(0, 2).join(" · ")]];
     const fillAt = [[0], [1, 2], [3], [4]];
     $("#mcpSteps").innerHTML = steps.map(x => `<div class="step-row"><span class="dot"></span><span>${x}</span></div>`).join("");
     $("#mcpFields").innerHTML = fields.map(([k]) => `<div class="field"><span class="text-mute">${k}</span><b class="mcp-val"><span class="mcp-sk shimmer"></span></b></div>`).join("");
@@ -3833,9 +3960,9 @@ export function bootKnetApp() {
       row.classList.replace("active", "done"); row.querySelector(".dot").innerHTML = svg("check");
       fillAt[i].forEach(k => { const el = $$("#mcpFields .mcp-val")[k]; el.textContent = fields[k][1]; if (fields[k][1] === NA || fields[k][1] === ND) el.classList.add("mcp-miss"); });
     }
-    const got = { name: p.name, location: p.location };
-    const fromMcp = ["name", "location"];
-    if (sc.work) { got.role = role; fromMcp.push("role"); if (!demo) { got.company = p.company; fromMcp.push("company"); } }
+    const got = p.name ? { name: p.name, location: p.location } : {};
+    const fromMcp = p.name ? ["name", "location"] : [];
+    if (sc.work && !demo) { got.role = role; fromMcp.push("role"); got.company = p.company; fromMcp.push("company"); }
     if (sc.industry) { got.ind = ind; fromMcp.push("ind"); if (!demo) { got.seniority = p.seniority; fromMcp.push("seniority"); } }
     if (sc.skills && !demo) { got.interests = p.interests.slice(); fromMcp.push("interests"); }
     const missing = ["role", "ind", "seniority", "interests"].filter(k => !fromMcp.includes(k));
@@ -3864,7 +3991,7 @@ export function bootKnetApp() {
     const serverWins = !!(acct && acct.serverWins); // cuenta que ya existía: sus inscripciones y progreso mandan
     if (serverWins) { A.apiLinked = true; if (reset) { A.xp = acct.xp || 0; A.xpLocal = 0; } }
     const p = PERSONAS[ind], d = IND[ind];
-    if (reset) A.chat.push({ who: "ai", html: `Hola, ${esc(first(p.name))}. Configuré tu Summit para ${esc(d.role)} en ${d.label}: 4 sesiones, 3 matches y 3 misiones activas. ¿En qué te ayudo?` });
+    if (reset) A.chat.push({ who: "ai", html: `Hola, ${esc(first(p.name))}. Configuré tu Summit para ${esc(d.role)} en ${d.label}: 4 sesiones y 3 misiones activas. Tus matches aparecerán cuando haya asistentes reales afines. ¿En qué te ayudo?` });
     save();
     if (serverWins) { const body = profileToApi(); (body ? api.updateMe(body) : Promise.resolve()).catch((e) => apiLog("no se pudo completar el perfil en el servidor", e)).finally(() => syncFromApi()); }
     else syncFromApi();
@@ -4195,9 +4322,9 @@ export function bootKnetApp() {
     if (a === "revoke") {
       if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.innerHTML = `${svg("x")}Confirmar: borrar todo`; b.classList.add("armed"); setTimeout(() => { if (b.isConnected && b.dataset.armed === "1") { b.dataset.armed = ""; b.classList.remove("armed"); b.innerHTML = `${svg("x")}Revocar y borrar mis datos`; } }, 5000); return; }
       revokeAndErase(); return; }
-    if (a === "graph") { b.disabled = true; b.classList.add("shimmer"); b.innerHTML = `${svg("users")}<span>Analizando 1.240 asistentes…</span>`; await sleep(900); graphIntro = true; award(() => { A.graph = true; }, 30, "Grafo de contactos generado", "users"); const nc = $("#networkCard"); if (nc) requestAnimationFrame(() => scrollToEl(nc)); return; }
-    if (a === "resync") { connectFlow($("#personaSel").value); return; }
+    if (a === "graph") { b.disabled = true; b.classList.add("shimmer"); b.innerHTML = `${svg("users")}<span>Analizando tu red…</span>`; await sleep(900); graphIntro = true; award(() => { A.graph = true; }, 30, "Grafo de contactos generado", "users"); const nc = $("#networkCard"); if (nc) requestAnimationFrame(() => scrollToEl(nc)); return; }
     if (a === "evinfo") { openEvent(v); return; }
+    if (a === "evactive") { setActiveEvent(v); showTab("agenda"); return; }
     if (a === "evselect") { const c = (EVENTS.find(e => e.id === v) || {}).city, cur = selEvent && (EVENTS.find(e => e.id === selEvent) || {}).city; selEvent = cur === c ? null : v; refresh(); if (!selEvent) return; const el = $("#ev-" + v); if (el && window.matchMedia("(max-width: 1023px)").matches) scrollToEl(el); if (el) flash(el); return; }
     if (a === "evsave") { const ev = EVENTS.find(e => e.id === v); if (!ev) return; if (isLockedEv(ev)) { toast(`<b>Evento exclusivo del nivel ${ev.lvl}</b><div class="text-[13px] text-mute">Gana más XP para desbloquearlo.</div>`, "lock"); return; } toggleRegistration(ev); refresh(); return; }
     if (a === "gen") { if (genBusy) return; genBusy = true; b.disabled = true; b.innerHTML = `${svg("spark")}<span>Generando…</span>`; b.classList.add("shimmer");
@@ -4222,14 +4349,6 @@ export function bootKnetApp() {
     return `<article class="pcard perm-full">
           <header class="pcard-h"><div><span class="pcard-k">Privacidad</span><h2 class="pcard-t">Permisos MCP</h2></div><span class="chip">${svg("shield")}Revocables</span></header>
           <div class="grid gap-2">${scopes.map(([key, ttl, h]) => `<label class="switch-row" for="scope-${key}"><span><b class="font-semibold">${ttl}</b><span class="block text-mute text-[13px]">${h}</span></span><input type="checkbox" role="switch" class="switch" id="scope-${key}" data-scope="${key}" ${sc[key] ? "checked" : ""} ${key === "profile" ? "disabled" : ""}></label>`).join("")}</div>
-          <div class="resync">
-            <label for="personaSel" class="pcard-k" style="color:var(--muted)">Perfil de demostración</label>
-            <div class="resync-row">
-              <select id="personaSel" class="select">${Object.keys(IND).map(key => `<option value="${key}" ${key === A.ind ? "selected" : ""}>${PERSONAS[key].name} · ${IND[key].role} · ${IND[key].label}</option>`).join("")}</select>
-              ${act("resync", "", `${svg("link")}Sincronizar`, "btn btn-ghost btn-sm")}
-            </div>
-            <span class="text-[12px] text-mute">Cambiar de perfil reinicia el progreso de la demo.</span>
-          </div>
           <div class="resync">
             <span class="pcard-k" style="color:var(--muted)">Tus autorizaciones</span>
             <div class="grid gap-2">${readLocal().filter(r => r.tipo === "aceptacion" || r.tipo === "cambio_permiso").slice(-3).reverse().map(r => `<div class="auth-row">${svg(r.tipo === "aceptacion" ? "check" : "shield")}<span><b>${esc(r.tipo === "aceptacion" ? "Aceptaste " + (r.documentos || []).map(d => d.documento.split(" ")[0] + " v" + d.version).join(" y ") : r.detalle || "")}</b><span class="block text-mute text-[12px]">${esc(r.fechaLocal)} · ${esc(r.formulario)} · ${r.almacenamiento === "servidor" ? "registrado en el servidor" : "registrado en este navegador"}</span></span></div>`).join("") || `<div class="text-[13px] text-mute">No hay aceptaciones guardadas en este navegador.</div>`}</div>
