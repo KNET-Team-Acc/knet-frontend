@@ -21,7 +21,7 @@ export const LEGAL = {
     vigencia: "22 de noviembre de 2026"
   };
 
-export const APP_VERSION = "KNET prototipo v17";
+export const APP_VERSION = "KNET v17";
 
 export const SIC_URL = "https://www.sic.gov.co";
 

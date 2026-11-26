@@ -6,7 +6,7 @@ export default function FooterBar() {
     <div className="footbar">
       <span>© 2026 Equipo KNET</span>
       {" "}
-      <span>Prototipo funcional con datos simulados</span>
+      <span>Plataforma multievento de networking con IA</span>
     </div>
   );
 }

@@ -8,7 +8,7 @@ export default function HeroStory() {
         <div className="st-beam l" />
         <div className="st-beam r" />
         <div className="st-screen">
-          <span className="st-sk">{"AI & Business Summit"}</span>
+          <span className="st-sk">{"Tu evento"}</span>
           <b>Agentes autónomos en producción</b>
           <span className="st-wave">
             <i />
@@ -65,7 +65,7 @@ export default function HeroStory() {
                     </li>
                     <li style={{ "--i": "2" }}>
                       <b>12:15</b>
-                      <span>Café con Diego R.</span>
+                      <span>Café con tu match</span>
                       <em>Lounge</em>
                     </li>
                     <li style={{ "--i": "3" }}>
@@ -80,13 +80,13 @@ export default function HeroStory() {
                     <i className="ico" data-i="users" />
                     Match estratégico
                   </div>
-                  <h4>Diego R. está a 2 salas</h4>
+                  <h4>Tu match está a 2 salas</h4>
                   <div className="hd-match">
-                    <span className="hd-av">LM</span>
+                    <span className="hd-av">TÚ</span>
                     <span className="hd-link">
                       <i />
                     </span>
-                    <span className="hd-av b">DR</span>
+                    <span className="hd-av b">IA</span>
                   </div>
                   <div className="hd-aff">
                     <b>94%</b>
@@ -163,7 +163,7 @@ export default function HeroStory() {
             <b>10:18</b>
             <span>
               <i className="ico" data-i="spark" />
-              KNET · Diego R. está a 2 salas
+              KNET · Tu match está a 2 salas
             </span>
           </div>
         </div>
