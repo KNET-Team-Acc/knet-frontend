@@ -246,6 +246,31 @@ export const api = {
   // scan: 400 invalid_qr / qr_expired / own_qr, 409 qr_used, 403 peer_network_off, 429 rate_limited
   qrToken: () => request("GET", "/api/me/qr-token"),
   scanQr: (token, context) => request("POST", "/api/me/connections/scan", { token, ...(context ? { context } : {}) }),
+
+  // Panel de creador de eventos (solo accountRole organizer/admin; si no, 403 forbidden_role). Un organizador
+  // solo edita sus eventos (403 not_owner). Los eventos nacen como borrador y salen en /api/events al publicarlos.
+  admin: {
+    listEvents: () => request("GET", "/api/admin/events"),
+    createEvent: (body) => request("POST", "/api/admin/events", body),
+    getEvent: (id) => request("GET", `/api/admin/events/${enc(id)}`),
+    updateEvent: (id, patch) => request("PATCH", `/api/admin/events/${enc(id)}`, patch),
+    deleteEvent: (id) => request("DELETE", `/api/admin/events/${enc(id)}`),
+    setDays: (id, days) => request("PUT", `/api/admin/events/${enc(id)}/days`, { days }),
+    setInfo: (id, info) => request("PUT", `/api/admin/events/${enc(id)}/info`, { info }),
+    setVenue: (id, venue) => request("PUT", `/api/admin/events/${enc(id)}/venue`, { venue }),
+    // 400 incomplete_event con `missing` (lo que falta para publicar)
+    publish: (id) => request("POST", `/api/admin/events/${enc(id)}/publish`),
+    unpublish: (id) => request("POST", `/api/admin/events/${enc(id)}/unpublish`),
+    addSpeaker: (id, body) => request("POST", `/api/admin/events/${enc(id)}/speakers`, body),
+    updateSpeaker: (id, sid, patch) => request("PATCH", `/api/admin/events/${enc(id)}/speakers/${enc(sid)}`, patch),
+    deleteSpeaker: (id, sid) => request("DELETE", `/api/admin/events/${enc(id)}/speakers/${enc(sid)}`),
+    addSession: (id, body) => request("POST", `/api/admin/events/${enc(id)}/sessions`, body),
+    updateSession: (id, sid, patch) => request("PATCH", `/api/admin/events/${enc(id)}/sessions/${enc(sid)}`, patch),
+    deleteSession: (id, sid) => request("DELETE", `/api/admin/events/${enc(id)}/sessions/${enc(sid)}`),
+    addMission: (id, body) => request("POST", `/api/admin/events/${enc(id)}/missions`, body),
+    updateMission: (id, code, patch) => request("PATCH", `/api/admin/events/${enc(id)}/missions/${enc(code)}`, patch),
+    deleteMission: (id, code) => request("DELETE", `/api/admin/events/${enc(id)}/missions/${enc(code)}`),
+  },
 };
 
 /**

@@ -19,6 +19,12 @@ export function seedUser(over = {}) {
   };
 }
 
+/** Evento del panel de creador tal como lo publica GET /api/events (hosted: creado en KNET) */
+function publicEvent(e) {
+  return { id: e.id, name: e.name, kind: "real", city: e.city, venueName: e.venueName, dateLabel: e.dateLabel, days: e.days, lat: e.lat, lon: e.lon, tags: e.tags,
+    industries: e.industries, minLevel: 1, organizer: e.organizer, sourceUrl: e.sourceUrl, description: e.description, hosted: true };
+}
+
 export async function installMockApi(page, opts = {}) {
   const state = {
     offline: false,
@@ -39,11 +45,66 @@ export async function installMockApi(page, opts = {}) {
     consents: [],
     deleted: false,
     tokens: 0,
+    admin: new Map(),        // eventos del panel de creador: id → evento con info, venue, speakers, sessions, missions
+    adminSeq: 0,
   };
+
+  /* ---- /api/admin/* (forma de knet-backend/src/routes/admin/events.js) ---- */
+  const adminView = (e) => ({ ...publicEvent(e), status: e.status, ownerId: USER_ID, info: e.info, venue: e.venue, speakers: e.speakers, sessions: e.sessions, missions: e.missions,
+    counts: { sessions: e.sessions.length, speakers: e.speakers.length, missions: e.missions.length, registrations: 0 } });
+  const invalid = (path, message) => [400, { error: "validation_error", message: "Datos inválidos", issues: [{ path, message }] }];
+  function adminRoute(method, path, body) {
+    const b = body || {};
+    if (path === "/api/admin/events" && method === "GET") return [200, { events: [...state.admin.values()].map(adminView), role: state.user.accountRole }];
+    if (path === "/api/admin/events" && method === "POST") {
+      if (!b.name || b.name.trim().length < 3) return invalid("name", "El nombre debe tener al menos 3 caracteres");
+      const id = `o${String(++state.adminSeq).padStart(9, "0")}`;
+      state.admin.set(id, { id, name: b.name, city: b.city, venueName: b.venueName || "", dateLabel: "", lat: b.lat ?? null, lon: b.lon ?? null, tags: b.tags || [], industries: b.industries || [],
+        description: b.description || "", sourceUrl: b.sourceUrl || null, organizer: "Acme", status: "draft", info: null, venue: null, days: [], speakers: [], sessions: [], missions: [] });
+      return [201, { event: adminView(state.admin.get(id)) }];
+    }
+    const m = /^\/api\/admin\/events\/([a-z0-9]+)(?:\/([a-z]+))?(?:\/([a-z0-9-]+))?$/.exec(path);
+    const e = m && state.admin.get(m[1]);
+    if (!e) return [404, { error: "not_found", message: "No existe el evento" }];
+    const [, , sub, child] = m;
+    if (!sub) {
+      if (method === "GET") return [200, { event: adminView(e) }];
+      if (method === "PATCH") { Object.assign(e, b); return [200, { event: adminView(e) }]; }
+      if (method === "DELETE") { state.admin.delete(e.id); return [204]; }
+    }
+    if (sub === "days") { e.days = b.days; e.sessions = e.sessions.filter((s) => s.day < b.days.length); return [200, { event: adminView(e) }]; }
+    if (sub === "info") { e.info = b.info; return [200, { event: adminView(e) }]; }
+    if (sub === "venue") { e.venue = b.venue; return [200, { event: adminView(e) }]; }
+    if (sub === "publish") {
+      const missing = [!e.days.length && "al menos un día", !e.sessions.length && "al menos una charla", !e.info && "la ficha del evento", !e.description && "una descripción"].filter(Boolean);
+      if (missing.length) return [400, { error: "incomplete_event", message: `Para publicar falta: ${missing.join(", ")}`, missing }];
+      e.status = "published"; return [200, { event: adminView(e) }];
+    }
+    if (sub === "unpublish") { e.status = "draft"; return [200, { event: adminView(e) }]; }
+    if (sub === "speakers" && method === "POST") { e.speakers.push({ id: ++state.adminSeq, tags: [], session: "", ...b }); return [201, { speaker: e.speakers.at(-1) }]; }
+    if (sub === "sessions" && method === "POST") {
+      if (b.day >= e.days.length) return [400, { error: "bad_request", message: `El evento no tiene el día ${b.day + 1}` }];
+      const slot = e.sessions.filter((s) => s.day === b.day).reduce((n, s) => Math.max(n, s.slot + 1), 0);
+      const s = { id: ++state.adminSeq, code: `${e.id}:${b.day}:${slot}`, eventId: e.id, slot, why: null, industry: null, ...b };
+      e.sessions.push(s); return [201, { session: s }];
+    }
+    if (sub === "missions" && method === "POST") {
+      const icons = { presencial: "pin", networking: "handshake", contenido: "file", quiz: "quiz" };
+      const mi = { code: `${e.id}-m${++state.adminSeq}`, kind: "event", industry: null, eventId: e.id, icon: icons[b.type], title: b.title, subtitle: b.condition || "", xp: b.xp, tags: [b.type], completed: false };
+      e.missions.push(mi); return [201, { mission: mi }];
+    }
+    if (method === "DELETE" && child) {
+      const key = sub === "missions" ? "code" : "id", list = e[sub];
+      const i = list ? list.findIndex((x) => String(x[key]) === child) : -1;
+      if (i < 0) return [404, { error: "not_found", message: "No existe" }];
+      list.splice(i, 1); return [204];
+    }
+    return [404, { error: "not_found", message: `Mock sin ${method} ${path}` }];
+  }
   const cors = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-User-Id",
-    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   };
   const session = () => {
     state.tokens++;
@@ -77,12 +138,22 @@ export async function installMockApi(page, opts = {}) {
     if (path === "/api/auth/refresh" && method === "POST") return json(200, session());
     if (path === "/api/auth/logout") return json(204);
 
-    // Catálogo: opts.events = lista de GET /api/events; opts.eventDetails[id] = detalle de GET /api/events/:id
-    if (path === "/api/events") return json(200, { events: opts.events || [] });
+    // Catálogo: opts.events = lista de GET /api/events; opts.eventDetails[id] = detalle de GET /api/events/:id.
+    // Los eventos publicados desde el panel de creador (state.admin) se suman como hosted.
+    if (path === "/api/events") return json(200, { events: [...(opts.events || []), ...[...state.admin.values()].filter((e) => e.status === "published").map(publicEvent)] });
     const evDetail = /^\/api\/events\/([a-z0-9]+)$/.exec(path);
     if (evDetail && method === "GET") {
+      const a = state.admin.get(evDetail[1]);
+      if (a && a.status === "published") return json(200, { event: { ...publicEvent(a), info: a.info, venue: a.venue, speakers: a.speakers, sessions: a.sessions, missions: a.missions } });
       const d = (opts.eventDetails || {})[evDetail[1]];
       return d ? json(200, { event: d }) : json(404, { error: "not_found", message: `No existe el evento ${evDetail[1]}` });
+    }
+
+    // Panel de creador de eventos (simplificado: un solo organizador; mismas formas que knet-backend)
+    if (path.startsWith("/api/admin/")) {
+      if (!["organizer", "admin"].includes(state.user.accountRole)) return json(403, { error: "forbidden_role", message: "Tu cuenta no tiene permisos de organizador de eventos" });
+      const r = adminRoute(method, path, body);
+      return json(r[0], r[1]);
     }
     if (state.deleted && path.startsWith("/api/me")) return json(401, { error: "invalid_token", message: "La cuenta ya no existe" });
 

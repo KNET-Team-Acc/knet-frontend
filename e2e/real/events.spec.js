@@ -21,7 +21,7 @@ test("catálogo real: los 4 eventos del backend y la inscripción en cada uno", 
 
   // El backend publica exactamente el catálogo real
   const list = await (await fetch(`${API}/api/events`)).json();
-  expect(list.events.map((e) => e.id).sort()).toEqual([...REAL].sort());
+  expect(list.events.filter((e) => !e.hosted).map((e) => e.id).sort()).toEqual([...REAL].sort()); // hosted = creados en el panel de creador
   for (const id of REAL) expect((await fetch(`${API}/api/events/${id}`)).status).toBe(200);
   for (const id of ["bog", "med", "baq", "x2", "x5"]) expect((await fetch(`${API}/api/events/${id}`)).status).toBe(404);
 
