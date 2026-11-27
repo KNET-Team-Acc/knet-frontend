@@ -25,6 +25,7 @@ import { SV_ASPECTS, SV_BEST, SV_FACES } from "@/data/survey.js";
 import { PDF_MAP, PDF_FONTS } from "@/data/pdf-fonts.js";
 import { api, ApiError, isOffline, getUserId, setUserId, apiEnabled, hasSession, sessionUserId, sessionEmail, clearSession, accountAvailable, onApiEvent, streamUrl, qrTokenExpiry } from "@/services/api.js";
 import qrcode from "qrcode-generator";
+import { createOrganizer } from "@/lib/engine/organizer.js";
 
 /**
  * Arranca KNET sobre el DOM renderizado por React. Llamar una sola vez.
@@ -416,7 +417,7 @@ export function bootKnetApp() {
   
   
   
-  const TAB_IDS = TABS.map(t => t[0]).concat(["recinto"]);
+  const TAB_IDS = TABS.map(t => t[0]).concat(["recinto", "creador"]); // creador = Mis eventos › Mis eventos creados
   
   
   
@@ -527,8 +528,11 @@ export function bootKnetApp() {
   const lvlMax = () => lvl() >= LEVELS.length;
   const first = (n) => n.split(" ")[0];
   const missionPool = () => IND[A.ind].missions.map((m, i) => ({ id: A.ind + "-m" + i, icon: m[0], title: m[1], sub: m[2], xp: m[3] }))
-    .concat(COMMON_M.map((m, i) => ({ id: "c" + i, icon: m[0], title: m[1], sub: m[2], xp: m[3] })));
-  const activeMissions = () => missionPool().filter(m => !A.done.includes(m.id)).slice(0, 3);
+    .concat(COMMON_M.map((m, i) => ({ id: "c" + i, icon: m[0], title: m[1], sub: m[2], xp: m[3] })))
+    .concat(eventMissions());
+  /* Misiones de los eventos creados en KNET (hosted) en los que estoy inscrito: tienen su propio bloque en Misiones */
+  const eventMissions = () => EVENTS.filter(e => e.hosted && A.events.includes(e.id)).flatMap(e => (e.missions || []).map(m => ({ id: m.code, icon: m.icon, title: m.title, sub: m.sub ? `${m.sub} · ${e.name}` : e.name, xp: m.xp, ev: e.id })));
+  const activeMissions = () => missionPool().filter(m => !m.ev && !A.done.includes(m.id)).slice(0, 3);
 
   /* ---- Backend (API): sincronización progresiva con fallback silencioso a lo local ----
      - XP híbrida: A.xp = XP del servidor + A.xpLocal (XP de flujos que la API aún no conoce:
@@ -576,6 +580,7 @@ export function bootKnetApp() {
     A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true; editField = null;
   }
   function applyServerUser(u) {
+    if (u) A.accountRole = ["organizer", "admin"].includes(u.accountRole) ? u.accountRole : "attendee";
     if (!A.profile || !u) return;
     if (u.industry && u.industry !== A.ind && IND[u.industry]) switchIndustry(u.industry);
     const pr = A.profile;
@@ -605,18 +610,34 @@ export function bootKnetApp() {
       formato: ["Presencial", ev.days.length ? `${ev.days.length} día${ev.days.length > 1 ? "s" : ""}` : "Fecha por confirmar"], agenda: [], llevas: [] };
   }
   function addApiEvent(c) {
-    if (!c || typeof c.id !== "string" || !/^[a-z0-9]{1,24}$/.test(c.id) || EVENTS.some(e => e.id === c.id) || EV_ALIAS[c.id] || !apiUrl(c.url)) return null;
+    // Reales con fuente oficial o creados por un organizador en KNET (hosted: la API responde por ellos)
+    if (!c || typeof c.id !== "string" || !/^[a-z0-9]{1,24}$/.test(c.id) || EVENTS.some(e => e.id === c.id) || EV_ALIAS[c.id] || !(apiUrl(c.url) || c.hosted === true)) return null;
     const cityName = apiTxt(c.city, 60), city = CO_CITIES.find(x => x[0] === cityName), tags = apiTags(c.tags), ind = Array.isArray(c.ind) ? c.ind.filter(k => IND[k]) : [];
     const ev = { id: c.id, city: cityName || "Colombia", name: apiTxt(c.name, 120) || c.id, venue: apiTxt(c.venue, 160) || "Sede por confirmar", date: apiTxt(c.date, 60) || "Fecha por confirmar",
       lat: Number.isFinite(c.lat) ? c.lat : city ? city[1] : 4.71, lon: Number.isFinite(c.lon) ? c.lon : city ? city[2] : -74.07,
       tags: tags.length ? tags : ["Datos"], ind: ind.length ? ind : Object.keys(IND), desc: apiTxt(c.desc, 600), real: true, org: apiTxt(c.org, 120), url: apiUrl(c.url), days: apiDays(c.days), api: true };
+    if (c.hosted === true) Object.assign(ev, { hosted: true, sessions: apiSessions(c.sessions), missions: apiMissions(c.missions) });
     EVENTS.push(ev);
     EV_INFO[ev.id] = cleanInfo(c.info) || defaultInfo(ev);
     const v = cleanVenue(c.venue3d); if (v) VENUES[ev.id] = v;
     return ev;
   }
+  /* Agenda y misiones de un evento hosted (GET /api/events/:id): saneadas, con los mismos códigos que usa el servidor */
+  // (constantes dentro de las funciones: addApiEvent las usa al arrancar, antes de llegar a esta línea)
+  function apiSessions(a) {
+    const API_KINDS = ["Keynote", "Panel", "Taller", "Charla", "Networking"];
+    return Array.isArray(a) ? a.filter(x => x && typeof x.code === "string" && /^[a-z0-9]{1,24}:\d{1,2}:\d{1,2}$/.test(x.code) && /^\d{2}:\d{2}$/.test(x.time)).slice(0, 200)
+      .map(x => ({ code: x.code, day: +x.code.split(":")[1], slot: +x.code.split(":")[2], time: x.time, kind: API_KINDS.includes(x.kind) ? x.kind : "Charla",
+        title: apiTxt(x.title, 160) || "Sesión", room: apiTxt(x.room, 80), speaker: apiTxt(x.speaker, 120), tag: apiTxt(x.tag, 60), why: apiTxt(x.why, 200) })) : [];
+  }
+  function apiMissions(a) {
+    const API_MICONS = ["pin", "handshake", "file", "quiz"];
+    return Array.isArray(a) ? a.filter(m => m && typeof m.code === "string" && /^[a-z0-9-]{1,40}$/.test(m.code) && Number.isInteger(m.xp) && m.xp > 0 && m.xp <= 500).slice(0, 30)
+      .map(m => ({ code: m.code, icon: API_MICONS.includes(m.icon) ? m.icon : "target", title: apiTxt(m.title, 120) || "Misión", sub: apiTxt(m.subtitle, 200), xp: m.xp })) : [];
+  }
   const apiEventCache = (ev) => ({ id: ev.id, city: ev.city, name: ev.name, venue: ev.venue, date: ev.date, lat: ev.lat, lon: ev.lon, tags: ev.tags, ind: ev.ind, desc: ev.desc,
-    org: ev.org, url: ev.url, days: ev.days, info: EV_INFO[ev.id], venue3d: VENUES[ev.id] || null });
+    org: ev.org, url: ev.url, days: ev.days, info: EV_INFO[ev.id], venue3d: VENUES[ev.id] || null,
+    ...(ev.hosted ? { hosted: true, sessions: ev.sessions, missions: ev.missions } : {}) });
   function saveApiEvents() { A.apiEvents = EVENTS.filter(e => e.api).map(apiEventCache); }
   /* Ficha y recinto de un evento nuevo (una vez por carga; los ponentes los pide loadSpeakers) */
   const apiEvDetail = new Set();
@@ -624,10 +645,11 @@ export function bootKnetApp() {
     if (apiEvDetail.has(id)) return; apiEvDetail.add(id);
     try {
       const r = await api.getEvent(id), d = r && r.event; if (!d || !evById(id)) return;
-      const info = cleanInfo(d.info), venue = cleanVenue(d.venue);
+      const info = cleanInfo(d.info), venue = cleanVenue(d.venue), ev = evById(id), hosted = ev.hosted && Array.isArray(d.sessions);
       if (info) EV_INFO[id] = info;
-      if (venue) VENUES[id] = venue;
-      if (info || venue) { saveApiEvents(); save(); refresh(); }
+      if (venue) VENUES[id] = venue; else if (ev.hosted && d.venue === null) delete VENUES[id]; // el organizador quitó el recinto
+      if (hosted) Object.assign(ev, { sessions: apiSessions(d.sessions), missions: apiMissions(d.missions) });
+      if (info || venue || hosted) { saveApiEvents(); save(); refresh(); }
     } catch (e) { apiEvDetail.delete(id); apiLog("sin ficha del evento " + id, e); }
   }
   /* Actualiza en su sitio los eventos conocidos (el mapa y el recinto 3D guardan referencias a estos objetos) e
@@ -641,7 +663,7 @@ export function bootKnetApp() {
       if (!ev) {
         if (s.kind !== "real") return; // catálogo: solo eventos reales con fuente oficial (addApiEvent exige la URL)
         ev = addApiEvent({ id: s.id, city: s.city, name: s.name, venue: s.venueName, date: s.dateLabel, lat: s.lat, lon: s.lon, tags: s.tags, ind: s.industries,
-          desc: s.description, org: s.organizer, url: s.sourceUrl, days: s.days });
+          desc: s.description, org: s.organizer, url: s.sourceUrl, days: s.days, hosted: s.hosted === true });
         if (!ev) return;
       }
       const tags = apiTags(s.tags), ind = Array.isArray(s.industries) ? s.industries.filter(k => IND[k]) : [], days = apiDays(s.days);
@@ -650,7 +672,7 @@ export function bootKnetApp() {
       if (days.length) ev.days = days;
       delete ev.lvl; // sin restricción por nivel: cualquier asistente puede inscribirse
       if (s.kind === "real") Object.assign(ev, { real: true, org: apiTxt(s.organizer, 120) || ev.org, url: apiUrl(s.sourceUrl) || ev.url });
-      if (ev.api) loadApiEventDetail(ev.id);
+      if (ev.api) { if (ev.hosted) apiEvDetail.delete(ev.id); loadApiEventDetail(ev.id); } // hosted: su agenda puede cambiar en cada sync
     });
     // Un evento nuevo que la API ya no publica se retira (los del catálogo local se quedan)
     if (listed.size) for (let i = EVENTS.length - 1; i >= 0; i--) {
@@ -982,7 +1004,10 @@ export function bootKnetApp() {
   };
   const badgeNames = () => badges().filter(b => b.ok).map(b => b.n);
   const xpLine = (n) => `<div class="mono text-[13px]" style="color:var(--t-emerald)">+${n} XP</div>`;
-  const act = (a, v, label, cls = "pill-btn") => `<button type="button" class="${cls}" data-act="${a}" data-v="${esc(v)}">${label}</button>`;
+  // Acciones de asistente (inscribirse, check-in, misiones, conectar, escanear): la cuenta admin no las tiene
+  const ADMIN_NO_ACTS = ["evsave", "attend", "nfcattend", "complete", "connect", "expjoin", "qrscan", "qrcam"];
+  const ADMIN_TABS = ["perfil", "miseventos"], ADMIN_VIEWS = ["creator", "venue", "explore"]; // ver isAdminMode()
+  const act = (a, v, label, cls = "pill-btn") => ADMIN_NO_ACTS.includes(a) && isAdminMode() ? "" : `<button type="button" class="${cls}" data-act="${a}" data-v="${esc(v)}">${label}</button>`;
   const avatarBg = (i) => ["linear-gradient(135deg,#A100FF,#7500C0)", "linear-gradient(135deg,#2F55E0,#7500C0)", "linear-gradient(135deg,#10B981,#2F55E0)"][i % 3];
 
   const landingView = $("#top"), appView = $("#appView"), panel = $("#appPanel");
@@ -1019,16 +1044,22 @@ export function bootKnetApp() {
     requestAnimationFrame(() => typeof fitNav === "function" && fitNav());
     $$(".cta-connect-lbl").forEach(e => e.textContent = A.connected ? t("mine.l") : saved ? `Continuar como ${first(A.profile.name)}` : t("connect.l"));
     if (A.connected) { const p = PERSONAS[A.ind];
-      chip.innerHTML = `${A.avatar ? `<span class="chip-av${frameCls()}">${avatarSVG(A.avatar, 32)}</span>` : `<span class="avatar" style="width:32px;height:32px;font-size:12px;background:linear-gradient(135deg,#A100FF,#7500C0)">${p.initials}</span>`}<span class="uc-txt"><b>${first(p.name)}</b><span class="mono tabular">Nv ${lvl()} · ${fmt(A.xp)} XP</span></span>`; }
+      chip.innerHTML = `${A.avatar ? `<span class="chip-av${frameCls()}">${avatarSVG(A.avatar, 32)}</span>` : `<span class="avatar" style="width:32px;height:32px;font-size:12px;background:linear-gradient(135deg,#A100FF,#7500C0)">${p.initials}</span>`}<span class="uc-txt"><b>${first(p.name)}</b><span class="mono tabular">${isAdminMode() ? esc(t("adm.badge")) : `Nv ${lvl()} · ${fmt(A.xp)} XP`}</span></span>`; }
+    { const tb = $("#tourBtn"); if (tb) tb.hidden = isAdminMode(); }
   }
   /* Tarjeta compacta del asistente (barra lateral) y cabecera de cada pestaña */
   const meAvatar = (size) => { const p = PERSONAS[A.ind]; return `<span class="me-av${frameCls()}">${A.avatar ? avatarSVG(A.avatar, size) : `<span class="team-avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * .32)}px">${p.initials}</span>`}</span>`; };
   function renderBanner() {
     const p = PERSONAS[A.ind], into = A.xp % 500, max = lvlMax();
+    if (isAdminMode()) { $("#sideMe").innerHTML = `<button type="button" class="side-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(48)}<span class="min-w-0"><b>${esc(p.name)}</b><span class="side-role">${esc(t("adm.role"))}</span><span class="side-lvl">${svg("shield")}${esc(t("adm.badge"))}</span></span></button>`; return; }
     $("#sideMe").innerHTML = `<button type="button" class="side-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(48)}<span class="min-w-0"><b>${esc(p.name)}</b><span class="side-role">${esc(IND[A.ind].role)}</span><span class="side-lvl">${lvlBadge(lvl(), 18)}Nv ${lvl()} · ${lvlName()}</span><span class="side-xp"><i style="width:${max ? 100 : into / 5}%"></i></span><span class="side-xp-t tabular">${fmt(A.xp)} XP${max ? "" : ` · faltan ${fmt(500 - into)}`}</span></span></button>`;
   }
   function tabHead(tab) {
     const p = PERSONAS[A.ind], d = IND[A.ind], into = A.xp % 500, max = lvlMax(), [title, desc] = TAB_DESC[tab], num = (TABS.find(x => x[0] === tab) || [])[1];
+    if (isAdminMode()) return `<header class="th">
+      <div class="th-me-wrap"><button type="button" class="th-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(58)}<span class="th-id"><b>${esc(p.name)}</b><span class="th-role">${esc(t("adm.role"))}</span><span class="th-lvl">${svg("shield")}${esc(t("adm.badge"))}</span></span></button></div>
+      <div class="th-tab"><span class="th-n mono">${num}</span><div class="min-w-0"><h1 class="th-t">${esc(t(tab === "perfil" ? "adm.perfil" : "adm.tab"))}</h1><p class="th-d">${esc(t(tab === "perfil" ? "adm.perfilDesc" : "adm.tabDesc"))}</p></div></div>
+    </header>`;
     return `<header class="th">
       <div class="th-me-wrap"><button type="button" class="th-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(58)}<span class="th-id"><b>${esc(p.name)}</b><span class="th-role">${esc(d.role)} · ${esc(p.company)}</span><span class="th-lvl">${lvlBadge(lvl(), 20)}Nivel ${lvl()} · ${lvlName()}<span class="th-xp-t tabular">${fmt(A.xp)} XP</span></span><span class="th-xp"><i style="width:${max ? 100 : into / 5}%"></i></span></span></button>${tab === "perfil" ? `<button type="button" class="btn btn-ghost btn-sm" data-avedit>${svg(A.avatar ? "spark" : "users")}${A.avatar ? "Editar avatar" : "Crear avatar"}</button>` : ""}</div>
       <div class="th-tab"><span class="th-n mono">${num}</span><div class="min-w-0"><h1 class="th-t">${title}</h1><p class="th-d">${desc}</p></div>${tab === "red" ? `<button type="button" class="btn btn-primary btn-sm th-act" data-act="${qrLiveMode() ? "qrcam" : "qrscan"}" data-v="">${svg("qr")}Escanear credencial</button>` : ""}${tab === "perfil" ? `<button type="button" class="btn btn-ghost btn-sm th-edit-desk" data-avedit>${svg(A.avatar ? "spark" : "users")}${A.avatar ? "Editar avatar" : "Crear avatar"}</button>` : ""}</div>
@@ -1037,9 +1068,10 @@ export function bootKnetApp() {
   function renderTabs() {
     const n = activeMissions().length, rw = FRAMES.filter(f => A.xp >= f.xp && !(A.frames || []).includes(f.id)).length + AV_XHAIR.concat(AV_XACC).filter(x => A.xp >= x[2] && !ownsItem(x[0])).length;
     const inv = invPending(), badge = { quests: n, red: A.connections.length, recompensas: rw, miseventos: inv };
-    { const cur = TABS.find(x => x[0] === curTab) || TABS[0], tg = $("#sideToggle");
-      if (tg) tg.innerHTML = `<span class="st-n">${cur[1]}</span><span class="st-l">${t(cur[2])}</span><span class="st-m">Menú</span><span class="st-i" aria-hidden="true"><i></i><i></i><i></i></span>`; }
-    $("#appTabs").innerHTML = TABS.map(([id, num, key, ic]) => `<button type="button" class="app-tab" data-tab="${id}" ${id === curTab ? 'aria-current="page"' : ""}><span class="app-tab-n">${num}</span>${svg(ic)}<span class="app-tab-l">${t(key)}</span>${badge[id] ? `<span class="app-tab-dot ${id === "recompensas" ? "gold" : id === "red" ? "cyan" : id === "miseventos" ? "inv" : ""}" aria-label="${id === "miseventos" ? tf("inv.tabDot", inv) : badge[id]}">${badge[id]}</span>` : ""}</button>`).join("");
+    const adm = isAdminMode(), tabs = adm ? TABS.filter(x => ADMIN_TABS.includes(x[0])) : TABS, lbl = (id, key) => adm ? t(id === "perfil" ? "adm.perfil" : "adm.tab") : t(key);
+    { const cur = tabs.find(x => x[0] === curTab) || tabs[0], tg = $("#sideToggle");
+      if (tg) tg.innerHTML = `<span class="st-n">${cur[1]}</span><span class="st-l">${lbl(cur[0], cur[2])}</span><span class="st-m">Menú</span><span class="st-i" aria-hidden="true"><i></i><i></i><i></i></span>`; }
+    $("#appTabs").innerHTML = tabs.map(([id, num, key, ic]) => `<button type="button" class="app-tab" data-tab="${id}" ${id === curTab ? 'aria-current="page"' : ""}><span class="app-tab-n">${num}</span>${svg(adm && id === "miseventos" ? "pen" : ic)}<span class="app-tab-l">${lbl(id, key)}</span>${!adm && badge[id] ? `<span class="app-tab-dot ${id === "recompensas" ? "gold" : id === "red" ? "cyan" : id === "miseventos" ? "inv" : ""}" aria-label="${id === "miseventos" ? tf("inv.tabDot", inv) : badge[id]}">${badge[id]}</span>` : ""}</button>`).join("");
   }
 
   /* ---- Exp 01 · Perfil + grafo ---- */
@@ -1350,6 +1382,8 @@ export function bootKnetApp() {
           <header class="pcard-h"><div><span class="pcard-k">En vivo</span><h2 class="pcard-t">Misiones activas</h2></div><span class="chip chip-emerald tabular">${A.done.length}/${missionPool().length} completadas</span></header>
           <div class="grid gap-3">${am.length ? am.map(m => `<div class="mission"><span class="ico-tile" style="width:40px;height:40px;background:rgba(61,107,255,.1);color:var(--t-blue)">${svg(m.icon)}</span><div class="min-w-0"><div class="font-semibold text-[14px] leading-snug">${m.title}</div><div class="text-[12px] text-mute">${m.sub} · +${m.xp} XP</div></div>${act("complete", m.id, "Completar", "btn btn-emerald btn-sm")}</div>`).join("")
             : `<div class="dempty">${svg("trophy")} Completaste todas las misiones de la temporada. Nuevas misiones se abren en el siguiente bloque.</div>`}</div>
+          ${eventMissions().length ? `<div class="mono text-[11px] uppercase tracking-[.12em] text-mute" style="margin-top:4px">${t("org.evMissions")}</div>
+          <div class="grid gap-3" id="eventMissions">${eventMissions().map(m => { const ok = A.done.includes(m.id); return `<div class="mission ${ok ? "done" : ""}"><span class="ico-tile" style="width:40px;height:40px;background:rgba(61,107,255,.1);color:var(--t-blue)">${svg(m.icon)}</span><div class="min-w-0"><div class="font-semibold text-[14px] leading-snug">${esc(m.title)}</div><div class="text-[12px] text-mute">${esc(m.sub)} · +${m.xp} XP</div></div>${ok ? `<span class="chip chip-emerald">${svg("check")}${t("org.missionDone")}</span>` : act("complete", m.id, "Completar", "btn btn-emerald btn-sm")}</div>`; }).join("")}</div>` : ""}
           <div class="mono text-[11px] uppercase tracking-[.12em] text-mute" style="margin-top:4px">Misiones especiales</div>
           <div class="grid gap-3">
             <div class="mission special ${A.avatar ? "done" : ""}"><span class="ico-tile" style="width:40px;height:40px;background:rgba(161,0,255,.16);color:var(--t-lilac)">${A.avatar ? avatarSVG(A.avatar, 40) : svg("users")}</span><div class="min-w-0"><div class="font-semibold text-[14px] leading-snug">Crea tu avatar del Summit</div><div class="text-[12px] ${A.avatar ? "" : "text-mute"}" ${A.avatar ? 'style="color:var(--t-emerald)"' : ""}>${A.avatar ? "Completada · +50 XP" : "Personalización · +50 XP"}</div></div>${act("avedit", "", A.avatar ? "Editar" : "Crear", A.avatar ? "btn btn-ghost btn-sm" : "btn btn-emerald btn-sm")}</div>
@@ -1776,7 +1810,7 @@ export function bootKnetApp() {
               <div class="ev-score"><span class="font-display font-extrabold text-[26px] leading-none tabular">${a.score}%</span><span class="mono text-[10px] text-mute">AFINIDAD</span></div></div>
             <div class="scorebar"><span style="width:${a.score}%"></span></div>
             <p class="text-[13.5px] text-mute">${ev.desc}</p>
-            ${ev.real ? `<div class="ev-real"><span class="chip chip-emerald">${svg("check")}Evento real · ${ev.org}</span><a href="${ev.url}" target="_blank" rel="noopener" class="ev-src">${svg("link")}Ver fuente</a></div>` : ""}
+            ${ev.real ? `<div class="ev-real"><span class="chip chip-emerald">${svg("check")}${ev.hosted ? t("org.hostedChip") : "Evento real"} · ${ev.org}</span>${ev.url ? `<a href="${ev.url}" target="_blank" rel="noopener" class="ev-src">${svg("link")}Ver fuente</a>` : ""}</div>` : ""}
             <div class="flex flex-wrap gap-2">${a.overlap.map(x => `<span class="chip chip-accent">${svg("check")}${x}</span>`).join("")}${a.ind ? `<span class="chip">${svg("target")}Relevante para ${d.label}</span>` : ""}${!a.overlap.length && !a.ind ? `<span class="chip">Afinidad base por temática general</span>` : ""}</div>
             <div class="ev-actions">${act("evsave", ev.id, saved ? `${svg("check")}Inscrito` : `${svg("calendar")}Inscribirse`, saved ? "btn btn-ghost btn-sm is-saved" : "btn btn-primary btn-sm")}${act("evinfo", ev.id, `${svg("spark")}Ver resumen`, "btn btn-ghost btn-sm")}${act("evselect", ev.id, `Ver en el mapa ${svg("arrow")}`, "pill-btn")}</div>
           </article>`; }).join("")}</div>
@@ -1887,7 +1921,7 @@ export function bootKnetApp() {
         ${speakersHTML(id)}
         <section><h4>${svg("clock")}Así es el evento</h4><ol class="evm-tl">${I.agenda.map(([t, k, x]) => `<li><span class="evm-t mono">${t}</span><b>${k}</b><span class="text-mute">${x}</span></li>`).join("")}</ol></section>
         <section><h4>${svg("bolt")}Te llevas</h4><ul class="evm-take">${I.llevas.map(x => `<li>${svg("star")}<span>${x}</span></li>`).join("")}</ul></section>
-        <div class="av-foot">${ev.lvl ? `<span class="xev-lvl">${lvlBadge(ev.lvl, 24, isLockedEv(ev))}<span>Exclusivo nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</span></span>` : `<button type="button" class="btn btn-ghost btn-sm" data-eact="map" data-v="${id}">${svg("map")}Ver en el mapa</button>`}${isLockedEv(ev) ? `<button type="button" class="btn btn-ghost" disabled>${svg("lock")}Se desbloquea en nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</button>` : `${saved && getSel("main").ev !== id ? `<button type="button" class="btn btn-ghost btn-sm" data-eact="active" data-v="${id}">${svg("calendar")}Usar como evento activo</button>` : ""}<button type="button" class="btn ${saved ? "btn-ghost is-saved" : "btn-primary"}" data-eact="save" data-v="${id}">${saved ? `${svg("check")}Inscrito` : `${svg("calendar")}Inscribirse`}</button>`}</div>
+        <div class="av-foot">${ev.lvl ? `<span class="xev-lvl">${lvlBadge(ev.lvl, 24, isLockedEv(ev))}<span>Exclusivo nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</span></span>` : `<button type="button" class="btn btn-ghost btn-sm" data-eact="map" data-v="${id}">${svg("map")}Ver en el mapa</button>`}${isAdminMode() ? "" : isLockedEv(ev) ? `<button type="button" class="btn btn-ghost" disabled>${svg("lock")}Se desbloquea en nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</button>` : `${saved && getSel("main").ev !== id ? `<button type="button" class="btn btn-ghost btn-sm" data-eact="active" data-v="${id}">${svg("calendar")}Usar como evento activo</button>` : ""}<button type="button" class="btn ${saved ? "btn-ghost is-saved" : "btn-primary"}" data-eact="save" data-v="${id}">${saved ? `${svg("check")}Inscrito` : `${svg("calendar")}Inscribirse`}</button>`}</div>
       </div>`;
     if ($("#m-event").hidden) openModal("event");
   }
@@ -2228,7 +2262,9 @@ export function bootKnetApp() {
         <div class="gf-wide gf-form-foot"><button type="button" class="btn btn-ghost btn-sm" data-close>Cancelar</button><button type="submit" class="btn btn-primary">${svg("arrow")}Enviar solicitud</button></div>
       </form>`;
   }
-  function openNewEv() { renderNewEv(null); if ($("#m-newev").hidden) openModal("newev"); setTimeout(() => { const i = $("#neForm [name=name]"); if (i) i.focus(); }, 60); }
+  function openNewEv() {
+    if (isOrganizer()) { org.startNew(); meView = "creator"; showTab("miseventos"); return; }
+    renderNewEv(null); if ($("#m-newev").hidden) openModal("newev"); setTimeout(() => { const i = $("#neForm [name=name]"); if (i) i.focus(); }, 60); }
   $("#m-newev").addEventListener("submit", (e) => {
     if (e.target.id !== "neForm") return; e.preventDefault(); const f = e.target, er = $("#neErr");
     const d = { name: f.name.value.trim(), type: f.type.value, cap: Math.max(5, Math.min(500, +f.cap.value || 30)), date: f.date.value, time: f.time.value, city: f.city.value, place: f.place.value.trim(), desc: f.desc.value.trim() };
@@ -2509,6 +2545,12 @@ export function bootKnetApp() {
   /* 4 sesiones recomendadas por la IA para cada evento y día (deterministas por perfil) */
   function sessionsFor(evId, di) {
     const ev = evById(evId), d = IND[A.ind], p = PERSONAS[A.ind]; if (!ev || di < 0 || di >= ev.days.length) return [];
+    // Evento creado en KNET: la agenda oficial que publicó su organizador, en orden de hora
+    if (ev.hosted) return (ev.sessions || []).filter(x => x.day === di).sort((a, b) => a.time.localeCompare(b.time) || a.slot - b.slot)
+      .map(x => ({ id: x.code, ev: evId, day: di, i: x.slot, tm: x.time, kind: x.kind, ttl: x.title, room: x.room || t("org.roomTbc"), tag: x.tag || ev.tags[0],
+        why: x.why || (x.speaker ? t("org.with").replace("{0}", x.speaker) : x.tag ? t("org.topic").replace("{0}", x.tag) : t("org.official")), speaker: x.speaker,
+        // sin tf()/ideaOf(): sessionsFor también se llama al arrancar, antes de que existan esas constantes
+        insight: TAG_IDEA[x.tag || ev.tags[0]] || `Aplicar ${String(x.tag || ev.tags[0]).toLowerCase()} empieza con un caso pequeño y una métrica clara.` }));
     if (evId === MAIN_EV && di === 0) return d.agenda.map(([tm, kind, ttl, room, why], i) => ({ id: `${MAIN_EV}:0:${i}`, ev: evId, day: 0, i, tm, kind, ttl, room, why, tag: p.interests[i % p.interests.length], insight: INSIGHTS[A.ind][i] || INSIGHTS[A.ind][0] }));
     const TIMES = ["08:30", "10:15", "14:00", "16:30"], KINDS = ["Keynote", "Panel", "Taller", "Charla"];
     const ROOMS = ["Auditorio principal", "Sala Orbit", "Lab 3 · Zona de talleres", "Sala Quantum", "Sala Nova", "Terraza del pabellón"];
@@ -2520,7 +2562,7 @@ export function bootKnetApp() {
         why: (hit ? [`Coincide con tu interés en ${tag} y con tu rol de ${d.role}`, `Tu perfil marca ${tag} como prioridad: aquí verás casos aplicables`]
           : [`Tema central de ${ev.name}; la IA lo priorizó para ${d.label}`, `Complementa tus intereses con una mirada práctica a ${tag}`, `Asisten 3 de tus matches; buena sesión para conectar`, `Alta demanda en ${d.label}: llega 10 min antes`])[(i + di) % (hit ? 2 : 4)], tag, insight: ideaOf(tag) }; });
   }
-  function sessionById(id) { const [ev, di, i] = String(id).split(":"); return sessionsFor(ev, +di)[+i] || null; }
+  function sessionById(id) { const [ev, di, i] = String(id).split(":"), list = sessionsFor(ev, +di); return list.find(x => x.id === id) || (evById(ev) && evById(ev).hosted ? null : list[+i]) || null; }
   /* Selección activa. "main" la comparten Agenda y Mis eventos; "res" es la de Resúmenes (admite "todos") */
   /* Evento activo = selección "main": la usan Agenda, Mis eventos, Recinto, Concierge y Dossier */
   function setActiveEvent(id) { if (!A.events.includes(id)) return; A.sel = A.sel || {}; A.sel.main = { ev: id, day: 0 }; save(); }
@@ -2573,9 +2615,9 @@ export function bootKnetApp() {
     if (!ev.days.length) return `${evDayBar("main")}${tbcCardHTML(ev, "agendaCard")}`;
     return `${evDayBar("main")}
       <article class="pcard" id="agendaCard">
-        <header class="pcard-h"><div><span class="pcard-k">Agenda IA · ${esc(ev.city)} · Día ${s.day + 1} de ${ev.days.length}</span><h2 class="pcard-t">${esc(ev.name)}</h2><div class="text-mute text-[14px]">${dayTxt(ev.days[s.day], { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · configurada para ${d.role}</div></div><span class="chip chip-emerald tabular">${svg("check")}${done}/${list.length} check-ins</span></header>
-        <p class="text-mute text-[14px]" style="margin-top:-6px">${ended ? "Este evento ya terminó: puedes revisar a qué sesiones asististe y abrir sus resúmenes." : "La IA eligió 4 sesiones de este día según tu rol, tu industria y tus intereses. Cada check-in alimenta el resumen de este evento."}</p>
-        <p class="ai-note text-mute text-[13px] flex flex-wrap items-center gap-x-2 gap-y-1" data-ai-note><span class="ico" style="width:14px;height:14px">${svg("info")}</span><span>Recomendación orientativa: la IA propone estas sesiones con los temas del evento; no son la agenda oficial. Confirma horarios y salas con el organizador.</span>${ev.url ? `<a href="${esc(ev.url)}" target="_blank" rel="noopener" class="ev-src">${svg("link")}Consultar la agenda oficial</a>` : ""}</p>
+        <header class="pcard-h"><div><span class="pcard-k">${ev.hosted ? t("org.agendaK") : "Agenda IA"} · ${esc(ev.city)} · Día ${s.day + 1} de ${ev.days.length}</span><h2 class="pcard-t">${esc(ev.name)}</h2><div class="text-mute text-[14px]">${dayTxt(ev.days[s.day], { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · configurada para ${d.role}</div></div><span class="chip chip-emerald tabular">${svg("check")}${done}/${list.length} check-ins</span></header>
+        <p class="text-mute text-[14px]" style="margin-top:-6px">${ended ? "Este evento ya terminó: puedes revisar a qué sesiones asististe y abrir sus resúmenes." : ev.hosted ? t("org.agendaLede") : "La IA eligió 4 sesiones de este día según tu rol, tu industria y tus intereses. Cada check-in alimenta el resumen de este evento."}</p>
+        ${ev.hosted ? (list.length ? "" : `<div class="me-empty">${svg("calendar")}<span>${t("org.agendaEmpty")}</span></div>`) : `<p class="ai-note text-mute text-[13px] flex flex-wrap items-center gap-x-2 gap-y-1" data-ai-note><span class="ico" style="width:14px;height:14px">${svg("info")}</span><span>Recomendación orientativa: la IA propone estas sesiones con los temas del evento; no son la agenda oficial. Confirma horarios y salas con el organizador.</span>${ev.url ? `<a href="${esc(ev.url)}" target="_blank" rel="noopener" class="ev-src">${svg("link")}Consultar la agenda oficial</a>` : ""}</p>`}
         <div class="grid gap-3">${list.map(x => { const ok = A.attended.includes(x.id);
           return `<div class="agenda-item ${ok ? "is-done" : ""}"><div class="time tabular">${x.tm}</div><div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2"><span class="chip">${x.kind}</span><span class="text-[12px] text-mute flex items-center gap-1"><span class="ico" style="width:12px;height:12px">${svg("pin")}</span>${esc(x.room)}</span></div>
@@ -2667,7 +2709,7 @@ export function bootKnetApp() {
   vnBuildZones(MAIN_EV);
   const VN = { ev: null, mode: "overview", target: null, you: [0, 19.5], yaw: 0.78, pitch: 0.66, dist: 108, walk: { x: 0, z: 19.5, yaw: 0, pitch: -0.05 }, people: null, tourT: 0, hf: null, xr: null, arRot: 0, voice: false };
   let vnRaf = 0, vnStopFn = null;
-  function vnEvList() { const ids = myEvIds().filter(id => VENUES[id]); return ids.length ? ids : EVENTS.filter(e => VENUES[e.id]).map(e => e.id); }
+  function vnEvList() { const ids = isAdminMode() ? [] : myEvIds().filter(id => VENUES[id]); return ids.length ? ids : EVENTS.filter(e => VENUES[e.id]).map(e => e.id); }
   function vnEnsureEv() { const list = vnEvList(), m = myEvIds().length ? getSel("main").ev : null; let ev = list.includes(m) ? m : list.includes(VN.ev) ? VN.ev : list[0];
     if (ev !== VN.ev || !VZ.length || VZ._ev !== ev) { VN.ev = ev; vnBuildZones(ev); VZ._ev = ev; VN.people = null; VN.target = null; VN.you = vnEnt(); VN.dist = Math.max(48, 1.7 * Math.max(VV.floor[1] - VV.floor[0], VV.floor[3] - VV.floor[2])); VN.yaw = 0.78; } return evById(ev); }
   function vnStatus(ev) { const today = new Date(), iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
@@ -3088,7 +3130,7 @@ export function bootKnetApp() {
      (caduca en segundos, sirve una sola vez y se pide otro cada `refreshIn` s). Sin API, sin cuenta o con un
      backend que aún no tiene el endpoint (404) el QR es decorativo y «Escanear» explica cómo activar el real. */
   let qrLive = null, qrLiveErr = "", qrNextAt = 0, qrFetching = false, qrApiMissing = false;
-  const qrLiveMode = () => apiEnabled && A.connected && accountReady() && !!A.apiLinked && !qrApiMissing;
+  const qrLiveMode = () => apiEnabled && A.connected && accountReady() && !!A.apiLinked && !qrApiMissing && A.accountRole !== "admin"; // admin: sin QR de asistente (403 admin_account)
   async function renewQr() {
     if (qrFetching) return; qrFetching = true;
     try {
@@ -3420,9 +3462,9 @@ export function bootKnetApp() {
 
   /* ---- Render + routing ---- */
   const VIEWS = {
-    perfil: () => { const P = perfilParts(); return `<div class="app-grid-2"><div class="stack">${P.data}</div><div class="stack">${permisosHTML()}</div></div>`; },
+    perfil: () => { if (isAdminMode()) return adminPerfilHTML(); const P = perfilParts(); return `<div class="app-grid-2"><div class="stack">${P.data}</div><div class="stack">${permisosHTML()}</div></div>`; },
     quests: tabQuests,
-    miseventos: () => `<div class="me-seg" role="tablist" aria-label="Vista de Mis eventos"><button type="button" role="tab" class="me-seg-b" data-meview="mine" aria-selected="${meView === "mine"}">${svg("calendar")}Mis inscripciones y meetups</button><button type="button" role="tab" class="me-seg-b" data-meview="venue" aria-selected="${meView === "venue"}">${svg("layers")}Recinto</button><button type="button" role="tab" class="me-seg-b" data-meview="explore" aria-selected="${meView === "explore"}">${svg("map")}Explorar próximos eventos</button>${invSegHTML()}</div>${meView === "explore" ? tabEventos() : meView === "invites" ? `<div class="stack">${invitesHTML()}</div>` : meView === "venue" ? `${myEvIds().length ? evDayBar("main") : ""}${venueHTML()}` : tabMisEventos()}`,
+    miseventos: () => isAdminMode() ? adminEventsHTML() : `<div class="me-seg" role="tablist" aria-label="Vista de Mis eventos"><button type="button" role="tab" class="me-seg-b" data-meview="mine" aria-selected="${meView === "mine"}">${svg("calendar")}Mis inscripciones y meetups</button><button type="button" role="tab" class="me-seg-b" data-meview="venue" aria-selected="${meView === "venue"}">${svg("layers")}Recinto</button><button type="button" role="tab" class="me-seg-b" data-meview="explore" aria-selected="${meView === "explore"}">${svg("map")}Explorar próximos eventos</button>${invSegHTML()}${isOrganizer() ? `<button type="button" role="tab" class="me-seg-b" id="orgTab" data-meview="creator" aria-selected="${meView === "creator"}">${svg("pen")}${t("org.tab")}</button>` : ""}</div>${meView === "creator" && isOrganizer() ? `<div class="stack">${org.html()}</div>` : meView === "explore" ? tabEventos() : meView === "invites" ? `<div class="stack">${invitesHTML()}</div>` : meView === "venue" ? `${myEvIds().length ? evDayBar("main") : ""}${venueHTML()}` : tabMisEventos()}`,
     agenda: () => `<div class="stack">${agendaHTML()}</div>`,
     concierge: tabConcierge,
     red: () => { const P = perfilParts(); return `<div class="stack red-view"><div class="red-grid"><div class="stack">${P.net}${redChipsHTML()}</div><div class="stack">${redCredHTML()}${connsInlineHTML()}</div></div>${redMatchesHTML()}</div>`; },
@@ -3430,16 +3472,63 @@ export function bootKnetApp() {
     resumen: tabDossier
   };
   let meView = "mine";
-  panel.addEventListener("click", (e) => { const b = e.target.closest("[data-meview]"); if (b && meView !== b.dataset.meview) { meView = b.dataset.meview; renderTab(true); const nb = panel.querySelector(`[data-meview="${meView}"]`); if (nb) nb.focus({ preventScroll: true }); } });
+  /* Panel de creador de eventos (src/lib/engine/organizer.js): solo con cuenta sincronizada y rol organizer/admin */
+  function isOrganizer() { return apiEnabled && A.connected && A.apiLinked && accountReady() && ["organizer", "admin"].includes(A.accountRole); }
+  /* Cuenta admin = cuenta de gestión: solo «Mi perfil» (datos mínimos, privacidad y sesión) y «Panel de eventos»
+     (panel de creador, recintos y catálogo en solo lectura). Sin red, misiones, agenda, Concierge, recompensas ni Dossier. */
+  function isAdminMode() { try { return A.accountRole === "admin" && isOrganizer(); } catch (e) { return false; } } // try: se llama desde la cabecera antes de que existan algunas const (TDZ)
+  function adminRoute() { // corrige pestaña/vista si la cuenta pasó a admin con otra abierta
+    if (!isAdminMode()) return;
+    if (!ADMIN_TABS.includes(curTab)) { curTab = "miseventos"; meView = "creator"; setHash("creador"); }
+    if (curTab === "miseventos" && !ADMIN_VIEWS.includes(meView)) meView = "creator";
+    if (curTab === "miseventos" && meView === "creator") org.open();
+  }
+  function adminEventsHTML() {
+    const seg = [["creator", "pen", t("adm.seg.panel")], ["venue", "layers", t("adm.seg.venue")], ["explore", "map", t("adm.seg.explore")]];
+    return `<div class="me-seg" role="tablist" aria-label="${esc(t("adm.tab"))}">${seg.map(([k, ic, l]) => `<button type="button" role="tab" class="me-seg-b" ${k === "creator" ? 'id="orgTab"' : ""} data-meview="${k}" aria-selected="${meView === k}">${svg(ic)}${esc(l)}</button>`).join("")}</div>${meView === "explore" ? tabEventos() : meView === "venue" ? venueHTML() : `<div class="stack">${org.html()}</div>`}`;
+  }
+  function adminPerfilHTML() {
+    const p = PERSONAS[A.ind], mail = A.accountEmail || sessionEmail() || "";
+    const row = (k, v) => `<div class="kv-wrap"><div class="kv"><span class="kv-k">${esc(t(k))}</span><span class="kv-v">${esc(v)}</span></div></div>`;
+    return `<div class="app-grid-2"><div class="stack"><article class="pcard" id="adminCard">
+        <header class="pcard-h"><div><span class="pcard-k">${esc(t("adm.kicker"))}</span><h2 class="pcard-t">${esc(t("adm.account"))}</h2></div><span class="chip chip-accent">${svg("shield")}${esc(t("adm.badge"))}</span></header>
+        <div class="kv-list">${row("adm.name", p.name)}${mail ? row("adm.email", mail) : ""}${row("adm.roleLbl", t("adm.badge"))}</div>
+        <p class="text-mute text-[13px]" style="margin-top:12px">${esc(t("adm.note"))}</p>
+        <div class="flex flex-wrap gap-2" style="margin-top:12px"><button type="button" class="btn btn-primary btn-sm" data-act="goto" data-v="creador">${svg("pen")}${esc(t("adm.go"))}</button></div>
+      </article></div><div class="stack">${permisosHTML()}</div></div>`;
+  }
+  const org = createOrganizer({
+    api, ApiError, isOffline, t, tf, esc, svg, toast, avatarSVG, initialsOf, dayTxt,
+    isAdmin: () => A.accountRole === "admin",
+    myId: () => sessionUserId() || getUserId(),
+    industries: () => IND,
+    cities: () => CO_CITIES.map(c => c[0]),
+    cityPos: (n) => { const c = CO_CITIES.find(x => x[0] === n); return c ? [c[1], c[2]] : null; },
+    // Plantillas del recinto 3D: los recintos de los eventos del catálogo
+    venueTemplates: () => EVENTS.filter(e => !e.api && VENUES[e.id]).map(e => [e.id, e.name, VENUES[e.id]]),
+    avatarStyles: () => AV_GENDER,
+    makeAvatar: (g, h) => { const hair = AV_HAIR[g] || AV_HAIR.neutro; return { gender: g, skin: h % AV_SKIN.length, hair: hair[(h >> 3) % hair.length][0], hairColor: (h >> 5) % AV_HAIRC.length, outfit: (h >> 7) % AV_OUT.length, acc: AV_ACC[(h >> 9) % AV_ACC.length][0], beard: false }; },
+    rerender: () => { if (inApp && curTab === "miseventos" && meView === "creator") { const y = window.scrollY; renderTab(false); window.scrollTo(0, y); } },
+    afterPublish: () => syncFromApi(),
+    goExplore: (id) => { meView = "explore"; renderTab(true); requestAnimationFrame(() => { const el = document.getElementById("ev-" + id); if (el) { scrollToEl(el); flash(el); } }); },
+    // 403 forbidden_role: la cuenta perdió el rol; se avisa y el panel desaparece
+    onRoleLost: () => { A.accountRole = "attendee"; save(); toast(`<b>${esc(t("org.err.role"))}</b>`, "lock"); if (meView === "creator") { meView = "mine"; refresh(); } },
+  });
+  panel.addEventListener("click", (e) => { if (e.target.closest("[data-org]")) org.onClick(e); });
+  panel.addEventListener("submit", (e) => { if (e.target.closest("[data-org-form]")) org.onSubmit(e); });
+  panel.addEventListener("input", (e) => { if (e.target.closest("[data-org-form]")) org.onInput(e); });
+  let orgUid = sessionUserId();
+  onApiEvent("session-changed", (d) => { const u = d ? d.userId : null; if (u !== orgUid) { orgUid = u; org.reset(); } }); // otra cuenta (no un refresh del token)
+  panel.addEventListener("click", (e) => { const b = e.target.closest("[data-meview]"); if (b && meView !== b.dataset.meview) { meView = b.dataset.meview; if (meView === "creator") org.open(); renderTab(true); const nb = panel.querySelector(`[data-meview="${meView}"]`); if (nb) nb.focus({ preventScroll: true }); } });
   function renderTab(animate) {
-    cancelAnimationFrame(graphRaf);
+    cancelAnimationFrame(graphRaf); adminRoute();
     panel.innerHTML = `<div class="${animate ? "reveal-in" : ""}">${tabHead(curTab)}${VIEWS[curTab]()}</div>`;
     const log = $("#chatLog"); if (log) log.scrollTop = log.scrollHeight;
     if ($("#netGraph")) startGraph();
     if ($("#venueCanvas")) startVenue(); else if (vnStopFn) vnStopFn();
     if ($("#myQr")) startQrTimer(); else clearInterval(qrTimer);
   }
-  function refresh() { renderHeader(); if (inApp) { const y = window.scrollY; renderBanner(); renderTabs(); if (!(curTab === "miseventos" && meView === "venue" && (VN.xr || VN.mode !== "overview"))) renderTab(false); window.scrollTo(0, y); } if (!$("#m-res").hidden) renderRes(); if (!$("#m-perm").hidden) renderPerm(); }
+  function refresh() { renderHeader(); if (inApp) { const y = window.scrollY; renderBanner(); renderTabs(); if (!(curTab === "miseventos" && ((meView === "venue" && (VN.xr || VN.mode !== "overview")) || (meView === "creator" && org.dirty)))) renderTab(false); window.scrollTo(0, y); } if (!$("#m-res").hidden) renderRes(); if (!$("#m-perm").hidden) renderPerm(); }
   /* Navegación por estado (no depende de eventos de hash del visor) */
   const setHash = (h) => { try { history.replaceState(null, "", "#" + h); } catch (e) {} };
   function applyView() {
@@ -3454,6 +3543,9 @@ export function bootKnetApp() {
     if (tab === "dossier") tab = "resumen";
     if (tab === "eventos") { tab = "miseventos"; meView = "explore"; }
     if (tab === "recinto") { tab = "miseventos"; meView = "venue"; }
+    if (tab === "creador") { tab = "miseventos"; meView = "creator"; }
+    if (isAdminMode()) { if (!ADMIN_TABS.includes(tab)) { tab = "miseventos"; meView = "creator"; } else if (tab === "miseventos" && !ADMIN_VIEWS.includes(meView)) meView = "creator"; }
+    if (tab === "miseventos" && meView === "creator") { if (isOrganizer()) org.open(); else meView = "mine"; }
     if (tab === "perfil" && target === "agendaCard") tab = "agenda";
     if (tab === "perfil" && (target === "networkCard" || target === "qrCard")) tab = "red";
     if (target === "matchesCard") tab = "red";
@@ -3513,7 +3605,7 @@ export function bootKnetApp() {
   function tourClose() { if (!tourEl) return; A.tourSeen = true; save(); tourEl.remove(); tourEl = null; tourI = -1; document.removeEventListener("keydown", tourKey, true); window.removeEventListener("resize", tourPlace); window.removeEventListener("scroll", tourPlace, true); const b = document.getElementById("tourBtn"); if (b) b.focus({ preventScroll: true }); }
   function tourKey(e) { if (!tourEl) return; if (e.key === "Escape") { e.preventDefault(); tourClose(); } else if (e.key === "ArrowRight" && tourI <= TOUR.length) { e.preventDefault(); tourGo(tourI + 1); } else if (e.key === "ArrowLeft" && tourI > 1 && tourI <= TOUR.length) { e.preventDefault(); tourGo(tourI - 1); } }
   function startTour(fromStart) {
-    if (!A.connected) return; if (tourEl) tourClose();
+    if (!A.connected || isAdminMode()) return; if (tourEl) tourClose();
     tourEl = document.createElement("div"); tourEl.className = "tour"; tourEl.setAttribute("role", "dialog"); tourEl.setAttribute("aria-modal", "true"); tourEl.setAttribute("aria-label", "Tour guiado por KNET");
     tourEl.innerHTML = `<div class="tour-dim"></div><div class="tour-spot" aria-hidden="true"></div><div class="tour-card is-center" aria-live="polite"></div>`;
     document.body.appendChild(tourEl);
@@ -3522,7 +3614,7 @@ export function bootKnetApp() {
     document.addEventListener("keydown", tourKey, true); window.addEventListener("resize", tourPlace); window.addEventListener("scroll", tourPlace, true);
     tourGo(fromStart ? 1 : 0);
   }
-  function offerTourWhenIdle() { let n = 0; const tick = () => { if (A.tourSeen || tourEl || ++n > 120) return; const open = document.querySelector(".modal:not([hidden])"); if (inApp && !open) { setTimeout(() => { if (!document.querySelector(".modal:not([hidden])") && !tourEl && !A.tourSeen) startTour(false); else setTimeout(tick, 700); }, 600); return; } setTimeout(tick, 700); }; setTimeout(tick, 1500); }
+  function offerTourWhenIdle() { let n = 0; const tick = () => { if (A.tourSeen || tourEl || ++n > 120 || isAdminMode()) return; const open = document.querySelector(".modal:not([hidden])"); if (inApp && !open) { setTimeout(() => { if (!document.querySelector(".modal:not([hidden])") && !tourEl && !A.tourSeen) startTour(false); else setTimeout(tick, 700); }, 600); return; } setTimeout(tick, 700); }; setTimeout(tick, 1500); }
   document.getElementById("tourBtn").addEventListener("click", () => startTour(false));
   function showLanding(anchor) {
     const was = inApp; inApp = false; applyView(); setHash(anchor || "top");
@@ -4361,6 +4453,7 @@ export function bootKnetApp() {
   let genBusy = false;
   const onAct = async (b) => {
     const a = b.dataset.act, v = b.dataset.v;
+    if (ADMIN_NO_ACTS.includes(a) && isAdminMode()) { toast(`<b>${esc(t("adm.noAttendee"))}</b>`, "shield"); return; }
     if (a === "goto") { goTo(v); return; }
     if (a === "vnopen") { VN.ev = v; if (myEvIds().includes(v)) { A.sel = A.sel || {}; A.sel.main = { ev: v, day: (A.sel.main && A.sel.main.ev === v) ? A.sel.main.day : 0 }; save(); } meView = "venue"; showTab("miseventos"); return; }
     if (a === "ask") { ask(v); return; }
@@ -4424,10 +4517,10 @@ export function bootKnetApp() {
   /* ---- Permisos MCP: tarjeta compacta en Mi perfil que abre una ventana ---- */
   
   function permisosHTML() {
-    const sc = A.scopes, scopes = PERM_SCOPES;
+    const sc = A.scopes, scopes = PERM_SCOPES, adm = isAdminMode();
     return `<article class="pcard perm-full">
-          <header class="pcard-h"><div><span class="pcard-k">Privacidad</span><h2 class="pcard-t">Permisos MCP</h2></div><span class="chip">${svg("shield")}Revocables</span></header>
-          <div class="grid gap-2">${scopes.map(([key, ttl, h]) => `<label class="switch-row" for="scope-${key}"><span><b class="font-semibold">${ttl}</b><span class="block text-mute text-[13px]">${h}</span></span><input type="checkbox" role="switch" class="switch" id="scope-${key}" data-scope="${key}" ${sc[key] ? "checked" : ""} ${key === "profile" ? "disabled" : ""}></label>`).join("")}</div>
+          ${adm ? `<header class="pcard-h"><div><span class="pcard-k">Privacidad</span><h2 class="pcard-t">${esc(t("adm.privacy"))}</h2></div></header>` : `<header class="pcard-h"><div><span class="pcard-k">Privacidad</span><h2 class="pcard-t">Permisos MCP</h2></div><span class="chip">${svg("shield")}Revocables</span></header>`}
+          ${adm ? "" : `<div class="grid gap-2">${scopes.map(([key, ttl, h]) => `<label class="switch-row" for="scope-${key}"><span><b class="font-semibold">${ttl}</b><span class="block text-mute text-[13px]">${h}</span></span><input type="checkbox" role="switch" class="switch" id="scope-${key}" data-scope="${key}" ${sc[key] ? "checked" : ""} ${key === "profile" ? "disabled" : ""}></label>`).join("")}</div>`}
           <div class="resync">
             <span class="pcard-k" style="color:var(--muted)">Tus autorizaciones</span>
             <div class="grid gap-2">${readLocal().filter(r => r.tipo === "aceptacion" || r.tipo === "cambio_permiso").slice(-3).reverse().map(r => `<div class="auth-row">${svg(r.tipo === "aceptacion" ? "check" : "shield")}<span><b>${esc(r.tipo === "aceptacion" ? "Aceptaste " + (r.documentos || []).map(d => d.documento.split(" ")[0] + " v" + d.version).join(" y ") : r.detalle || "")}</b><span class="block text-mute text-[12px]">${esc(r.fechaLocal)} · ${esc(r.formulario)} · ${r.almacenamiento === "servidor" ? "registrado en el servidor" : "registrado en este navegador"}</span></span></div>`).join("") || `<div class="text-[13px] text-mute">No hay aceptaciones guardadas en este navegador.</div>`}</div>

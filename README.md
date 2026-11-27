@@ -126,7 +126,7 @@ Un único lienzo WebGL fijo detrás de la página. Miles de partículas cambian 
 ### Panel del asistente (8 secciones)
 
 1. **Mi perfil**: cuenta con correo o LinkedIn, datos importados de LinkedIn o escritos a mano, editables con lápiz, avatar ilustrado y permisos revocables.
-2. **Mis eventos**: inscripciones por día, recinto 3D de cada evento (recorrido a pie, tour, modo manos libres, **VR y AR con WebXR**) y exploración de eventos reales en un mapa de Colombia.
+2. **Mis eventos**: inscripciones por día, recinto 3D de cada evento (recorrido a pie, tour, modo manos libres, **VR y AR con WebXR**) y exploración de eventos reales en un mapa de Colombia. Las cuentas con rol de organizador tienen además **Mis eventos creados**: un asistente por pasos (detalles, días y agenda, charlas, speakers, misiones, recinto 3D y vista previa) que guarda borradores en el servidor y publica el evento en el catálogo.
 3. **Mi red**: grafo de conocimiento (personas y temas que los unen), matches sugeridos, credencial con **QR dinámico** firmado por el servidor, **escáner con la cámara**, cafés 1:1 y chat directo con otros asistentes (en tiempo real), y un simulador de networking con IA para practicar con los contactos del catálogo.
 4. **Agenda personalizada**: charlas elegidas para tu industria, con check-in por QR o acercando el teléfono a un **tótem NFC** (Web NFC).
 5. **Misiones**: XP, 5 niveles (Explorador → Innovador), insignias, misiones grupales y experiencias presenciales.
@@ -410,8 +410,8 @@ Más detalle técnico en [`CLAUDE.md`](CLAUDE.md).
 
 ## Pruebas
 
-- **E2E con API simulada** (`npm run e2e`, `e2e/*.spec.js`): la API se simula con `page.route` (`e2e/support/mock-api.js`) para probar sin backend los casos delicados: creación y edición del perfil, sesión y refresh del token, re-aceptación legal, **XP híbrida** (una misión hecha offline y confirmada online no suma dos veces), **cola offline** (`A.outbox` se reenvía en orden), **consentimientos** (`verifyChain()` válido y `rec.api` de pendiente a guardado), **«Revocar y borrar mis datos»** (online, offline con reintento y `403 demo_account`), **cafés y DMs** con usuarios reales y del catálogo (cola `coffee`/`dm`, XP del café sin duplicar), **QR dinámico y escáner** (cámara y `BarcodeDetector` simulados), **check-in NFC** (Web NFC simulado), cambio de idioma y cabeceras de seguridad.
-- **E2E contra el backend real** (`npm run e2e:real`, `e2e/real/`): cuenta, perfil, misión, cadena de consentimientos del servidor y supresión de la cuenta.
+- **E2E con API simulada** (`npm run e2e`, `e2e/*.spec.js`): la API se simula con `page.route` (`e2e/support/mock-api.js`) para probar sin backend los casos delicados: creación y edición del perfil, sesión y refresh del token, re-aceptación legal, **XP híbrida** (una misión hecha offline y confirmada online no suma dos veces), **cola offline** (`A.outbox` se reenvía en orden), **consentimientos** (`verifyChain()` válido y `rec.api` de pendiente a guardado), **«Revocar y borrar mis datos»** (online, offline con reintento y `403 demo_account`), **cafés y DMs** con usuarios reales y del catálogo (cola `coffee`/`dm`, XP del café sin duplicar), **QR dinámico y escáner** (cámara y `BarcodeDetector` simulados), **check-in NFC** (Web NFC simulado), **panel de creador de eventos** (borrador → publicado, validaciones, 403 sin rol y su agenda, misiones y recinto para los asistentes), cambio de idioma y cabeceras de seguridad.
+- **E2E contra el backend real** (`npm run e2e:real`, `e2e/real/`): cuenta, perfil, misión, cadena de consentimientos del servidor y supresión de la cuenta; catálogo real; y un evento creado y publicado por un organizador (le da el rol con `npm run user:role` de `knet-backend`, en `KNET_BACKEND_DIR`, `./backend` o `../knet-backend`).
 - **CI** (`.github/workflows/ci.yml`, en cada PR y en `main`): `npm run lint`, `npm run build` y `npm run e2e`. La suite contra el backend real corre si el repositorio tiene el secreto `BACKEND_REPO_TOKEN` (lectura de `knet-backend`, que es privado); si no, se omite.
 
 ## Despliegue
@@ -440,6 +440,7 @@ El build es estático (`dist/`). Para producción:
 - [x] Backend real: cuentas (correo y LinkedIn OAuth), IA (Concierge, Simulador y Dossier con RAG ligero) y consentimientos en PostgreSQL.
 - [x] Cafés 1:1 y chat directo sincronizados, QR dinámico con escáner real y check-in con Web NFC.
 - [x] Consumir el tiempo real (SSE de `/api/me/stream`) en el panel.
+- [x] Panel de creador de eventos para organizadores (multievento).
 - [x] Pruebas end-to-end (Playwright), CI y despliegue continuo en Vercel.
 - [ ] Pruebas unitarias (Vitest).
 - [ ] Guardar en el servidor el chat del Concierge, las notificaciones y las recompensas del avatar.

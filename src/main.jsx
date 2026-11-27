@@ -9,6 +9,7 @@ import "./styles/overrides/02-fit-and-layout.css";
 import "./styles/overrides/03-footer-and-team.css";
 import "./styles/overrides/04-dark-only.css";
 import "./styles/overrides/05-app-polish.css";
+import "./styles/overrides/06-organizer.css";
 import "./styles/tailwind.css";
 import "./styles/main/01-foundation.css";
 import "./styles/main/02-landing.css";
