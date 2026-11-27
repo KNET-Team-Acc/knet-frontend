@@ -107,3 +107,23 @@ test("sin perfil disponible: el clic muestra un aviso en vez de no hacer nada", 
   await expect(page.locator("#m-person")).toBeHidden();
   await expect(page.getByText("No hay un perfil disponible para Nadie Conocido")).toBeVisible();
 });
+
+/* Intereses de un contacto por QR: llegan en contact.interests (el backend aplica su permiso «interests») */
+test("conexión por QR: la ficha muestra sus intereses y una ficha guardada sin ellos se completa en el sync", async ({ page }) => {
+  const PEER = "Diego R.", conn = peerConnection(5, PEER);
+  conn.contact = { ...conn.contact, interests: ["IA generativa", "Datos", "<b>XSS</b>"], headline: "CTO · Logística" };
+  await installMockApi(page, { connections: [conn] });
+  // Ficha que este navegador guardó antes del arreglo: sin intereses y con el cargo genérico
+  const old = { name: PEER, role: "Asistente de KNET", lugar: "En persona", userId: conn.contact.userId, at: Date.now() - 864e5, interests: [], hora: "10:00", fecha: "26 de noviembre de 2026" };
+  await seedSession(page, { extra: { connections: [PEER], xpSynced: [`conn:${PEER}`], qrConn: [old] } });
+  await page.goto("/#red");
+
+  await expect.poll(() => page.evaluate((n) => JSON.parse(localStorage.getItem("knet-demo-v1")).qrConn.find((q) => q.name === n)?.interests, PEER))
+    .toEqual(["IA generativa", "Datos", "bXSS/b"]);
+  await page.locator(`#connsCard [data-avprof="${PEER}"]`).click();
+  await expect(page.locator("#m-person")).toBeVisible();
+  const chips = page.locator("#m-person .peer-cols .chip");
+  await expect(chips).toHaveText(["IA generativa", "Datos", "bXSS/b"]);
+  await expect(page.locator("#m-person")).not.toContainText("Aún no compartió sus intereses.");
+  await expect(page.locator("#m-person")).toContainText("CTO · Logística");
+});

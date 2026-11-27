@@ -606,6 +606,8 @@ export function bootKnetApp() {
      disponibles al recargar u offline. Sin ficha: una genérica; sin recinto 3D: el recinto no lo ofrece.
      Varias plantillas insertan estos textos sin escapar: todo lo que llega de la API (o de esa caché) se sanea aquí. */
   function apiTxt(t, max = 400) { return typeof t === "string" ? t.replace(/[<>]/g, "").replace(/"/g, "”").replace(/\s+/g, " ").trim().slice(0, max) : ""; }
+  /* Intereses de la tarjeta de otro usuario (contact.interests, ya filtrados por su permiso «interests») */
+  function peerInts(contact) { return uniq((contact && Array.isArray(contact.interests) ? contact.interests : []).map(x => apiTxt(x, 60)).filter(Boolean)).slice(0, 12); }
   function apiUrl(u) { return typeof u === "string" && /^https?:\/\/[^\s"'<>`]+$/i.test(u) ? u : ""; }
   function apiColor(c) { return typeof c === "string" && /^#[0-9a-f]{3,8}$/i.test(c); }
   function apiTags(a) { return Array.isArray(a) ? a.map(t => apiTxt(t, 60)).filter(Boolean).slice(0, 12) : []; }
@@ -1641,7 +1643,7 @@ export function bootKnetApp() {
     const r = inboundOf(n); if (!r) return;
     if (isConn(n)) { delete A.inbound[n]; save(); refresh(); return; }
     if (r.sid && !(connIndex && connIndex.get(n))) (connIndex ||= new Map()).set(n, { id: r.sid, status: "pending", userId: r.userId || null });
-    award(() => { delete A.inbound[n]; A.connections.push(n); if (r.userId) addPeerCard(n, r.userId, r.headline, r.via); }, CONN_XP, t("req.accepted").replace("{0}", n), "users", "conn");
+    award(() => { delete A.inbound[n]; A.connections.push(n); if (r.userId) addPeerCard(n, r.userId, r.headline, r.via, new Date(), r.interests); }, CONN_XP, t("req.accepted").replace("{0}", n), "users", "conn");
     apiRun({ t: "conn", id: n, state: "accepted", source: "request", ...(r.userId ? { real: true } : {}) }); // offline: queda en A.outbox
     if (personOpenFor(n)) openPerson(n);
     if (!$("#m-conns").hidden) renderConns();
@@ -1666,9 +1668,10 @@ export function bootKnetApp() {
   /* Conexión pendiente que otra persona te envió (campo direction del servidor; sin él es una solicitud tuya) */
   const isIncoming = (c) => !!(c && c.status === "pending" && c.direction === "incoming" && c.contact && c.contact.name);
   function adoptIncoming(c) {
-    const n = c.contact.name;
+    const n = c.contact.name, ints = peerInts(c.contact), r = inboundOf(n);
     (connIndex ||= new Map()).set(n, { id: c.id, status: c.status, userId: c.contact.userId || null });
-    return addInbound(n, { from: "api", sid: c.id, userId: c.contact.userId || null, headline: c.contact.headline || "", via: c.source || "request", at: Date.parse(c.createdAt) || Date.now() });
+    if (r && r.from === "api") { r.interests = ints; if (c.contact.headline) r.headline = c.contact.headline; } // ya guardada: se completa
+    return addInbound(n, { from: "api", sid: c.id, userId: c.contact.userId || null, headline: c.contact.headline || "", interests: ints, via: c.source || "request", at: Date.parse(c.createdAt) || Date.now() });
   }
   /* Solicitudes con usuarios reales según el servidor: las que enviaste quedan en A.requests (real) y las que
      ya no existen (rechazadas, canceladas o borradas en otro dispositivo) se quitan, salvo si aún esperan en la cola */
@@ -1825,7 +1828,7 @@ export function bootKnetApp() {
   /* Ficha básica de alguien sin perfil en la API (conectado por QR, el directorio o una solicitud): los datos que hay */
   const hasPeerCard = (n) => isConn(n) || !!qrPerson(n) || isInbound(n) || isPending(n);
   function peerHTML(n) {
-    const c = connInfo(n), q = qrPerson(n), ints = (q && Array.isArray(q.interests) ? q.interests : []).filter(Boolean);
+    const c = connInfo(n), q = qrPerson(n), src = q || inboundOf(n) || {}, ints = (Array.isArray(src.interests) ? src.interests : []).filter(Boolean);
     const origin = q ? [q.lugar === "En persona" ? t("peer.viaQr").replace("{0}", q.lugar) : q.lugar, q.fecha && q.hora ? t("peer.when").replace("{0}", q.fecha).replace("{1}", q.hora) : q.hora || ""].filter(Boolean)
       : [isInbound(n) ? t("req.status") : c.via];
     return `<div class="flex items-start justify-between gap-4">
@@ -3721,16 +3724,18 @@ export function bootKnetApp() {
   /* asked = la conexión nació de tu solicitud y la otra persona la aceptó */
   function adoptRealPeer(c, announce, asked) {
     const n = c.contact.name, q = qrPerson(n), when = new Date(c.acceptedAt || c.createdAt || Date.now());
-    if (q) { q.userId = c.contact.userId; return; }
-    addPeerCard(n, c.contact.userId, c.contact.headline, c.source, when);
+    addPeerCard(n, c.contact.userId, c.contact.headline, c.source, when, peerInts(c.contact)); // ya guardada: se completan cargo e intereses
+    if (q) return;
     if (!announce) return;
     if (asked) { notify("conn", t("req.theyAccepted").replace("{0}", n), t("req.theyAcceptedSub")); toast(`<b>${esc(t("req.theyAccepted").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("req.theyAcceptedSub"))}</div>`, "users"); }
     else notify("conn", c.source === "qr" ? `${n} se conectó contigo por QR` : t("req.accepted").replace("{0}", n), "Nueva conexión · ya pueden chatear");
   }
   /* Ficha local de un usuario real conectado (A.qrConn: chat, Dossier, grafo y Mi red) */
-  function addPeerCard(n, userId, headline, source, when = new Date()) {
-    if (qrPerson(n)) { qrPerson(n).userId = userId; return; }
-    (A.qrConn ||= []).push({ name: n, role: headline || "Asistente de KNET", lugar: source === "qr" ? "En persona" : t("att.place"), userId, at: when.getTime(), interests: [],
+  /* interests: los del servidor (ya filtrados por su permiso «interests»); undefined = no se tocan */
+  function addPeerCard(n, userId, headline, source, when = new Date(), interests) {
+    const q = qrPerson(n);
+    if (q) { q.userId = userId; if (headline) q.role = apiTxt(headline, 160); if (Array.isArray(interests)) q.interests = interests; return; }
+    (A.qrConn ||= []).push({ name: n, role: apiTxt(headline, 160) || "Asistente de KNET", lugar: source === "qr" ? "En persona" : t("att.place"), userId, at: when.getTime(), interests: Array.isArray(interests) ? interests : [],
       hora: when.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }), fecha: when.toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" }) });
   }
   /* Respuesta de POST /api/me/connections/scan → estado local.
