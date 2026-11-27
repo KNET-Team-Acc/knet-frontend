@@ -534,7 +534,8 @@ export function bootKnetApp() {
   Object.entries(A.cat || {}).forEach(([ind, list]) => setContacts(ind, list, false)); // última lista de contactos del servidor
   applyProfile();
   let editField = null;
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(A)); } catch (e) {} };
+  /* A.loggedOut = cierre de sesión explícito (no «nunca entré» ni sesión caducada); se limpia al volver a entrar */
+  const save = () => { if (A.connected && A.loggedOut) delete A.loggedOut; try { localStorage.setItem(KEY, JSON.stringify(A)); } catch (e) {} };
   const lvl = (x = A.xp) => Math.floor(x / 500) + 1;
   const lvlName = (x = A.xp) => LEVELS[Math.min(lvl(x) - 1, LEVELS.length - 1)];
   const lvlMax = () => lvl() >= LEVELS.length;
@@ -1108,12 +1109,14 @@ export function bootKnetApp() {
     const chip = $("#userChip");
     chip.hidden = !A.connected; $("#logoutBtn").hidden = !A.connected; $("#notifWrap").hidden = !A.connected; if (!A.connected) closeNotif(); renderNotifCount();
     $("#navConnect").hidden = inApp || A.connected;
-    const saved = !A.connected && A.profile;
-    $("#navLblL").textContent = A.connected ? t("mine.l") : saved ? `${LANG === "en" ? "Continue as" : "Continuar como"} ${first(A.profile.name)}` : t("connect.l");
-    $("#navLblS").textContent = A.connected ? t("mine.s") : saved ? t("resume.s") : t("connect.s");
+    // Tras «Cerrar sesión» no hay acceso rápido «Continuar como…»: el CTA lleva al formulario de inicio de sesión
+    const out = !A.connected && !!A.loggedOut, saved = !A.connected && !out && A.profile;
+    const ctaL = A.connected ? t("mine.l") : out ? t("login.l") : saved ? `${t("resume.l")} ${first(A.profile.name)}` : t("connect.l");
+    $("#navLblL").textContent = ctaL;
+    $("#navLblS").textContent = A.connected ? t("mine.s") : out || saved ? t("resume.s") : t("connect.s");
     const lo = $("#logoutBtn span"); if (lo) lo.textContent = t("logout");
     requestAnimationFrame(() => typeof fitNav === "function" && fitNav());
-    $$(".cta-connect-lbl").forEach(e => e.textContent = A.connected ? t("mine.l") : saved ? `Continuar como ${first(A.profile.name)}` : t("connect.l"));
+    $$(".cta-connect-lbl").forEach(e => e.textContent = ctaL);
     if (A.connected) { const p = PERSONAS[A.ind];
       chip.innerHTML = `${A.avatar ? `<span class="chip-av${frameCls()}">${avatarSVG(A.avatar, 32)}</span>` : `<span class="avatar" style="width:32px;height:32px;font-size:12px;background:linear-gradient(135deg,#A100FF,#7500C0)">${p.initials}</span>`}<span class="uc-txt"><b>${first(p.name)}</b><span class="mono tabular">${isAdminMode() ? esc(t("adm.badge")) : `Nv ${lvl()} · ${fmt(A.xp)} XP`}</span></span>`; }
     { const tb = $("#tourBtn"); if (tb) tb.hidden = isAdminMode(); }
@@ -3959,7 +3962,7 @@ export function bootKnetApp() {
     if (tab === "perfil" && (target === "networkCard" || target === "qrCard")) tab = "red";
     if (target === "matchesCard") tab = "red";
     if (!TAB_IDS.includes(tab)) tab = "perfil";
-    if (!A.connected) { if (hasSaved()) resumeSession(tab); else startConnect(); return; }
+    if (!A.connected) { if (apiEnabled && A.loggedOut) openEntry(tab); else if (hasSaved()) resumeSession(tab); else startConnect(); return; }
     const was = inApp, changed = curTab !== tab || !was;
     inApp = true; curTab = tab; applyView(); setHash(tab);
     renderBanner(); renderTabs(); renderTab(changed);
@@ -4697,7 +4700,7 @@ export function bootKnetApp() {
     const b = $("#logoutBtn"); b.classList.add("closing");
     setTimeout(() => {
       b.classList.remove("closing");
-      runId++; editField = null; A.connected = false; save(); applyProfile();
+      runId++; editField = null; A.connected = false; A.loggedOut = true; save(); applyProfile();
       if (hasSession()) api.logout(); // revoca el refresh token; el perfil local queda para la próxima vez
       toast(`<b>Sesión cerrada</b><div class="text-[13px] text-mute">Tu perfil y tu progreso quedan guardados en este navegador.</div>`, "lock");
       showLanding();
@@ -4728,6 +4731,7 @@ export function bootKnetApp() {
   function openEntry(tab) {
     if (A.connected) { showTab(tab || curTab || "perfil"); return; }
     if (!apiEnabled) { if (hasSaved()) resumeSession(tab); else startConnect(); return; }
+    if (A.loggedOut) { openAuth("login"); return; } // cierre de sesión explícito: directo al formulario de inicio de sesión
     const erasing = hasSession() && readErase().includes(sessionUserId()); // sesión retenida solo para un borrado pendiente
     if (!erasing && sessionMatches()) { resumeSession(tab); return; }
     if (!erasing && hasSession()) { loadSessionAccount(tab); return; }
@@ -4865,7 +4869,7 @@ export function bootKnetApp() {
   function closeLegalUpdate() { legalUpOpen = false; const m = $("#m-legalup"); if (!m.hidden) closeModal(m); }
   $("#m-legalup").addEventListener("click", async (e) => {
     if (e.target.closest("[data-legaluplogout]")) {
-      closeLegalUpdate(); afterLegal = null; runId++; A.connected = false; save(); applyProfile(); api.logout(); showLanding();
+      closeLegalUpdate(); afterLegal = null; runId++; A.connected = false; A.loggedOut = true; save(); applyProfile(); api.logout(); showLanding();
       toast("<b>Sesión cerrada</b>", "lock"); return;
     }
     const b = e.target.closest("[data-legalupaccept]"); if (!b || b.disabled) return;
