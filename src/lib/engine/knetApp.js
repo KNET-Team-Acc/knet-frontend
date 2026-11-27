@@ -960,6 +960,7 @@ export function bootKnetApp() {
           const lastDossier = (ds.dossiers || []).map(d => d.generatedAt).sort().pop();
           if (!A.dossierAt && lastDossier) A.dossierAt = lastDossier;
           A.xp = me.user.xp + A.xpLocal;
+          lb.at = {}; // la XP de los demás pudo cambiar: el ranking se vuelve a pedir al pintarse
         }
         save(); refresh();
         if (!$("#m-dm").hidden && dmFor && !dmBusy) renderDm();
@@ -1007,9 +1008,51 @@ export function bootKnetApp() {
     const rs = getSel("res"), ids = rs.ev === "all" ? myEvIds() : [rs.ev], body = dossierPayload();
     ids.forEach(id => apiRun({ t: "dossier", id, body }));
   }
-  /* Ranking: solo con datos reales. Mientras la API no publique la XP de otros asistentes, solo estás tú. */
-  const board = () => [{ n: PERSONAS[A.ind].name ? first(PERSONAS[A.ind].name) + " (tú)" : "Tú", x: A.xp, me: true }];
-  const rank = () => board().findIndex(r => r.me) + 1;
+  /* Ranking de asistentes (GET /api/me/leaderboard): XP global de los inscritos al evento activo que comparten su red.
+     Solo en memoria (son datos de otras personas), una caché por evento y scope («event» | «connections»). Sin cuenta,
+     sin el endpoint (404) o sin datos todavía: solo estás tú. Tu fila usa siempre A.xp (incluye la XP local), así que el
+     orden se recalcula al instante al completar una misión; el resto se refresca en cada sync o al minuto. */
+  const lb = { scope: "event", data: {}, at: {}, loading: {}, err: {}, missing: false };
+  const lbKey = (ev, scope) => ev + "|" + scope;
+  const lbOn = () => attReady() && !lb.missing && !!attEvent();
+  const lbStale = (scope) => { const k = lbKey(attEvent(), scope); return !lb.loading[k] && Date.now() - (lb.at[k] || 0) > 60000; };
+  async function loadLeaderboard(scope = lb.scope, force) {
+    if (!lbOn()) return;
+    const ev = attEvent(), k = lbKey(ev, scope);
+    if (lb.loading[k] || (!force && !lbStale(scope))) return;
+    lb.loading[k] = true;
+    try {
+      const r = await api.leaderboard(ev, { scope });
+      const entries = (Array.isArray(r.entries) ? r.entries : [])
+        .filter(e => e && typeof e.userId === "string" && typeof e.name === "string" && e.name.trim() && Number.isFinite(e.xp) && Number.isFinite(e.pos))
+        .slice(0, 101).map(e => ({ id: e.userId, n: apiTxt(e.name, 80) || "Asistente", x: Math.max(0, e.xp), lv: Number.isFinite(e.level) ? e.level : lvlCap(e.xp), me: e.me === true }));
+      lb.data[k] = { entries, total: Number.isFinite(r.total) ? r.total : entries.length, mePos: r.me && Number.isFinite(r.me.pos) ? r.me.pos : null };
+      delete lb.err[k];
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) lb.missing = true; // el backend aún no tiene el ranking
+      else lb.err[k] = isOffline(e) ? "offline" : e instanceof ApiError && e.code === "not_registered" ? "notReg" : e instanceof ApiError && e.status === 403 ? "network" : "error";
+    }
+    lb.at[k] = Date.now(); lb.loading[k] = false;
+    if (curTab !== "quests") return;
+    const f = document.activeElement && document.activeElement.closest && document.activeElement.closest("#lbCard [data-lbscope]");
+    renderTab(false);
+    if (f) { const b = document.querySelector(`#lbCard [data-lbscope="${f.dataset.lbscope}"]`); if (b) b.focus(); } // repintar no quita el foco de la pestaña
+  }
+  const lvlCap = (x) => Math.min(lvl(x), LEVELS.length);
+  /* Filas { n, x, lv, me, pos } ordenadas por XP (empates = misma posición), total de participantes y si hay datos del servidor */
+  function board(scope = "event") {
+    const mine = { n: PERSONAS[A.ind].name ? first(PERSONAS[A.ind].name) + " (tú)" : "Tú", x: A.xp, lv: lvlCap(A.xp), me: true };
+    const d = lbOn() ? lb.data[lbKey(attEvent(), scope)] : null;
+    if (!d) return { rows: [{ ...mine, pos: 1 }], total: 1, live: false };
+    const others = d.entries.filter(e => !e.me).map(e => ({ ...e }));
+    const rows = others.concat(mine).sort((a, b) => b.x - a.x || (a.me ? 1 : b.me ? -1 : 0));
+    rows.forEach(r => { r.pos = 1 + rows.filter(o => o.x > r.x).length; });
+    // Si el servidor solo mandó el top y tú quedas por debajo, tu posición real es la suya (hay gente sin cargar entre medias)
+    const truncated = d.total > rows.length, low = others.length ? Math.min(...others.map(o => o.x)) : 0;
+    if (truncated && A.xp < low && d.mePos) mine.pos = Math.max(mine.pos, d.mePos);
+    return { rows, total: Math.max(d.total, rows.length), live: true };
+  }
+  const rank = () => board().rows.find(r => r.me).pos;
   const insights = (sess) => { const out = [], seen = new Set();
     (sess || A.attended.map(id => sessionById(id)).filter(Boolean)).forEach(s => { const x = s.insight; if (!seen.has(x)) { seen.add(x); out.push({ text: x, src: `${s.ttl} · ${evById(s.ev).city}, Día ${s.day + 1}` }); } });
     A.extra.forEach(x => { if (!seen.has(x)) { seen.add(x); out.push({ text: x, src: "AI Concierge" }); } });
@@ -1019,7 +1062,7 @@ export function bootKnetApp() {
     .concat(Object.entries(A.coffees || {}).filter(([, c]) => c.status === "accepted").map(([n, c]) => ({ id: "cafe-" + n, text: `Café de 15 min con ${n} · ${c.slot}` })))
     .concat(A.events.map(id => { const ev = EVENTS.find(e => e.id === id); return { id: "ev-" + id, text: `Asistir a ${ev.name}, ${ev.city} (${ev.date})` }; }));
   const badges = () => {
-    const b = board().filter(r => !r.me), third = b[2];
+    const b = board().rows.filter(r => !r.me), third = b[2]; // siempre el ranking del evento, no el de conexiones
     const left = Math.max(0, 2 - A.attended.length);
     return [
       { i: "compass", n: "Explorador", ok: A.connected, got: "Conectaste tu perfil vía MCP.", need: "Conecta tu perfil con LinkedIn MCP." },
@@ -1378,10 +1421,30 @@ export function bootKnetApp() {
     </div>`;
   }
 
+  /* Tarjeta «Ranking de asistentes»: general del evento activo o solo tus conexiones (pestañas data-lbscope) */
+  function leaderboardHTML() {
+    const on = lbOn(), scope = on ? lb.scope : "event", ev = on ? evById(attEvent()) : null;
+    if (on) ["event", scope].forEach(s => { if (lbStale(s)) setTimeout(() => loadLeaderboard(s), 0); }); // el de evento lo usa la insignia Top 3
+    const bd = board(scope), me = bd.rows.find(r => r.me), rows = bd.rows.filter((r, i) => i < 5 || r.me);
+    const err = on && !bd.live ? lb.err[lbKey(attEvent(), scope)] : null;
+    const seg = on ? `<div class="me-seg lb-seg" role="tablist" aria-label="${esc(t("lb.scopeAria"))}">${[["event", "trophy", "lb.event"], ["connections", "users", "lb.conns"]].map(([k, ic, l]) =>
+      `<button type="button" role="tab" class="me-seg-b" data-lbscope="${k}" aria-selected="${scope === k}">${svg(ic)}${esc(t(l))}</button>`).join("")}</div>` : "";
+    const empty = bd.total > 1 ? ""
+      : err ? `<p class="att-empty" role="status">${esc(t("lb.err." + err))}</p>`
+      : on && !bd.live ? `<p class="att-empty" role="status">${esc(t("lb.loading"))}</p>`
+      : scope === "connections" ? `<div class="conn-empty" style="margin-top:12px">${svg("users")}<div><b>${esc(t("lb.connEmpty"))}</b><p class="text-mute text-[14px]">${esc(t("lb.connEmptySub"))}</p>${act("goto", "red:attendeesCard", esc(t("lb.connGo")), "btn btn-ghost btn-sm")}</div></div>`
+      : `<div class="conn-empty" style="margin-top:12px">${svg("trophy")}<div><b>El ranking se llena con asistentes reales</b><p class="text-mute text-[14px]">Cuando más personas de tu evento sumen XP, verás aquí tu posición. Mientras tanto, cada misión y cada conexión suma a tu nivel.</p></div></div>`;
+    return `<article class="pcard" id="lbCard">
+          <header class="pcard-h"><div><span class="pcard-k">${ev ? esc(ev.name) : "Summit 2026"}</span><h2 class="pcard-t">Ranking de asistentes</h2></div><span class="chip chip-accent">${bd.total > 1 ? `#${me.pos} de ${bd.total}` : "Solo tú por ahora"}</span></header>
+          ${seg}
+          <div class="grid gap-1" role="list">${rows.map(r => `<div class="lb-row ${r.me ? "me" : ""}" role="listitem"><span class="lb-pos tabular">#${r.pos}</span><span class="min-w-0 ${r.me ? "font-semibold" : ""}">${esc(r.n)} <span class="text-mute text-[12px] font-normal">· ${esc(t("lb.level").replace("{0}", r.lv))}</span></span><span class="mono tabular text-[13px] ${r.me ? "" : "text-mute"}">${fmt(r.x)} XP</span></div>`).join("")}</div>
+          ${empty}
+        </article>`;
+  }
+
   /* ---- Exp 02 · Quests ---- */
   function tabQuests() {
-    const into = A.xp % 500, C = 326.7, am = activeMissions(), b = board(), me = b.findIndex(r => r.me);
-    const rows = b.map((r, i) => ({ ...r, pos: i + 1 })).filter((r, i) => i < 5 || r.me);
+    const into = A.xp % 500, C = 326.7, am = activeMissions();
     return `<div class="stack"><div class="app-grid-q">
       <div class="stack">
         <section class="level-hero" aria-label="Nivel actual">
@@ -1418,11 +1481,7 @@ export function bootKnetApp() {
             ${expMissionHTML()}
           </div>
         </article>
-        <article class="pcard">
-          <header class="pcard-h"><div><span class="pcard-k">Summit 2026</span><h2 class="pcard-t">Ranking de asistentes</h2></div><span class="chip chip-accent">${b.length > 1 ? `#${me + 1} de ${b.length}` : "Solo tú por ahora"}</span></header>
-          <div class="grid gap-1">${rows.map(r => `<div class="lb-row ${r.me ? "me" : ""}"><span class="lb-pos tabular">#${r.pos}</span><span class="min-w-0 ${r.me ? "font-semibold" : ""}">${esc(r.n)}</span><span class="mono tabular text-[13px] ${r.me ? "" : "text-mute"}">${fmt(r.x)} XP</span></div>`).join("")}</div>
-          ${b.length > 1 ? "" : `<div class="conn-empty" style="margin-top:12px">${svg("trophy")}<div><b>El ranking se llena con asistentes reales</b><p class="text-mute text-[14px]">Cuando más personas de tu evento sumen XP, verás aquí tu posición. Mientras tanto, cada misión y cada conexión suma a tu nivel.</p></div></div>`}
-        </article>
+        ${leaderboardHTML()}
       </div>
     </div>
     ${expCardHTML()}
@@ -2345,6 +2404,12 @@ export function bootKnetApp() {
   panel.addEventListener("click", (e) => { // Solicitudes recibidas y enviadas, matches y directorio de asistentes
     if (inboundClick(e)) return;
     const c = e.target.closest("[data-attconn]"); if (c) { connectAttendee(c.dataset.attconn); return; }
+    const ls = e.target.closest("#lbCard [data-lbscope]");
+    if (ls) { // Ranking: general del evento o solo tus conexiones; el foco se queda en la pestaña elegida
+      lb.scope = ls.dataset.lbscope === "connections" ? "connections" : "event";
+      renderTab(false); loadLeaderboard(lb.scope);
+      const b = document.querySelector(`#lbCard [data-lbscope="${lb.scope}"]`); if (b) b.focus(); return;
+    }
     const x = e.target.closest("[data-attcancel]");
     if (x) { // tras cancelar, el foco vuelve a «Conectar» de esa persona en el directorio (o al título de Mis conexiones)
       const n = x.dataset.attcancel, a = att.list && att.list.items.find(i => i.name === n); cancelRequest(n);

@@ -68,6 +68,7 @@ body.is-app .team-sec { margin-top: 24px !important; }
 .badge-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
 .lb-row { display: grid; grid-template-columns: 36px minmax(0,1fr) auto; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 12px; font-size: 14px; border: 1px solid transparent; }
 .lb-row.me { background: rgba(161,0,255,.14); border-color: rgba(161,0,255,.45); }
+.lb-seg { margin-bottom: 10px; }
 .lb-pos { font-family: var(--f-mono); color: var(--muted); }
 .chat-log { display: flex; flex-direction: column; gap: 10px; height: clamp(300px, 46vh, 440px); overflow-y: auto; padding-right: 4px; overscroll-behavior: contain; }
 .chat-form { display: flex; gap: 8px; } .chat-form input { flex: 1; min-width: 0; }

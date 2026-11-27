@@ -391,7 +391,7 @@ Más detalle técnico en [`CLAUDE.md`](CLAUDE.md).
 | Recintos 3D | Planos ilustrativos por evento, no el mapa oficial del recinto. |
 | Experiencias presenciales (arte, cocina, deporte) | Ninguna: las publicará el organizador de cada evento. |
 | Ponentes | Solo los que devuelve `GET /api/events/:id`. Sin datos, la ficha del evento muestra un estado vacío y enlaza a la agenda oficial. |
-| Matches, ranking y grafo de contactos | Solo datos de la API (`GET /api/contacts`, `GET /api/me/connections`). El frontend ya no trae personas inventadas: sin registros se muestran estados vacíos. |
+| Matches, ranking y grafo de contactos | Solo datos de la API (`GET /api/contacts`, `GET /api/me/connections`, `GET /api/me/leaderboard` para el ranking de Misiones: todo el evento o solo tus conexiones). El frontend ya no trae personas inventadas: sin registros se muestran estados vacíos. |
 | Misiones | Plantillas por industria (no son personas ni datos de terceros). |
 | Cuentas, Sign In with LinkedIn, IA (Claude), QR dinámico, NFC, cafés y chat | **Reales** con el backend. En modo local la IA responde en el navegador; sin LinkedIn configurado, el perfil se completa a mano (no se importa ningún perfil de ejemplo) y el escáner QR explica cómo activar la cuenta. |
 | Contactos del catálogo (matches) | Vienen del backend. Si un contacto no es usuario de KNET, sus respuestas en el chat son automáticas; con asistentes reales, los mensajes son de verdad. |
