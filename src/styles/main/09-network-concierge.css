@@ -1,0 +1,77 @@
+/* Red, chat, notificaciones, intereses y AI Concierge (issue #19) */
+
+/* ---- Solicitudes recibidas (Mi red y modal de conexiones) ---- */
+.inb { margin: 4px 0 14px; padding: 14px; border-radius: 16px; border: 1px solid rgba(16,185,129,.35); background: rgba(16,185,129,.06); container-type: inline-size; }
+.inb-h { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-family: var(--f-mono); font-size: 11.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--t-emerald); }
+.inb-h svg { width: 15px; height: 15px; }
+.inb-h:focus { outline: none; }
+.inb-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.inb-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px 12px; align-items: center; padding: 10px; border-radius: 12px; background: rgba(var(--w-rgb), .04); }
+.inb-when { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.inb-acts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.inb-acts .btn-emerald { flex: 1 1 auto; justify-content: center; }
+/* Según el ancho de la tarjeta (Mi red la pone en una columna estrecha), no del viewport */
+@container (min-width: 560px) { .inb-row { grid-template-columns: auto minmax(0, 1fr) auto; } .inb-acts { grid-column: auto; justify-content: flex-end; } .inb-acts .btn-emerald { flex: none; } }
+
+/* ---- Chat 1:1: el nombre abre el perfil ---- */
+.dm-who { all: unset; cursor: pointer; border-radius: 6px; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; transition: text-decoration-color .2s; }
+.dm-who:hover { text-decoration-color: currentColor; }
+.dm-who:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.dm-av-link { cursor: pointer; }
+
+/* ---- Notificación de encuesta resuelta ---- */
+.notif-item.done .notif-ic { color: var(--t-emerald); }
+.notif-item.done .notif-s { color: var(--t-emerald); }
+
+/* ---- Selector de intereses ---- */
+.int-picker { display: grid; gap: 10px; min-width: 0; }
+.int-picker [hidden] { display: none !important; }
+.int-top { display: flex; flex-wrap: wrap; gap: 8px; }
+.int-q { flex: 1 1 220px; min-width: 0; font-size: 16px; }
+.int-cats { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; scrollbar-width: thin; }
+.int-cat { flex: none; scroll-snap-align: start; min-height: 36px; padding: 6px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 600; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.int-cat[aria-pressed="true"] { border-color: var(--accent); color: var(--fg); background: rgba(161,0,255,.14); }
+.int-cat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.int-count { margin: 0; font-size: 12.5px; color: var(--muted); }
+.int-groups { display: grid; gap: 12px; max-height: 320px; overflow-y: auto; padding-right: 4px; overscroll-behavior: contain; }
+.int-gh { margin: 0 0 6px; font-family: var(--f-mono); font-size: 10.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.int-group[data-igroup="mine"] .int-gh { color: var(--accent-soft); }
+.int-none { margin: 0; font-size: 13px; color: var(--muted); }
+
+/* ---- AI Concierge: burbujas, escribiendo, citas y sugerencias ---- */
+.msg { display: flex; align-items: flex-end; gap: 8px; max-width: 100%; }
+.msg-me { flex-direction: row-reverse; }
+.msg-av { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font-size: 10.5px; font-weight: 700; }
+.msg-ai .msg-av { background: rgba(161,0,255,.18); color: var(--accent-soft); }
+.msg-ai .msg-av svg { width: 15px; height: 15px; }
+.msg-me .msg-av { background: rgba(var(--w-rgb), .1); color: var(--fg); }
+.msg .bubble { max-width: min(85%, 60ch); overflow-wrap: anywhere; }
+.msg-me .bubble.me { margin-left: 0; }
+.msg .typing { padding: 12px 14px; }
+.chat-log[aria-busy="true"] { scroll-behavior: smooth; }
+.cite { all: unset; cursor: pointer; font-weight: 600; color: var(--accent-soft); text-decoration: underline; text-underline-offset: 3px; border-radius: 4px; }
+.cite:hover { color: var(--fg); }
+.cite:focus-visible, .cite-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cites { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.cites-k { display: block; margin-bottom: 6px; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.cites ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.cite-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-height: 44px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: rgba(var(--w-rgb), .03); color: var(--fg); text-align: left; cursor: pointer; transition: border-color .2s, background .2s; }
+.cite-row:hover { border-color: var(--accent); background: rgba(161,0,255,.08); }
+.cite-row b { display: block; font-size: 13px; line-height: 1.35; }
+.cite-row small { display: block; font-size: 11.5px; color: var(--muted); }
+.cite-row > svg { width: 14px; height: 14px; color: var(--accent-soft); }
+.chat-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-pills .pill-btn { min-height: 40px; }
+.chat-pills button:disabled { opacity: .55; cursor: wait; }
+#chatIn { font-size: 16px; }
+.agenda-item:focus { outline: none; }
+.agenda-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.agenda-item { scroll-margin-top: calc(var(--nav-h, 68px) + 16px); }
+@media (max-width: 639px) {
+  .concierge-card .chat-log { height: auto; min-height: 280px; max-height: min(58dvh, 520px); }
+  .chat-pills { flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x proximity; padding-bottom: 4px; scrollbar-width: none; }
+  .chat-pills .pill-btn { flex: none; scroll-snap-align: start; min-height: 44px; }
+  .concierge-card .chat-form { position: sticky; bottom: max(8px, env(safe-area-inset-bottom)); z-index: 2; padding: 6px; margin: 0 -6px; border-radius: 14px; background: var(--bg, #0b0814); }
+  .msg .bubble { max-width: 88%; }
+}
+@media (prefers-reduced-motion: reduce) { .msg .typing span { animation: none; } .chat-log[aria-busy="true"] { scroll-behavior: auto; } }

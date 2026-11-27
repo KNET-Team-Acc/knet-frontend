@@ -249,3 +249,39 @@ const ORG_EN = {
 };
 Object.assign(I18N.es, ORG_ES);
 Object.assign(I18N.en, ORG_EN);
+
+/* Red, chat, notificaciones, intereses y AI Concierge (issue #19): req.* solicitudes recibidas, dm.*, notif.*,
+   int.* selector de intereses (src/data/interests.js), ai.* Concierge. Las ai.sug.* en español son además la
+   pregunta que entiende el Concierge local (reply()): si cambian, que sigan coincidiendo con sus expresiones. */
+const NET_ES = {
+  "req.title": "Solicitudes recibidas ({0})", "req.accept": "Aceptar · +100 XP", "req.decline": "Rechazar", "req.declineAria": "Rechazar la solicitud de {0}",
+  "req.profile": "Ver perfil", "req.status": "Te envió una solicitud de conexión", "req.statusApi": "Te envió una solicitud desde KNET",
+  "req.notif": "{0} quiere conectar contigo", "req.notifSub": "Acepta o rechaza la solicitud en Mi red", "req.accepted": "Ahora estás conectado con {0}", "req.declined": "Rechazaste la solicitud de {0}",
+  "dm.profile": "Ver el perfil de {0}",
+  "notif.svDone": "Encuesta respondida · ¡gracias!",
+  "int.search": "Buscar o agregar un interés", "int.searchPh": "Busca o escribe uno propio…", "int.cats": "Filtrar por categoría", "int.all": "Todas", "int.aria": "Intereses",
+  "int.count": "{0}/{1} elegidos", "int.mine": "Tus intereses", "int.none": "Ningún interés coincide. Puedes agregarlo como propio.", "int.add": "+ Agregar «{0}»",
+  "int.max": "Puedes elegir hasta 5 intereses. Quita uno para agregar otro.", "int.tooShort": "Escribe al menos 2 letras.", "int.note": "Elige de 1 a 5. Si no encuentras el tuyo, escríbelo y agrégalo.",
+  "int.cat.ai": "IA y LLMs", "int.cat.cloud": "Cloud y DevOps", "int.cat.dev": "Full-Stack y Mobile", "int.cat.data": "Datos", "int.cat.sec": "Ciberseguridad", "int.cat.product": "Producto y UX",
+  "int.cat.startup": "Startups tech", "int.cat.hw": "Hardware e IoT", "int.cat.events": "En los eventos", "int.cat.industry": "Por industria",
+  "ai.you": "Tú", "ai.bot": "Concierge", "ai.typing": "El Concierge está escribiendo…", "ai.log": "Conversación con el Concierge", "ai.sugAria": "Sugerencias",
+  "ai.cited": "Sesiones citadas", "ai.toAgenda": "ver en la agenda",
+  "ai.sug.next": "¿Cuándo es «{0}», mi próxima sesión?", "ai.sug.intro": "¿Cómo me presento con {0}?", "ai.sug.summary": "Resume el keynote", "ai.sug.mission": "¿Qué misión me conviene?", "ai.sug.event": "¿Qué evento me conviene?",
+};
+const NET_EN = {
+  "req.title": "Received requests ({0})", "req.accept": "Accept · +100 XP", "req.decline": "Decline", "req.declineAria": "Decline {0}’s request",
+  "req.profile": "View profile", "req.status": "Sent you a connection request", "req.statusApi": "Sent you a request on KNET",
+  "req.notif": "{0} wants to connect with you", "req.notifSub": "Accept or decline the request in My network", "req.accepted": "You’re now connected with {0}", "req.declined": "You declined {0}’s request",
+  "dm.profile": "View {0}’s profile",
+  "notif.svDone": "Survey answered · thank you!",
+  "int.search": "Search or add an interest", "int.searchPh": "Search or type your own…", "int.cats": "Filter by category", "int.all": "All", "int.aria": "Interests",
+  "int.count": "{0}/{1} selected", "int.mine": "Your interests", "int.none": "No interest matches. You can add it as your own.", "int.add": "+ Add “{0}”",
+  "int.max": "You can pick up to 5 interests. Remove one to add another.", "int.tooShort": "Type at least 2 letters.", "int.note": "Pick 1 to 5. If yours isn’t listed, type it and add it.",
+  "int.cat.ai": "AI & LLMs", "int.cat.cloud": "Cloud & DevOps", "int.cat.dev": "Full-Stack & Mobile", "int.cat.data": "Data", "int.cat.sec": "Cybersecurity", "int.cat.product": "Product & UX",
+  "int.cat.startup": "Tech startups", "int.cat.hw": "Hardware & IoT", "int.cat.events": "At the events", "int.cat.industry": "By industry",
+  "ai.you": "You", "ai.bot": "Concierge", "ai.typing": "The Concierge is typing…", "ai.log": "Conversation with the Concierge", "ai.sugAria": "Suggestions",
+  "ai.cited": "Sessions cited", "ai.toAgenda": "see in the agenda",
+  "ai.sug.next": "When is “{0}”, my next session?", "ai.sug.intro": "How should I introduce myself to {0}?", "ai.sug.summary": "Summarize the keynote", "ai.sug.mission": "Which mission should I do?", "ai.sug.event": "Which event suits me?",
+};
+Object.assign(I18N.es, NET_ES);
+Object.assign(I18N.en, NET_EN);

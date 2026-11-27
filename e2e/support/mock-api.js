@@ -36,6 +36,9 @@ export async function installMockApi(page, opts = {}) {
     checkins: new Set(),
     registrations: new Set(opts.registrations || ["and"]),
     connections: opts.connections || [],
+    connXp: 0,               // veces que el servidor sumó los +100 XP de una conexión
+    connSeq: 0,
+    profilePatches: [],      // cuerpos de PATCH /api/me
     coffees: [],
     coffeeXp: 0,             // veces que el servidor sumó los +50 XP de un café
     messages: [],
@@ -171,6 +174,7 @@ export async function installMockApi(page, opts = {}) {
     // Perfil
     if (path === "/api/me" && method === "GET") return json(200, me());
     if (path === "/api/me" && method === "PATCH") {
+      state.profilePatches.push(body);
       for (const k of ["name", "role", "company", "industry", "seniority", "location", "interests"]) if (body[k] !== undefined) state.user[k] = body[k];
       return json(200, { user: state.user });
     }
@@ -208,7 +212,27 @@ export async function installMockApi(page, opts = {}) {
       state.checkins.add(body.sessionCode); state.user.xp += 40; state.lastCheckinMethod = body.method;
       return json(201, { checkin: { sessionCode: body.sessionCode }, xpAwarded: 40, xp: state.user.xp });
     }
+    // Contactos del catálogo (matches): solo si la prueba los da; si no, 404 como un backend sin contactos
+    if (path === "/api/contacts" && opts.contacts) return json(200, { contacts: opts.contacts });
     if (path === "/api/me/connections" && method === "GET") return json(200, { connections: state.connections });
+    // Solicitud a un contacto del catálogo (queda pendiente; source qr = aceptada con +100 XP)
+    if (path === "/api/me/connections" && method === "POST") {
+      if (state.connections.some((c) => c.contact.name === body.name)) return json(409, { error: "conflict", message: `Ya tienes una conexión con ${body.name}` });
+      const accepted = body.source === "qr";
+      const connection = catalogConnection(200 + ++state.connSeq, body.name, accepted ? "accepted" : "pending");
+      state.connections.push(connection);
+      if (accepted) { state.user.xp += 100; state.connXp++; }
+      return json(201, { connection, xpAwarded: accepted ? 100 : 0, xp: state.user.xp });
+    }
+    // Aceptar (idempotente: solo la primera vez suma +100 XP) y quitar, como knet-backend
+    if ((m = /^\/api\/me\/connections\/(\d+)$/.exec(path)) && ["PATCH", "DELETE"].includes(method)) {
+      const i = state.connections.findIndex((c) => c.id === Number(m[1]));
+      if (i < 0) return json(404, { error: "not_found", message: `No existe la conexión ${m[1]}` });
+      if (method === "DELETE") { state.connections.splice(i, 1); return json(204); }
+      const cn = state.connections[i];
+      if (cn.status === "pending") { cn.status = "accepted"; cn.acceptedAt = new Date().toISOString(); delete cn.direction; state.user.xp += 100; state.connXp++; }
+      return json(200, { connection: cn, xpAwarded: 100, xp: state.user.xp });
+    }
 
     // Cafés 1:1 (simplificado: sin comprobar transiciones de quien responde)
     if (path === "/api/me/coffees" && method === "GET") return json(200, { coffees: state.coffees });
@@ -272,7 +296,8 @@ export async function seedSession(page, { xp = 100, xpLocal = 100, extra = {} } 
     localStorage.setItem("knet-storage-pref", JSON.stringify({ preferencias: false, fecha: new Date().toISOString(), version: "1.2" }));
     localStorage.setItem("knet-auth", JSON.stringify({ accessToken: "acc-seed", refreshToken: "ref-seed-" + "x".repeat(30), userId: uid, email: "e2e@knet.test" }));
     localStorage.setItem("knet-demo-v1", JSON.stringify({
-      connected: true, ind: "tech", mv1: true, tourSeen: true, mv2: true, events: ["and"], xp, xpLocal, xpSynced: [], outbox: [],
+      // inboundSeeded: sin la solicitud automática de un match (las pruebas de «Solicitudes recibidas» la siembran)
+      connected: true, ind: "tech", mv1: true, tourSeen: true, mv2: true, events: ["and"], xp, xpLocal, xpSynced: [], outbox: [], inboundSeeded: "tech",
       accountId: uid, accountEmail: "e2e@knet.test", apiLinked: true,
       profile: { name: "Paola Prueba", role: "Gerente de Producto", company: "Acme", seniority: "Gerencia", interests: ["Datos"], location: "Bogotá",
         src: { name: "manual", role: "manual", company: "manual", ind: "manual", seniority: "manual", interests: "manual", location: "manual" } },
@@ -285,6 +310,26 @@ export async function seedSession(page, { xp = 100, xpLocal = 100, extra = {} } 
 export function peerConnection(id, name, userId = `99999999-0000-4000-8000-${String(id).padStart(12, "0")}`) {
   return { id, status: "accepted", source: "qr", context: "", eventId: null, createdAt: new Date(Date.now() - 864e5).toISOString(), acceptedAt: new Date(Date.now() - 864e5).toISOString(),
     contact: { id: null, userId, name, initials: name.slice(0, 2).toUpperCase(), headline: "CTO · Logística", industry: "tech", affinity: null, matchReason: "", interests: [], likes: [], goal: "" } };
+}
+
+/** Conexión con un contacto del catálogo (sin cuenta en KNET), pendiente o aceptada */
+export function catalogConnection(id, name, status = "pending", extra = {}) {
+  const at = new Date().toISOString();
+  return { id, status, source: "request", context: "", eventId: null, createdAt: at, acceptedAt: status === "accepted" ? at : null,
+    contact: { id, userId: null, name, initials: name.slice(0, 2).toUpperCase(), headline: "", industry: "tech", affinity: null, matchReason: "", interests: [], likes: [], goal: "" }, ...extra };
+}
+
+/** EventSource falso: window.__es.emit(tipo, datos) entrega un evento como lo haría /api/me/stream */
+export async function fakeEventSource(page) {
+  await page.addInitScript(() => {
+    class FakeES {
+      constructor(url) { this.url = url; this.readyState = 1; this.ls = {}; window.__es = this; setTimeout(() => this.onopen && this.onopen(), 0); }
+      addEventListener(type, fn) { (this.ls[type] ||= []).push(fn); }
+      emit(type, data) { (this.ls[type] || []).forEach((fn) => fn({ data: JSON.stringify(data) })); }
+      close() { this.readyState = 2; }
+    }
+    window.EventSource = FakeES;
+  });
 }
 
 export const engineState =(page) => page.evaluate(() => JSON.parse(localStorage.getItem("knet-demo-v1") || "null"));

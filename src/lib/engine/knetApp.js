@@ -18,6 +18,7 @@ Object.values(IND).forEach(d => { d.matches = []; });
 const MATCH_INFO = {};
 const SPEAKERS = {};
 import { TABS, TAB_DESC, PILLS, I18N, DM_PILLS, TOUR, NOTIF_T } from "@/data/navigation.js";
+import { INTEREST_CATS, INTEREST_EN, INTEREST_MAX, INTEREST_CUSTOM_LEN } from "@/data/interests.js";
 import { P_FIELDS, evtTypeLbl, LI_FIELDS, LI_AUTH_TXT, PERM_SCOPES } from "@/data/privacy.js";
 import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
 import { AV_SKIN, AV_HAIRC, AV_OUT, AV_HAIR, AV_ACC, AV_XHAIR, AV_XACC, AV_GENDER } from "@/data/avatar.js";
@@ -492,7 +493,18 @@ export function bootKnetApp() {
   const BASE_P = JSON.parse(JSON.stringify(PERSONAS));
   const BASE_ROLE = Object.fromEntries(Object.keys(IND).map(k => [k, IND[k].role]));
   
-  const INTEREST_POOL = [...new Set([].concat(...Object.values(BASE_P).map(x => x.interests), ["Datos", "Ciberseguridad", "Experiencia de cliente", "Sostenibilidad"]))];
+  /* Intereses: catálogo tech (src/data/interests.js) + tags de los eventos reales + los de los perfiles base.
+     Se arma al pintar porque EVENTS cambia con mergeEvents. Sin duplicados (sin acentos ni mayúsculas). */
+  const intKey = (x) => norm(x).replace(/\s+/g, " ").trim();
+  const intLabel = (x) => (LANG === "en" && INTEREST_EN[x]) || x;
+  const cleanInterest = (v) => String(v || "").replace(/[<>"]/g, "").replace(/\s+/g, " ").trim().slice(0, INTEREST_CUSTOM_LEN);
+  function interestGroups() {
+    const seen = new Set(), take = (arr) => arr.filter(x => { const k = intKey(x); if (!k || seen.has(k)) return false; seen.add(k); return true; });
+    const groups = INTEREST_CATS.map(c => ({ id: c.id, label: t(c.label), items: take(c.items) }));
+    groups.push({ id: "events", label: t("int.cat.events"), items: take([].concat(...EVENTS.map(e => e.tags || []))) });
+    groups.push({ id: "industry", label: t("int.cat.industry"), items: take([].concat(...Object.values(BASE_P).map(x => x.interests), ["Sostenibilidad"])) });
+    return groups.filter(g => g.items.length);
+  }
   
   const initialsOf = (n) => (String(n).trim().split(/\s+/).slice(0, 2).map(w => w[0] || "").join("") || "TÚ").toUpperCase();
   /* Matches = contactos que devuelve la API. Sin afinidad del servidor se estima por intereses en común. */
@@ -919,6 +931,7 @@ export function bootKnetApp() {
           connIndex = indexConnections(cn.connections);
           if (ct) setContacts(A.ind, ct.contacts);
           (cn.connections || []).forEach(c => { if (c.contact && !c.contact.userId) adoptContact(c.contact); });
+          (cn.connections || []).filter(isIncoming).forEach(adoptIncoming); // solicitudes que te enviaron
           (cn.connections || []).filter(c => c.status === "accepted").forEach(c => {
             const n = c.contact.name, local = A.connections.includes(n), real = !!c.contact.userId;
             if (!local && !real && !IND[A.ind].matches.some(m => m[1] === n) && !qrPerson(n)) return;
@@ -936,6 +949,7 @@ export function bootKnetApp() {
         }
         save(); refresh();
         if (!$("#m-dm").hidden && dmFor && !dmBusy) renderDm();
+        if (A.connected) seedInbound(); // los matches llegan con el sync: ya se puede elegir quién te escribe
         startStream();
       } catch (e) { apiLog(isOffline(e) ? "sin backend; se usan los datos locales" : "no se pudo sincronizar", e); }
       finally { apiSyncing = null; if (apiSyncAgain) { apiSyncAgain = false; syncFromApi(); } }
@@ -1403,15 +1417,41 @@ export function bootKnetApp() {
   }
 
   /* ---- Exp 03 · Concierge + perfil de match ---- */
-  const bubble = (m) => `<div class="bubble ${m.who === "me" ? "me" : "ai"}">${m.html}</div>`;
+  /* Mensaje del chat: avatar + burbuja (usuario a la derecha, IA a la izquierda) y, si las hay, sesiones citadas */
+  const SES_CODE = /^[a-z0-9]{1,24}:\d{1,2}:\d{1,2}$/;
+  function citesHTML(src) {
+    const list = (src || []).filter(s => s && SES_CODE.test(s.code) && sessionById(s.code)); if (!list.length) return "";
+    return `<div class="cites"><span class="cites-k">${esc(t("ai.cited"))}</span><ul>${list.map(s => { const x = sessionById(s.code);
+      return `<li><button type="button" class="cite-row" data-act="agses" data-v="${esc(x.id)}"><span class="mono tabular">${esc(x.tm)}</span><span class="min-w-0"><b>${esc(x.ttl)}</b><small>${esc(x.room)} · ${esc(t("ai.toAgenda"))}</small></span>${svg("arrow")}</button></li>`; }).join("")}</ul></div>`;
+  }
+  const bubble = (m) => { const me = m.who === "me";
+    return `<div class="msg ${me ? "msg-me" : "msg-ai"}"><span class="msg-av" aria-hidden="true">${me ? esc(initialsOf((PERSONAS[A.ind] && PERSONAS[A.ind].name) || "")) : svg("bot")}</span><div class="bubble ${me ? "me" : "ai"}"><span class="sr-only">${esc(t(me ? "ai.you" : "ai.bot"))}: </span>${m.html}${me ? "" : citesHTML(m.src)}</div></div>`; };
+  const typingHTML = () => `<div class="msg msg-ai" id="typing"><span class="msg-av" aria-hidden="true">${svg("bot")}</span><div class="bubble ai typing" role="status"><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span class="sr-only">${esc(t("ai.typing"))}</span></div></div>`;
+  /* Sugerencias según el evento activo y su agenda. v = pregunta en español (la entiende reply(), el Concierge
+     local); l = la misma pregunta en el idioma activo (es la que se ve y la que recibe la IA del servidor) */
+  function conciergePills() {
+    const out = [], add = (k, arg) => { const f = (s) => (arg === undefined ? s : s.replace("{0}", arg)), v = f(I18N.es[k] || k);
+      if (!out.some(x => x.v === v)) out.push({ v, l: f(t(k)) }); };
+    const sel = myEvIds().length ? getSel("main") : null, ev = sel && evById(sel.ev);
+    let next = null;
+    if (!ev) add("ai.sug.event");
+    else if (isEnded("ev:" + ev.id)) add("ai.sug.summary");
+    else { next = sessionsFor(ev.id, sel.day).find(x => !A.attended.includes(x.id)); if (next) add("ai.sug.next", next.ttl); }
+    const free = IND[A.ind].matches.filter(m => !isConn(m[1]) && !isPending(m[1])).sort((a, b) => b[3] - a[3])[0];
+    if (free) add("ai.sug.intro", free[1]);
+    if (activeMissions().length) add("ai.sug.mission");
+    // Respaldo: preguntas fijas (las traduce el diccionario), sin repetir lo que ya cubre una sugerencia del evento
+    PILLS.filter(q => !(next && /pr[oó]xima sesi/i.test(q))).forEach(q => add(q));
+    return out.slice(0, 5);
+  }
+  const pillsHTML = () => conciergePills().map(p => `<button type="button" class="pill-btn" data-act="ask" data-v="${esc(p.v)}" ${p.l !== p.v ? `data-l="${esc(p.l)}"` : ""}>${esc(p.l)}</button>`).join("");
   function tabConcierge() {
-    const d = IND[A.ind];
     return `<div class="stack concierge-solo">
-      <article class="pcard">
+      <article class="pcard concierge-card">
         <header class="pcard-h"><div><span class="pcard-k">Experiencia 05 · AI Concierge</span><h2 class="pcard-t">Tu asistente del Summit</h2></div><span class="chip chip-accent">${svg("bot")}RAG · 148 sesiones</span></header>
-        <div class="chat-log" id="chatLog" aria-live="polite">${A.chat.map(bubble).join("")}</div>
-        <div class="flex flex-wrap gap-2">${PILLS.map(q => act("ask", q, q)).join("")}</div>
-        <form id="chatForm" class="chat-form" autocomplete="off"><label for="chatIn" class="sr-only">Pregunta al Concierge</label><input id="chatIn" class="select" placeholder="Pregunta por tu agenda, matches, misiones…" maxlength="160"><button class="btn btn-primary btn-sm" type="submit">${svg("arrow")}<span>Enviar</span></button></form>
+        <div class="chat-log" id="chatLog" aria-live="polite" aria-label="${esc(t("ai.log"))}">${A.chat.map(bubble).join("")}</div>
+        <div class="chat-pills" id="chatPills" role="group" aria-label="${esc(t("ai.sugAria"))}">${pillsHTML()}</div>
+        <form id="chatForm" class="chat-form" autocomplete="off"><label for="chatIn" class="sr-only">Pregunta al Concierge</label><input id="chatIn" class="select" placeholder="Pregunta por tu agenda, matches, misiones…" maxlength="500" enterkeyhint="send"><button class="btn btn-primary btn-sm" type="submit">${svg("arrow")}<span>Enviar</span></button></form>
         <p class="text-[12px] text-mute" style="margin-top:-8px">No compartas datos sensibles (salud, creencias, datos financieros) en el chat.</p>
       </article>
     </div>`;
@@ -1461,6 +1501,7 @@ export function bootKnetApp() {
   const timers = new Set();
   function scheduleResponses() {
     if (!A.connected) return;
+    seedInbound();
     const now = Date.now();
     Object.entries(A.requests || {}).forEach(([n, r]) => { const k = "req:" + n + r.at; if (r.status !== "pending" || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveRequest(n, r.at); }, Math.max(400, r.due - now)); });
     Object.entries(A.coffees || {}).forEach(([n, c]) => { const k = "cof:" + n + c.at; if (c.status !== "pending" || c.real || c.role === "invitee" || isRealPeer(n) || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveCoffee(n, c.at); }, Math.max(400, c.due - now)); });
@@ -1490,6 +1531,78 @@ export function bootKnetApp() {
     apiRun({ t: "conn", id: n, state: "pending", source: "request" });
   }
   function cancelRequest(n) { if (!isPending(n)) return; delete A.requests[n]; save(); apiConnRemoved(n); toast(`<b>Solicitud cancelada</b>`, "x"); refresh(); if (personOpenFor(n)) openPerson(n); }
+
+  /* ---- Solicitudes recibidas: A.inbound[nombre] = { at, from: match | api, sid (id en el servidor), userId } ----
+     Hoy llegan de contactos del catálogo (un match afín te escribe una vez por industria). Si el servidor
+     publica una solicitud entrante (connection.request con direction "incoming"), entra igual con su sid.
+     Aceptar = conexión aceptada (+100 XP una vez: clave conn:<nombre>); rechazar no vuelve a mostrarla. */
+  const inboundOf = (n) => (A.inbound || {})[n];
+  const isInbound = (n) => !isConn(n) && !!inboundOf(n);
+  const inboundList = () => Object.entries(A.inbound || {}).filter(([n]) => !isConn(n)).sort((a, b) => b[1].at - a[1].at).map(([n]) => n);
+  function addInbound(n, data) {
+    if (!n || isConn(n) || inboundOf(n) || (A.inboundGone || []).includes(n)) return false;
+    (A.inbound ||= {})[n] = { at: Date.now(), ...data }; save();
+    notify("conn", t("req.notif").replace("{0}", n), t("req.notifSub"), { n });
+    toast(`<b>${esc(t("req.notif").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("req.notifSub"))}</div>`, "users");
+    refresh(); if (personOpenFor(n)) openPerson(n);
+    return true;
+  }
+  let inboundTimer = 0;
+  function seedInbound() {
+    if (inboundTimer || A.inboundSeeded === A.ind || !A.profile || isAdminMode()) return;
+    const gone = A.inboundGone || [];
+    const m = IND[A.ind].matches.filter(x => !isConn(x[1]) && !isPending(x[1]) && !inboundOf(x[1]) && !gone.includes(x[1])).sort((a, b) => b[3] - a[3])[0];
+    if (!m) return;
+    inboundTimer = setTimeout(() => {
+      inboundTimer = 0; if (!A.connected || A.inboundSeeded === A.ind) return;
+      A.inboundSeeded = A.ind; save();
+      addInbound(m[1], { from: "match" });
+    }, rnd(6000, 10000));
+  }
+  function acceptInbound(n) {
+    const r = inboundOf(n); if (!r) return;
+    if (isConn(n)) { delete A.inbound[n]; save(); refresh(); return; }
+    award(() => { delete A.inbound[n]; A.connections.push(n); }, CONN_XP, t("req.accepted").replace("{0}", n), "users", "conn");
+    apiRun({ t: "conn", id: n, state: "accepted", source: "request" }); // offline: queda en A.outbox
+    if (personOpenFor(n)) openPerson(n);
+    if (!$("#m-conns").hidden) renderConns();
+  }
+  function declineInbound(n) {
+    const r = inboundOf(n); if (!r) return;
+    delete A.inbound[n]; A.inboundGone = uniq((A.inboundGone || []).concat(n)); save();
+    if (r.sid) apiConnRemoved(n); // solicitud del servidor: se borra allí
+    toast(`<b>${esc(t("req.declined").replace("{0}", first(n)))}</b>`, "x");
+    refresh(); if (personOpenFor(n)) openPerson(n);
+    if (!$("#m-conns").hidden) renderConns();
+  }
+  /* Conexión pendiente que otra persona te envió (campo direction del servidor; sin él es una solicitud tuya) */
+  const isIncoming = (c) => !!(c && c.status === "pending" && c.direction === "incoming" && c.contact && c.contact.name);
+  function adoptIncoming(c) {
+    const n = c.contact.name;
+    (connIndex ||= new Map()).set(n, { id: c.id, status: c.status, userId: c.contact.userId || null });
+    return addInbound(n, { from: "api", sid: c.id, userId: c.contact.userId || null, at: Date.parse(c.createdAt) || Date.now() });
+  }
+  /* Sección «Solicitudes recibidas» (Mi red y el modal de conexiones) */
+  function inboundHTML() {
+    const list = inboundList(); if (!list.length) return "";
+    return `<section class="inb" id="inboundSec" aria-labelledby="inboundTitle">
+      <h3 class="inb-h" id="inboundTitle" tabindex="-1">${svg("users")}${esc(t("req.title").replace("{0}", list.length))}</h3>
+      <ul class="inb-list">${list.map(n => { const c = connInfo(n), r = inboundOf(n);
+        return `<li class="inb-row">
+          <span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
+          <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.from === "api" ? "req.statusApi" : "req.status"))}</div></div>
+          <div class="inb-acts"><button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}<span>${esc(t("req.accept"))}</span></button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}" aria-label="${esc(t("req.declineAria").replace("{0}", n))}">${esc(t("req.decline"))}</button>${c.match ? `<button type="button" class="pill-btn" data-cprof="${esc(n)}">${esc(t("req.profile"))}</button>` : ""}</div>
+        </li>`; }).join("")}</ul>
+    </section>`;
+  }
+  /* Clic en Aceptar / Rechazar dentro de `root`; tras responder, el foco pasa a la siguiente solicitud */
+  function inboundClick(e, after) {
+    const a = e.target.closest("[data-inacc]"), d = e.target.closest("[data-indec]"); if (!a && !d) return false;
+    if (a) acceptInbound(a.dataset.inacc); else declineInbound(d.dataset.indec);
+    if (after) after();
+    setTimeout(() => { const nx = $("#inboundSec [data-inacc]") || $("#connsCard .pcard-t") || $("#connsTitle"); if (nx) nx.focus(); }, 0);
+    return true;
+  }
   function proposeCoffee(n) {
     if (!isConn(n)) { toast("<b>Primero conecten</b><div class='text-[13px] text-mute'>Puedes proponer un café cuando acepte tu solicitud.</div>", "info"); return; }
     const c = coffeeOf(n); if (c && (c.status === "pending" || c.status === "accepted")) return;
@@ -1514,6 +1627,7 @@ export function bootKnetApp() {
   function personStatusChip(n) {
     if (isConn(n)) return `<span class="chip chip-emerald" id="personStatus">${svg("check")}Conectados</span>`;
     if (isPending(n)) return `<span class="chip chip-cyan" id="personStatus"><span class="pend-dot"></span>Solicitud enviada · esperando aprobación</span>`;
+    if (isInbound(n)) return `<span class="chip chip-accent" id="personStatus">${svg("handshake")}${esc(t("req.status"))}</span>`;
     return `<span class="chip" id="personStatus">${svg("users")}Aún no conectan</span>`;
   }
   function personActions(n) {
@@ -1523,12 +1637,14 @@ export function bootKnetApp() {
       : `<button type="button" class="btn btn-ghost btn-sm" data-pact="coffee" data-v="${esc(n)}">${svg("coffee")}Proponer café de 15 min</button>`;
     const main = isConn(n) ? `<button type="button" class="btn btn-primary btn-sm" data-pact="chat" data-v="${esc(n)}">${svg("msg")}Chatear con ${esc(first(n))}</button>`
       : isPending(n) ? `<button type="button" class="btn btn-ghost btn-sm" disabled>${svg("clock")}Esperando aprobación</button><button type="button" class="pill-btn" data-pact="cancel" data-v="${esc(n)}">Cancelar solicitud</button>`
+      : isInbound(n) ? `<button type="button" class="btn btn-emerald btn-sm" data-pact="accept" data-v="${esc(n)}">${svg("check")}${esc(t("req.accept"))}</button><button type="button" class="btn btn-ghost btn-sm" data-pact="decline" data-v="${esc(n)}">${esc(t("req.decline"))}</button>`
       : `<button type="button" class="btn btn-primary btn-sm" data-pact="connect" data-v="${esc(n)}">${svg("handshake")}Enviar solicitud de conexión</button>`;
     return `${main}${coffeeBtn}<button type="button" class="btn btn-ghost btn-sm" data-pact="ask" data-v="${esc(n)}">${svg("bot")}¿Cómo me presento?</button>`;
   }
   function matchActions(n) {
     if (isConn(n)) return `<span class="chip chip-emerald">${svg("check")}Conectado</span>${act("chat", n, `${svg("msg")}Chatear`, "btn btn-primary btn-sm")}`;
     if (isPending(n)) return `<span class="chip chip-cyan"><span class="pend-dot"></span>Esperando aprobación</span>`;
+    if (isInbound(n)) return `<button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}${esc(t("req.accept"))}</button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}">${esc(t("req.decline"))}</button>`;
     return act("connect", n, `${svg("handshake")}Conectar · +100 XP`, "btn btn-primary btn-sm");
   }
   function openPerson(n) {
@@ -1537,6 +1653,8 @@ export function bootKnetApp() {
   $("#m-person").addEventListener("click", (e) => { const b = e.target.closest("[data-pact]"); if (!b) return; const n = b.dataset.v;
     if (b.dataset.pact === "connect") connectMatch(n);
     if (b.dataset.pact === "cancel") cancelRequest(n);
+    if (b.dataset.pact === "accept") acceptInbound(n);
+    if (b.dataset.pact === "decline") declineInbound(n);
     if (b.dataset.pact === "coffee") proposeCoffee(n);
     if (b.dataset.pact === "chat") { closeModal($("#m-person")); openChat(n); }
     if (b.dataset.pact === "ask") { closeModal($("#m-person")); goTo("concierge"); setTimeout(() => ask(`¿Cómo me presento con ${n}?`), 350); }
@@ -1546,7 +1664,7 @@ export function bootKnetApp() {
      Solo con una cuenta sincronizada (accountReady + apiLinked). Ante ApiOffline (red, timeout, 503
      ai_unavailable) o cualquier error, devuelve null y el motor usa su contenido local sin mostrar error. */
   const aiReady = () => accountReady() && !!A.apiLinked;
-  const plainText = (html) => { const d = document.createElement("div"); d.innerHTML = html; d.querySelectorAll("button").forEach(x => x.remove()); return d.textContent.replace(/\s+/g, " ").trim(); };
+  const plainText = (html) => { const d = document.createElement("div"); d.innerHTML = html; d.querySelectorAll("button:not(.cite)").forEach(x => x.remove()); return d.textContent.replace(/\s+/g, " ").trim(); };
   const aiHtml = (t) => esc(t).replace(/\n{2,}/g, "<br><br>").replace(/\n/g, "<br>");
   const aiFail = (what, e) => apiLog(isOffline(e) ? `IA no disponible (${what}); se usa la respuesta local` : `la IA no respondió (${what}); se usa la respuesta local`, e);
   async function aiConcierge(q) {
@@ -1555,8 +1673,31 @@ export function bootKnetApp() {
     const sel = myEvIds().length ? getSel("main") : null;
     try {
       const r = await api.aiChat({ message: q.slice(0, 1000), history, ...(sel ? { eventId: sel.ev, day: Math.max(0, sel.day) } : {}), lang: LANG });
-      return r && r.reply ? aiHtml(r.reply) : null;
+      if (!r || !r.reply) return null;
+      const text = String(r.reply), src = citedSessions(text, r.sources, sel);
+      return { html: linkCites(aiHtml(text), src), src };
     } catch (e) { aiFail("Concierge", e); return null; }
+  }
+  /* Sesiones que cita la respuesta: las `sources` del servidor (solo códigos válidos de sesiones conocidas) o,
+     si no vienen, las del día activo cuyo título aparece en el texto (la misma regla que usa el backend) */
+  function citedSessions(text, sources, sel) {
+    const fromApi = (Array.isArray(sources) ? sources : []).map(s => s && typeof s.code === "string" && SES_CODE.test(s.code) ? sessionById(s.code) : null).filter(Boolean);
+    const list = fromApi.length ? fromApi : sel ? sessionsFor(sel.ev, Math.max(0, sel.day)).filter(x => x.ttl && text.includes(x.ttl)) : [];
+    return uniq(list.map(x => x.id)).slice(0, 4).map(code => ({ code }));
+  }
+  /* Cada título citado dentro del texto (ya escapado) pasa a ser un enlace a esa sesión en la agenda */
+  function linkCites(html, src) {
+    (src || []).forEach(({ code }) => { const x = sessionById(code); if (!x || !x.ttl) return; const tt = esc(x.ttl);
+      const i = html.indexOf(tt); if (i < 0) return;
+      html = html.slice(0, i) + `<button type="button" class="cite" data-act="agses" data-v="${esc(x.id)}">${tt}</button>` + html.slice(i + tt.length); });
+    return html;
+  }
+  /* Abre la agenda en el evento y el día de la sesión y la resalta */
+  function openAgendaSession(code) {
+    const s = sessionById(code); if (!s) { showTab("agenda"); return; }
+    if (A.events.includes(s.ev)) { A.sel = A.sel || {}; A.sel.main = { ev: s.ev, day: s.day }; save(); }
+    showTab("agenda");
+    setTimeout(() => { const el = document.querySelector(`.agenda-item[data-ses="${CSS.escape(s.id)}"]`); if (el) { scrollToEl(el); flash(el); el.focus({ preventScroll: true }); } }, 60);
   }
   async function aiSimulator(n, text) {
     if (!aiReady()) return null;
@@ -1594,8 +1735,11 @@ export function bootKnetApp() {
   }
   function renderDm() {
     const n = dmFor, d = IND[A.ind], q = qrPerson(n), m = d.matches.find(x => x[1] === n) || [initialsOf(n), n, q ? q.role + " · conectado por QR" : ""], idx = Math.max(0, d.matches.indexOf(m)), msgs = (A.dms || {})[n] || [], real = isRealPeer(n);
+    // Con ficha (match del catálogo) el avatar y el nombre abren el perfil; un par por QR no tiene ficha
+    const prof = d.matches.some(x => x[1] === n);
+    const who = prof ? `<button type="button" class="dm-who" data-dmprof aria-label="${esc(t("dm.profile").replace("{0}", n))}">${esc(n)}</button>` : esc(n);
     $("#dmBody").innerHTML = `
-      <div class="mh dm-head"><div class="person-id"><div class="avatar" style="width:44px;height:44px;background:${avatarBg(idx)}">${m[0]}</div><div class="min-w-0"><h3 id="dmTitle" class="font-display font-bold text-[18px] leading-tight">${esc(n)}</h3><div class="text-[12.5px] text-mute">${esc(m[2])}</div><div class="dm-online"><span></span>En el Summit ahora</div></div></div>
+      <div class="mh dm-head"><div class="person-id"><div class="avatar ${prof ? "dm-av-link" : ""}" ${prof ? `data-dmprof aria-hidden="true" title="${esc(t("dm.profile").replace("{0}", n))}"` : ""} style="width:44px;height:44px;background:${avatarBg(idx)}">${m[0]}</div><div class="min-w-0"><h3 id="dmTitle" class="font-display font-bold text-[18px] leading-tight">${who}</h3><div class="text-[12.5px] text-mute">${esc(m[2])}</div><div class="dm-online"><span></span>En el Summit ahora</div></div></div>
         <button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar chat">${svg("x")}</button></div>
       <div class="chat-log dm-log" id="dmLog" aria-live="polite">${msgs.length ? "" : `<div class="dm-empty">${svg("msg")}<span>Ya están conectados. Rompe el hielo con un mensaje.</span></div>`}${msgs.map(x => `<div class="bubble ${x.who === "me" ? "me" : "ai"}">${esc(x.text)}<span class="dm-time">${new Date(x.at).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</span></div>`).join("")}</div>
       ${real ? dmCoffeeHTML(n) : ""}
@@ -1641,6 +1785,7 @@ export function bootKnetApp() {
     dmBusy = false; if (!$("#m-dm").hidden && dmFor === n) { renderDm(); const i = $("#dmIn"); if (i) i.focus(); }
   }
   $("#m-dm").addEventListener("click", (e) => {
+    if (e.target.closest("[data-dmprof]") && dmFor) { const n = dmFor; closeModal($("#m-dm")); openPerson(n); return; }
     const q = e.target.closest("[data-dmq]"); if (q) { sendDm(q.dataset.dmq); return; }
     const cf = e.target.closest("[data-dmcof]"); if (!cf || !dmFor) return;
     if (cf.dataset.dmcof === "propose") proposeCoffee(dmFor); else answerCoffee(dmFor, cf.dataset.dmcof === "yes");
@@ -1667,20 +1812,25 @@ export function bootKnetApp() {
     return "Puedo ayudarte con tu agenda, quién está cerca, matches, misiones, próximos eventos o un resumen de las charlas. Prueba con una de las sugerencias.";
   }
   let asking = false;
-  async function ask(q) {
-    q = String(q).trim(); const log = $("#chatLog"); if (!q || asking || !log) return; asking = true;
-    A.chat.push({ who: "me", html: esc(q) });
+  /* q = pregunta en español (la usa el Concierge local); shown = la misma en el idioma activo (se ve y va a la IA) */
+  async function ask(q, shown) {
+    q = String(q).trim(); shown = String(shown || q).trim(); const log = $("#chatLog"); if (!q || asking || !log) return; asking = true;
+    const inForm = !!(document.activeElement && document.activeElement.closest && document.activeElement.closest("#chatForm"));
+    A.chat.push({ who: "me", html: esc(shown) });
     log.insertAdjacentHTML("beforeend", bubble(A.chat[A.chat.length - 1]));
-    log.insertAdjacentHTML("beforeend", `<div class="bubble ai typing" id="typing" aria-label="El Concierge está escribiendo"><span></span><span></span><span></span></div>`);
-    log.scrollTop = log.scrollHeight;
-    setBusy("#chatForm input, #chatForm button", true); // sin envíos dobles mientras responde
-    let html = await aiConcierge(q);
-    if (html === null) { await sleep(650); html = reply(q); }
-    setBusy("#chatForm input, #chatForm button", false);
-    A.chat.push({ who: "ai", html }); if (A.chat.length > 40) A.chat = A.chat.slice(-40); save();
-    const ty = $("#typing"); if (ty) ty.outerHTML = bubble({ who: "ai", html });
-    const l2 = $("#chatLog"); if (l2) l2.scrollTop = l2.scrollHeight;
+    log.insertAdjacentHTML("beforeend", typingHTML());
+    log.setAttribute("aria-busy", "true"); log.scrollTop = log.scrollHeight;
+    setBusy("#chatForm input, #chatForm button, #chatPills button", true); // sin envíos dobles mientras responde
+    let ans = await aiConcierge(shown);
+    if (ans === null) { await sleep(650); const html = reply(q), src = citedSessions(plainText(html), null, myEvIds().length ? getSel("main") : null); ans = { html: linkCites(html, src), src }; }
+    setBusy("#chatForm input, #chatForm button, #chatPills button", false);
+    const msg = { who: "ai", html: ans.html, ...(ans.src && ans.src.length ? { src: ans.src } : {}) };
+    A.chat.push(msg); if (A.chat.length > 40) A.chat = A.chat.slice(-40); save();
+    const ty = $("#typing"); if (ty) ty.outerHTML = bubble(msg);
+    const l2 = $("#chatLog"); if (l2) { l2.removeAttribute("aria-busy"); l2.scrollTop = l2.scrollHeight; }
+    const pills = $("#chatPills"); if (pills) pills.innerHTML = pillsHTML();
     asking = false;
+    if (inForm) { const i = $("#chatIn"); if (i) i.focus(); }
   }
 
   /* ---- Exp 04 · Dossier ---- */
@@ -2029,6 +2179,7 @@ export function bootKnetApp() {
   function renderConns() {
     const list = A.connections.slice().reverse();
     $("#connsBody").innerHTML = `<div class="mh"><div><span class="chip chip-cyan">${svg("users")}Tu red en el Summit</span><h3 id="connsTitle" class="font-display font-bold text-xl" style="margin-top:10px">Mis conexiones <span class="text-mute tabular">(${list.length})</span></h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
+      ${inboundHTML()}
       ${list.length ? `<div class="conn-list">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<div class="conn-row ${ask ? "ask" : ""}">
           <span class="conn-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
@@ -2043,7 +2194,8 @@ export function bootKnetApp() {
   function connsInlineHTML() {
     const list = A.connections.slice().reverse();
     return `<article class="pcard" id="connsCard">
-      <header class="pcard-h"><div><span class="pcard-k">Tu red en el Summit</span><h2 class="pcard-t">Mis conexiones <span class="text-mute tabular">(${list.length})</span></h2></div></header>
+      <header class="pcard-h"><div><span class="pcard-k">Tu red en el Summit</span><h2 class="pcard-t" tabindex="-1">Mis conexiones <span class="text-mute tabular">(${list.length})</span></h2></div></header>
+      ${inboundHTML()}
       ${list.length ? `<ul class="cc-grid">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<li class="cc ${ask ? "ask" : ""}">
           <div class="cc-top">
@@ -2071,9 +2223,11 @@ export function bootKnetApp() {
     const pf = t.closest("#connsCard [data-cprof]"); if (pf) { openPerson(pf.dataset.cprof); return; }
     if (t.closest("#connsCard [data-cgo]")) showTab("red", "matchesCard");
   });
+  panel.addEventListener("click", (e) => { inboundClick(e); }); // Solicitudes recibidas en Mi red y en las tarjetas de matches
   function openConns() { connAsk = null; renderConns(); if ($("#m-conns").hidden) openModal("conns"); }
   $("#m-conns").addEventListener("click", (e) => {
     const t = e.target;
+    if (inboundClick(e, renderConns)) return;
     const rm = t.closest("[data-crm]"); if (rm) { connAsk = rm.dataset.crm; renderConns(); const y = $("#connsBody [data-cyes]"); if (y) y.focus(); return; }
     if (t.closest("[data-cno]")) { connAsk = null; renderConns(); return; }
     const yes = t.closest("[data-cyes]"); if (yes) { const n = yes.dataset.cyes; connAsk = null;
@@ -2157,7 +2311,17 @@ export function bootKnetApp() {
       <p class="text-[12px] text-mute">Tus respuestas se usan solo para mejorar los próximos eventos.</p>
       <div class="gf-form-foot"><button type="button" class="btn btn-ghost btn-sm" data-close>Ahora no</button><button type="button" class="btn btn-primary" data-svsend>${svg("arrow")}Enviar encuesta · +${SV_XP} XP</button></div>`;
   }
-  function openSurvey(hid) { svCur = { hid, rating: 0, nps: null, best: [], comment: "" }; renderSurvey(hid); if ($("#m-survey").hidden) openModal("survey"); }
+  function openSurvey(hid) {
+    svCur = { hid, rating: 0, nps: null, best: [], comment: "" };
+    renderSurvey(hid, !!(A.surveys || {})[hid]); // ya respondida: solo el agradecimiento
+    if ((A.surveys || {})[hid]) svCur = null;
+    if ($("#m-survey").hidden) openModal("survey");
+  }
+  /* Encuesta enviada: su notificación queda resuelta */
+  function resolveSurveyNotif(hid) {
+    (A.notifs || []).filter(x => x.type === "survey" && x.hid === hid).forEach(x => { x.done = true; x.read = true; });
+    save(); renderNotifCount(); if (!notifPanel.hidden) renderNotifPanel();
+  }
   $("#m-survey").addEventListener("input", (e) => { if (e.target.id === "svComment" && svCur) svCur.comment = e.target.value; });
   $("#m-survey").addEventListener("click", (e) => {
     if (!svCur) return; const t = e.target;
@@ -2168,7 +2332,7 @@ export function bootKnetApp() {
       if (!svCur.rating) { const er = $("#svErr"); er.hidden = false; er.textContent = "Elige una calificación general de 1 a 5 estrellas."; return; }
       const hid = svCur.hid, data = { ...svCur, at: Date.now() }; delete data.hid;
       award(() => { (A.surveys ||= {})[hid] = data; }, SV_XP, "Encuesta de satisfacción enviada", "star");
-      renderSurvey(hid, true); svCur = null;
+      renderSurvey(hid, true); svCur = null; resolveSurveyNotif(hid);
     }
   });
   panel.addEventListener("click", (e) => { const b = e.target.closest("[data-svopen]"); if (b) openSurvey(b.dataset.svopen); });
@@ -2408,7 +2572,7 @@ export function bootKnetApp() {
     if (isEnded(key)) return; const now = Date.now(); A.ended = A.ended || {}; A.ended[key] = now;
     const s = sumData(key); (A.history ||= []).push({ id: key + "@" + now, key, at: now, s }); save();
     notify("sum", `Terminó “${s.title}”`, "Tu resumen generado con IA está listo para descargar en PDF");
-    notify("survey", `¿Qué tal estuvo “${s.title}”?`, `Responde la encuesta de satisfacción · +${SV_XP} XP`);
+    notify("survey", `¿Qué tal estuvo “${s.title}”?`, `Responde la encuesta de satisfacción · +${SV_XP} XP`, { hid: key + "@" + now });
     toast(`<b>${auto ? "Terminó" : "Evento finalizado"}: ${esc(s.title)}</b><div class="text-[13px] text-mute">La IA preparó tu resumen. Lo encuentras en el historial de Mis eventos.</div>`, "file");
     refresh();
   }
@@ -2619,7 +2783,7 @@ export function bootKnetApp() {
         <p class="text-mute text-[14px]" style="margin-top:-6px">${ended ? "Este evento ya terminó: puedes revisar a qué sesiones asististe y abrir sus resúmenes." : ev.hosted ? t("org.agendaLede") : "La IA eligió 4 sesiones de este día según tu rol, tu industria y tus intereses. Cada check-in alimenta el resumen de este evento."}</p>
         ${ev.hosted ? (list.length ? "" : `<div class="me-empty">${svg("calendar")}<span>${t("org.agendaEmpty")}</span></div>`) : `<p class="ai-note text-mute text-[13px] flex flex-wrap items-center gap-x-2 gap-y-1" data-ai-note><span class="ico" style="width:14px;height:14px">${svg("info")}</span><span>Recomendación orientativa: la IA propone estas sesiones con los temas del evento; no son la agenda oficial. Confirma horarios y salas con el organizador.</span>${ev.url ? `<a href="${esc(ev.url)}" target="_blank" rel="noopener" class="ev-src">${svg("link")}Consultar la agenda oficial</a>` : ""}</p>`}
         <div class="grid gap-3">${list.map(x => { const ok = A.attended.includes(x.id);
-          return `<div class="agenda-item ${ok ? "is-done" : ""}"><div class="time tabular">${x.tm}</div><div class="min-w-0">
+          return `<div class="agenda-item ${ok ? "is-done" : ""}" data-ses="${esc(x.id)}" tabindex="-1"><div class="time tabular">${x.tm}</div><div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2"><span class="chip">${x.kind}</span><span class="text-[12px] text-mute flex items-center gap-1"><span class="ico" style="width:12px;height:12px">${svg("pin")}</span>${esc(x.room)}</span></div>
             <div class="font-semibold mt-1.5 leading-snug">${esc(x.ttl)}</div>
             <div class="text-[13px] text-accentsoft mt-1 flex gap-1.5 items-start"><span class="ico flex-none" style="width:14px;height:14px;margin-top:3px">${svg("spark")}</span><span>${esc(x.why)}</span></div>
@@ -3394,7 +3558,8 @@ export function bootKnetApp() {
     const on = (type, fn) => src.addEventListener(type, (ev) => { let d = null; try { d = JSON.parse(ev.data); } catch (e) { d = null; } if (es === src) fn(d || {}); });
     src.onopen = () => { esFails = 0; };
     on("message.new", onLiveMessage);
-    ["coffee.updated", "connection.accepted", "connection.request"].forEach(t => on(t, liveSync));
+    ["coffee.updated", "connection.accepted"].forEach(t => on(t, liveSync));
+    on("connection.request", onLiveRequest);
     src.onerror = () => {
       if (es !== src || src.readyState !== 2) return; // CONNECTING: el navegador reintenta solo
       // Cerrada (401 por token caducado, backend sin stream…): reintento con espera creciente; getMe refresca el token
@@ -3403,6 +3568,9 @@ export function bootKnetApp() {
     };
   }
   function liveSync() { clearTimeout(liveT); liveT = setTimeout(() => syncFromApi(), 400); }
+  /* connection.request: si otra persona te la envía, entra en «Solicitudes recibidas» al instante; si es tuya
+     (desde otra sesión), basta con sincronizar */
+  function onLiveRequest(d) { if (isIncoming(d.connection)) adoptIncoming(d.connection); else liveSync(); }
   function onLiveMessage(d) {
     const n = d.connectionId ? connNameById(d.connectionId) : null;
     if (!n || !d.message || !isConn(n)) { liveSync(); return; }
@@ -3650,8 +3818,9 @@ export function bootKnetApp() {
   /* =================== CENTRO DE NOTIFICACIONES =================== */
   
   const notifBtn = $("#notifBtn"), notifPanel = $("#notifPanel");
-  function notify(type, title, sub) {
-    A.notifs = [{ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), type, title, sub, at: Date.now(), read: false }].concat(A.notifs || []).slice(0, 40);
+  /* extra: datos de la notificación (p. ej. { hid } en las encuestas: abre esa encuesta al tocarla) */
+  function notify(type, title, sub, extra = {}) {
+    A.notifs = [{ ...extra, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), type, title, sub, at: Date.now(), read: false }].concat(A.notifs || []).slice(0, 40);
     save(); renderNotifCount(); if (!notifPanel.hidden) renderNotifPanel();
     notifBtn.classList.remove("ring-it"); void notifBtn.offsetWidth; notifBtn.classList.add("ring-it");
   }
@@ -3668,7 +3837,9 @@ export function bootKnetApp() {
     const list = A.notifs || [];
     notifPanel.innerHTML = `<div class="notif-h"><b>Notificaciones</b>${list.length ? `<button type="button" class="notif-clear" data-nclear>Borrar todo</button>` : ""}</div>
       <div class="notif-list">${list.length ? list.map(x => { const T = NOTIF_T[x.type] || NOTIF_T.xp;
-        return `<button type="button" class="notif-item ${x.read ? "" : "new"}" data-ngo="${T.go}" style="--c:${T.c}"><span class="notif-ic">${x.type === "level" ? lvlBadge(lvl(), 30) : svg(T.ic)}</span><span class="min-w-0"><span class="notif-t">${esc(x.title)}</span><span class="notif-s">${esc(x.sub || "")}</span><span class="notif-a">${agoTxt(x.at)}</span></span></button>`; }).join("")
+        const sv = x.type === "survey" && x.hid, svDone = sv && (x.done || !!(A.surveys || {})[x.hid]);
+        const target = sv && !svDone ? `data-nsurvey="${esc(x.hid)}"` : `data-ngo="${T.go}"`;
+        return `<button type="button" class="notif-item ${x.read ? "" : "new"} ${svDone ? "done" : ""}" ${target} style="--c:${T.c}"><span class="notif-ic">${x.type === "level" ? lvlBadge(lvl(), 30) : svg(svDone ? "check" : T.ic)}</span><span class="min-w-0"><span class="notif-t">${esc(x.title)}</span><span class="notif-s">${svDone ? t("notif.svDone") : esc(x.sub || "")}</span><span class="notif-a">${agoTxt(x.at)}</span></span></button>`; }).join("")
         : `<div class="notif-empty">${svg("check")}<span>No tienes notificaciones todavía. Aquí verás tus XP, subidas de nivel, conexiones y recordatorios de eventos.</span></div>`}</div>`;
   }
   function openNotif() { closeLang(); renderNotifPanel(); notifPanel.hidden = false; notifBtn.setAttribute("aria-expanded", "true"); (A.notifs || []).forEach(x => x.read = true); save(); renderNotifCount(); }
@@ -3676,6 +3847,8 @@ export function bootKnetApp() {
   notifBtn.addEventListener("click", (e) => { e.stopPropagation(); notifPanel.hidden ? openNotif() : closeNotif(); });
   notifPanel.addEventListener("click", (e) => {
     if (e.target.closest("[data-nclear]")) { A.notifs = []; save(); renderNotifPanel(); renderNotifCount(); return; }
+    const sv = e.target.closest("[data-nsurvey]");
+    if (sv) { const hid = sv.dataset.nsurvey; closeNotif(); showTab("miseventos"); if ((A.history || []).some(h => h.id === hid)) openSurvey(hid); return; }
     const it = e.target.closest("[data-ngo]"); if (it) { closeNotif(); showTab(it.dataset.ngo); }
   });
   document.addEventListener("click", (e) => { if (!notifPanel.hidden && !e.target.closest("#notifWrap")) closeNotif(); });
@@ -4075,16 +4248,15 @@ export function bootKnetApp() {
         <div class="pf-field"><label for="pf-sen">Seniority ${tag("seniority")}</label><select id="pf-sen" class="select"><option value="">Elige una opción</option>${SENIORITY.map(s => `<option ${s === pre.seniority ? "selected" : ""}>${s}</option>`).join("")}</select></div>
         <div class="pf-field"><label for="pf-company">Empresa ${opt} ${tag("company")}</label><input id="pf-company" class="select" maxlength="60" value="${v("company")}" autocomplete="organization" placeholder="Ej. Accenture"></div>
         <div class="pf-field"><label for="pf-loc">Ciudad ${opt} ${tag("location")}</label><input id="pf-loc" class="select" maxlength="60" value="${v("location")}" placeholder="Ej. Bogotá"></div>
-        <fieldset class="pf-field pf-wide"><legend>Intereses · elige de 1 a 5 ${tag("interests")}</legend><div class="pf-chips" id="pf-ints">${INTEREST_POOL.map(x => `<button type="button" class="av-chip" data-int="${esc(x)}" aria-pressed="${(pre.interests || []).includes(x)}">${x}</button>`).join("")}</div></fieldset>
+        <fieldset class="pf-field pf-wide"><legend>Intereses · elige de 1 a 5 ${tag("interests")}</legend>${interestPickerHTML("int", "pf-ints", "pfErr", pre.interests)}</fieldset>
       </div>
       ${consentGiven ? `<div class="lg-done">${svg("check")}<span>${consentGiven.via === "registro" ? `Ya aceptaste los Términos y la Política de privacidad (v${LEGAL.version}) a las ${when}, al crear tu cuenta KNET. Queda en tu registro de consentimientos.` : `Ya aceptaste los Términos y la Política de privacidad (v${LEGAL.version}) a las ${when}, en la pantalla de permiso de LinkedIn. Queda en tu registro de consentimientos.`}</span></div>` : legalChecks("pf")}
       <p class="pf-err" id="pfErr" role="alert" hidden></p>
       <div class="av-foot" style="margin-top:18px"><button type="button" class="btn btn-ghost btn-sm" data-pfback><span class="flip-x">${svg("arrow")}</span>Volver</button><button type="submit" class="btn btn-primary">${svg("check")}Crear mi perfil · +100 XP</button></div>`;
-    setTimeout(() => { const empty = [...f.querySelectorAll("input:not([type=checkbox]),select")].find(el => !el.value && !el.closest(".pf-field").querySelector(".pf-opt")); (empty || $("#pf-name")).focus(); }, 40);
+    setTimeout(() => { const empty = [...f.querySelectorAll("input:not([type=checkbox]):not([data-iq]),select")].find(el => !el.value && !el.closest(".pf-field").querySelector(".pf-opt")); (empty || $("#pf-name")).focus(); }, 40);
   }
   $("#mcpForm").addEventListener("click", (e) => {
-    const c = e.target.closest("[data-int]");
-    if (c) { const on = c.getAttribute("aria-pressed") === "true", n = $$("#pf-ints [aria-pressed='true']").length; if (!on && n >= 5) { const er = $("#pfErr"); er.hidden = false; er.textContent = "Puedes elegir hasta 5 intereses. Quita uno para agregar otro."; return; } c.setAttribute("aria-pressed", String(!on)); $("#pfErr").hidden = true; return; }
+    if (pickerClick(e)) return;
     if (e.target.closest("[data-pfback]")) startConnect();
   });
   $("#mcpForm").addEventListener("submit", (e) => {
@@ -4174,12 +4346,81 @@ export function bootKnetApp() {
     if (reset && !A.tourSeen) offerTourWhenIdle();
   }
 
+  /* ---- Selector de intereses (onboarding y edición del perfil): buscador, filtro por categoría y propios ----
+     attr = "int" | "eint" (data-* de cada chip, lo leen los submits); id = contenedor de los chips;
+     errId = párrafo de error del formulario. Filtrar solo oculta chips: no se repinta ni se pierde la selección. */
+  const intCountTxt = (n) => t("int.count").replace("{0}", n).replace("{1}", INTEREST_MAX);
+  function interestPickerHTML(attr, id, errId, selected) {
+    selected = (selected || []).filter(Boolean);
+    const groups = interestGroups(), known = new Set(groups.flatMap(g => g.items).map(intKey));
+    const custom = selected.filter(x => !known.has(intKey(x)));
+    const chip = (x) => `<button type="button" class="av-chip" data-${attr}="${esc(x)}" data-ik="${esc(intKey(x))}" aria-pressed="${selected.includes(x)}">${esc(intLabel(x))}</button>`;
+    const group = (gid, label, items) => `<div class="int-group" data-igroup="${gid}" ${items.length ? "" : "hidden"}><h4 class="int-gh">${esc(label)}</h4><div class="pf-chips">${items.map(chip).join("")}</div></div>`;
+    return `<div class="int-picker" data-ipick="${attr}" data-ierr="${errId}">
+      <div class="int-top"><label class="sr-only" for="${id}-q">${esc(t("int.search"))}</label>
+        <input type="search" id="${id}-q" class="select int-q" data-iq maxlength="${INTEREST_CUSTOM_LEN}" placeholder="${esc(t("int.searchPh"))}" autocomplete="off" enterkeyhint="done" aria-controls="${id}" aria-describedby="${id}-n">
+        <button type="button" class="btn btn-ghost btn-sm int-add" data-iadd hidden></button></div>
+      <div class="int-cats" role="group" aria-label="${esc(t("int.cats"))}">${[["all", t("int.all")]].concat(groups.map(g => [g.id, g.label])).map(([k, l], i) => `<button type="button" class="int-cat" data-icat="${k}" aria-pressed="${i === 0}">${esc(l)}</button>`).join("")}</div>
+      <p class="int-count" id="${id}-n" aria-live="polite">${esc(intCountTxt(selected.length))}</p>
+      <div class="int-groups" id="${id}" role="group" aria-label="${esc(t("int.aria"))}">${group("mine", t("int.mine"), custom)}${groups.map(g => group(g.id, g.label, g.items)).join("")}</div>
+      <p class="int-none" hidden>${esc(t("int.none"))}</p>
+    </div>`;
+  }
+  const pickerOf = (el) => (el && el.closest ? el.closest("[data-ipick]") : null);
+  const pickerChips = (p) => [...p.querySelectorAll(".int-groups .av-chip")];
+  const pickerOn = (p) => pickerChips(p).filter(b => b.getAttribute("aria-pressed") === "true").length;
+  function pickerErr(p, msg) { const er = document.getElementById(p.dataset.ierr); if (!er) return; er.hidden = !msg; er.textContent = msg || ""; }
+  function pickerCount(p) { p.querySelector(".int-count").textContent = intCountTxt(pickerOn(p)); }
+  function pickerFilter(p) {
+    const inp = p.querySelector("[data-iq]"), q = intKey(inp.value), cur = p.querySelector("[data-icat][aria-pressed='true']"), cat = cur ? cur.dataset.icat : "all";
+    let shown = 0;
+    p.querySelectorAll(".int-group").forEach(g => {
+      let any = 0;
+      g.querySelectorAll(".av-chip").forEach(b => {
+        const vis = b.getAttribute("aria-pressed") === "true" || ((cat === "all" || g.dataset.igroup === cat) && (!q || b.dataset.ik.includes(q) || intKey(b.textContent).includes(q)));
+        b.hidden = !vis; if (vis) any++;
+      });
+      g.hidden = !any; shown += any;
+    });
+    const raw = cleanInterest(inp.value), add = p.querySelector("[data-iadd]");
+    add.hidden = raw.length < 2 || pickerChips(p).some(b => b.dataset.ik === intKey(raw));
+    if (!add.hidden) add.textContent = t("int.add").replace("{0}", raw);
+    p.querySelector(".int-none").hidden = shown > 0 || !q;
+  }
+  function pickerToggle(p, b) {
+    const on = b.getAttribute("aria-pressed") === "true";
+    if (!on && pickerOn(p) >= INTEREST_MAX) { pickerErr(p, t("int.max")); return; }
+    b.setAttribute("aria-pressed", String(!on)); pickerErr(p, null); pickerCount(p);
+  }
+  /* Escribe un interés propio: si ya existe en el catálogo se selecciona ese; si no, se crea su chip */
+  function pickerAdd(p) {
+    const inp = p.querySelector("[data-iq]"), raw = cleanInterest(inp.value);
+    if (!raw) return;
+    if (raw.length < 2) { pickerErr(p, t("int.tooShort")); return; }
+    const same = pickerChips(p).find(b => b.dataset.ik === intKey(raw));
+    if (same) { if (same.getAttribute("aria-pressed") !== "true") pickerToggle(p, same); inp.value = ""; pickerFilter(p); inp.focus(); return; }
+    if (pickerOn(p) >= INTEREST_MAX) { pickerErr(p, t("int.max")); return; }
+    const g = p.querySelector('[data-igroup="mine"]');
+    g.querySelector(".pf-chips").insertAdjacentHTML("beforeend", `<button type="button" class="av-chip" data-${p.dataset.ipick}="${esc(raw)}" data-ik="${esc(intKey(raw))}" aria-pressed="true">${esc(raw)}</button>`);
+    inp.value = ""; pickerErr(p, null); pickerFilter(p); pickerCount(p); inp.focus();
+  }
+  function pickerClick(e) {
+    const p = pickerOf(e.target); if (!p) return false;
+    const chip = e.target.closest(".av-chip"); if (chip) { pickerToggle(p, chip); return true; }
+    if (e.target.closest("[data-iadd]")) { pickerAdd(p); return true; }
+    const c = e.target.closest("[data-icat]");
+    if (c) { p.querySelectorAll("[data-icat]").forEach(b => b.setAttribute("aria-pressed", String(b === c))); pickerFilter(p); return true; }
+    return true; // clic dentro del selector (buscador, encabezados): nada más que hacer
+  }
+  document.addEventListener("input", (e) => { if (e.target.matches && e.target.matches("[data-iq]")) { pickerFilter(pickerOf(e.target)); pickerErr(pickerOf(e.target), null); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.matches && e.target.matches("[data-iq]")) { e.preventDefault(); pickerAdd(pickerOf(e.target)); } }); // sin enviar el formulario
+
   /* ---- Edición con lápiz ---- */
   function kvEditor(field, label) {
     const pr = A.profile; let input;
     if (field === "ind") input = `<select id="pfe" class="select">${Object.keys(IND).map(x => `<option value="${x}" ${x === A.ind ? "selected" : ""}>${IND[x].label}</option>`).join("")}</select><span class="kv-note">Cambiar la industria rehace tu agenda, misiones y matches.</span>`;
     else if (field === "seniority") input = `<select id="pfe" class="select">${SENIORITY.map(s => `<option ${s === pr.seniority ? "selected" : ""}>${s}</option>`).join("")}</select>`;
-    else if (field === "interests") input = `<div class="pf-chips" id="pfeInts" role="group" aria-label="Intereses">${[...new Set(INTEREST_POOL.concat(pr.interests))].map(x => `<button type="button" class="av-chip" data-eint="${esc(x)}" aria-pressed="${pr.interests.includes(x)}">${esc(x)}</button>`).join("")}</div><span class="kv-note">Elige de 1 a 5.</span>`;
+    else if (field === "interests") input = `${interestPickerHTML("eint", "pfeInts", "pfeErr", pr.interests)}<span class="kv-note">${esc(t("int.note"))}</span>`;
     else input = `<input id="pfe" class="select" maxlength="60" value="${esc(pr[field] || "")}">`;
     return `<div class="kv-wrap"><div class="kv kv-edit"><label class="kv-k" for="pfe">${label}</label><div class="kv-in">${input}</div><div class="kv-act">${act("pfcancel", field, "Cancelar", "btn btn-ghost btn-sm")}${act("pfsave", field, `${svg("check")}Guardar`, "btn btn-primary btn-sm")}</div></div><p class="pf-err" id="pfeErr" role="alert" hidden></p></div>`;
   }
@@ -4456,7 +4697,8 @@ export function bootKnetApp() {
     if (ADMIN_NO_ACTS.includes(a) && isAdminMode()) { toast(`<b>${esc(t("adm.noAttendee"))}</b>`, "shield"); return; }
     if (a === "goto") { goTo(v); return; }
     if (a === "vnopen") { VN.ev = v; if (myEvIds().includes(v)) { A.sel = A.sel || {}; A.sel.main = { ev: v, day: (A.sel.main && A.sel.main.ev === v) ? A.sel.main.day : 0 }; save(); } meView = "venue"; showTab("miseventos"); return; }
-    if (a === "ask") { ask(v); return; }
+    if (a === "ask") { ask(v, b.dataset.l); return; }
+    if (a === "agses") { openAgendaSession(v); return; }
     if (a === "kvinfo") { const box = document.getElementById(v), open = box.hidden; box.hidden = !open; b.setAttribute("aria-expanded", String(open)); return; }
     if (a === "attend") { const s = sessionById(v); if (!s || A.attended.includes(s.id) || isEnded("ev:" + s.ev)) return; award(() => A.attended.push(s.id), CHECKIN_XP, `Check-in · ${s.ttl} (${evById(s.ev).city}, Día ${s.day + 1})`, "qr"); apiRun({ t: "checkin", id: s.id }); return; }
     if (a === "connect") { connectMatch(v); return; }
@@ -4488,7 +4730,7 @@ export function bootKnetApp() {
     if (a === "nfc") { b.classList.remove("tapped"); void b.offsetWidth; b.classList.add("tapped"); setTimeout(() => award(() => {}, 25, "Toque NFC registrado", "nfc"), 120); return; }
     if (a === "flip") { b.classList.toggle("flipped"); return; }
     if (a === "avedit") { openAvatar(); return; }
-    if (a === "pfedit") { editField = v; refresh(); const t2 = $("#pfe") || $("#pfeInts .av-chip"); if (t2) { t2.focus(); if (t2.select) t2.select(); } return; }
+    if (a === "pfedit") { editField = v; refresh(); const t2 = $("#pfe") || $("#pfeInts-q"); if (t2) { t2.focus(); if (t2.select) t2.select(); } return; }
     if (a === "pfcancel") { editField = null; refresh(); const pen = $(`[data-act="pfedit"][data-v="${v}"]`); if (pen) pen.focus(); return; }
     if (a === "pfsave") { saveField(v); return; }
     if (a === "revoke") {
@@ -4568,9 +4810,7 @@ export function bootKnetApp() {
     onAct(b);
   });
   panel.addEventListener("click", (e) => {
-    const c = e.target.closest("[data-eint]");
-    if (c) { const on = c.getAttribute("aria-pressed") === "true", n = $$("#pfeInts [aria-pressed='true']").length, er = $("#pfeErr");
-      if (!on && n >= 5) { er.hidden = false; er.textContent = "Puedes elegir hasta 5 intereses."; return; } c.setAttribute("aria-pressed", String(!on)); er.hidden = true; return; }
+    if (pickerClick(e)) return;
     const b = e.target.closest("[data-act]"); if (b) onAct(b); });
   panel.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("g[data-act]")) { e.preventDefault(); onAct(e.target); } });
   function panelChange(e) {
