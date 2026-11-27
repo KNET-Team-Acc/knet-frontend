@@ -28,7 +28,14 @@ export const SRC_INFO = {
 
 export const G_ROLES = [["cliente", "Clientes / Líderes", "briefcase", "251,191,36"], ["experto", "Expertos", "bulb", "96,165,250"], ["speaker", "Speakers", "mic", "244,114,182"], ["partner", "Partners", "handshake", "163,230,53"]];
 
-export const G_SING = { cliente: "Cliente / Líder", experto: "Experto", speaker: "Speaker", partner: "Partner" };
+/* Ids de rol en la API (users.graph_role, knet-backend#30) ↔ ids del frontend */
+export const G_ROLE_API = { cliente: "client", experto: "expert", speaker: "speaker", partner: "partner" };
+export const G_ROLE_UI = Object.fromEntries(Object.entries(G_ROLE_API).map(([ui, api]) => [api, ui]));
+
+/* Forma de cada rol en el grafo y la leyenda: el rol no depende solo del color */
+export const G_SHAPE = { cliente: "circle", experto: "diamond", speaker: "triangle", partner: "square" };
+
+export const G_SING ={ cliente: "Cliente / Líder", experto: "Experto", speaker: "Speaker", partner: "Partner" };
 
 export const G_SUGGEST = { cliente: ["experto", "partner"], experto: ["cliente", "speaker"], speaker: ["cliente", "experto"], partner: ["cliente", "experto"] };
 

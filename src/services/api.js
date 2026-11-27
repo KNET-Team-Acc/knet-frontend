@@ -219,6 +219,7 @@ export const api = {
   acceptConnection: (id) => request("PATCH", `/api/me/connections/${enc(id)}`, { status: "accepted" }),
   deleteConnection: (id) => request("DELETE", `/api/me/connections/${enc(id)}`),
   // Asistentes inscritos al evento que comparten su red (tarjeta pública + estado de la conexión)
+  network: ({ depth = 2, limit = 60, eventId } = {}) => request("GET", `/api/me/network?depth=${enc(depth)}&limit=${enc(limit)}${eventId ? `&eventId=${enc(eventId)}` : ""}`),
   listAttendees: (eventId, { limit = 50, offset = 0 } = {}) => request("GET", `/api/me/attendees?eventId=${enc(eventId)}&limit=${enc(limit)}&offset=${enc(offset)}`),
   leaderboard: (eventId, { scope = "event", limit = 50 } = {}) => request("GET", `/api/me/leaderboard?eventId=${enc(eventId)}&scope=${enc(scope)}&limit=${enc(limit)}`),
 
