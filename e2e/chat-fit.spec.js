@@ -1,15 +1,16 @@
 import { test, expect } from "@playwright/test";
-import { installMockApi, seedSession, catalogConnection, peerConnection } from "./support/mock-api.js";
+import { installMockApi, seedSession, catalogConnection, peerConnection, peerKey } from "./support/mock-api.js";
 
-/* Issue #39: el avatar de una conexión abre su perfil y el chat 1:1 se ajusta a la pantalla */
-const MATCH = "Laura M.";
+/* Issue #39: el avatar de una conexión abre su perfil y el chat 1:1 se ajusta a la pantalla.
+   El estado se siembra con el formato anterior (por nombre); los data-* llevan la clave estable (knet-frontend#33). */
+const MATCH = "Laura M.", MK = "c:1";
 const contact = () => ({ id: 1, userId: null, name: MATCH, initials: "LA", headline: "CTO · Fintech", industry: "tech", affinity: 88,
   matchReason: "Comparte Datos contigo", interests: ["Datos"], likes: [], goal: "Escalar IA" });
 const waitSync = (api) => expect.poll(() => api.log.filter((r) => r.path === "/api/me/connections").length).toBeGreaterThanOrEqual(1);
 const manyMsgs = () => Array.from({ length: 24 }, (_, i) => ({ who: i % 2 ? "them" : "me", text: `Mensaje número ${i + 1} sobre la agenda del Summit`, at: Date.now() - (24 - i) * 60000 }));
 
 async function setup(page, extra = {}) {
-  const api = await installMockApi(page, { contacts: [contact()], connections: [catalogConnection(3, MATCH, "accepted")] });
+  const api = await installMockApi(page, { contacts: [contact()], connections: [catalogConnection(3, MATCH, "accepted", { contactId: 1 })] });
   await seedSession(page, { extra: { connections: [MATCH], xpSynced: [`conn:${MATCH}`], ...extra } });
   await page.goto("/#red");
   await waitSync(api);
@@ -17,7 +18,7 @@ async function setup(page, extra = {}) {
 
 test("avatar de Mis conexiones: abre el perfil con clic, Enter y Espacio", async ({ page }) => {
   await setup(page);
-  const av = page.locator(`#connsCard [data-avprof="${MATCH}"]`);
+  const av = page.locator(`#connsCard [data-avprof="${MK}"]`);
   await expect(av).toHaveAttribute("aria-label", `Ver el perfil de ${MATCH}`);
   await expect(av).toHaveJSProperty("tagName", "BUTTON");
   await av.click();
@@ -36,7 +37,7 @@ for (const [w, h] of [[360, 640], [768, 1024], [1280, 720]]) {
   test(`chat a ${w}x${h}: cabecera visible, último mensaje a la vista y la página no se mueve`, async ({ page }) => {
     await page.setViewportSize({ width: w, height: h });
     await setup(page, { dms: { [MATCH]: manyMsgs() } });
-    const btn = page.locator(`#connsCard [data-cmsg="${MATCH}"]`);
+    const btn = page.locator(`#connsCard [data-cmsg="${MK}"]`);
     await btn.scrollIntoViewIfNeeded();
     const y0 = await page.evaluate(() => window.scrollY); // posición del fondo al abrir el chat
     await btn.click();
@@ -66,13 +67,13 @@ for (const [w, h] of [[360, 640], [768, 1024], [1280, 720]]) {
 
 /* Conexión por QR (usuario real, sin ficha de catálogo): el avatar y la cabecera del chat abren su ficha básica */
 test("conexión por QR: el avatar y el nombre del chat abren la ficha básica; «Enviar» no se recorta", async ({ page }) => {
-  const PEER = "Diego R.";
+  const PEER = "Diego R.", PK = peerKey(peerConnection(5, PEER));
   const api = await installMockApi(page, { connections: [peerConnection(5, PEER)] });
   await seedSession(page, { extra: { connections: [PEER], xpSynced: [`conn:${PEER}`] } });
   await page.goto("/#red");
   await expect.poll(() => api.log.filter((r) => r.path === "/api/me/connections").length).toBeGreaterThanOrEqual(1);
 
-  await page.locator(`#connsCard [data-avprof="${PEER}"]`).click();
+  await page.locator(`#connsCard [data-avprof="${PK}"]`).click();
   await expect(page.locator("#m-person")).toBeVisible();
   await expect(page.locator("#personName")).toHaveText(PEER);
   await expect(page.locator("#m-person .peer-note")).toBeVisible();
@@ -87,7 +88,7 @@ test("conexión por QR: el avatar y el nombre del chat abren la ficha básica; �
   for (const [w, h] of [[360, 640], [1280, 720]]) {
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: w, height: h });
-    await page.locator(`#connsCard [data-cmsg="${PEER}"]`).click();
+    await page.locator(`#connsCard [data-cmsg="${PK}"]`).click();
     await expect(page.locator("#m-dm")).toBeVisible();
     await page.locator("#m-dm .dm-card").evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
     // «Enviar» y su sombra (3px) caben dentro del área visible de la tarjeta
@@ -120,7 +121,7 @@ test("conexión por QR: la ficha muestra sus intereses y una ficha guardada sin 
 
   await expect.poll(() => page.evaluate((n) => JSON.parse(localStorage.getItem("knet-demo-v1")).qrConn.find((q) => q.name === n)?.interests, PEER))
     .toEqual(["IA generativa", "Datos", "bXSS/b"]);
-  await page.locator(`#connsCard [data-avprof="${PEER}"]`).click();
+  await page.locator(`#connsCard [data-avprof="${peerKey(conn)}"]`).click();
   await expect(page.locator("#m-person")).toBeVisible();
   const chips = page.locator("#m-person .peer-cols .chip");
   await expect(chips).toHaveText(["IA generativa", "Datos", "bXSS/b"]);

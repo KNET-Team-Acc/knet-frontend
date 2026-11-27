@@ -137,7 +137,8 @@ test("2.º grado con «network»: anillo exterior, «Te conecta», aristas cruza
   expect(await page.evaluate(() => window.__knetGraph.select("Celia C."))).toBe(true);
   await page.locator("#graphInfo [data-grconn]").click();
   await expect.poll(() => api.peerRequests.map((b) => b.peerUserId)).toContain(CELIA);
-  await expect.poll(async () => (await engineState(page)).requests["Celia C."]).toMatchObject({ status: "pending", real: true, userId: CELIA });
+  await expect.poll(async () => (await engineState(page)).requests[`u:${CELIA}`]).toMatchObject({ status: "pending", real: true, userId: CELIA });
+  expect((await graph(page)).nodes.find((n) => n.label === "Celia C.").key).toBe(`u:${CELIA}`);
 });
 
 test("sin «network»: con el permiso revocado en el servidor el conmutador se deshabilita; sin el permiso local no hay grafo", async ({ page }) => {

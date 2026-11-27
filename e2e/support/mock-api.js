@@ -234,9 +234,13 @@ export async function installMockApi(page, opts = {}) {
       return json(201, { connection, xpAwarded: 0, xp: state.user.xp });
     }
     if (path === "/api/me/connections" && method === "POST") {
-      if (state.connections.some((c) => c.contact.name === body.name)) return json(409, { error: "conflict", message: `Ya tienes una conexión con ${body.name}` });
+      // Contacto del catálogo por contactId (como knet-backend) o por nombre (clave de respaldo c:<nombre>)
+      const ct = body.contactId ? (opts.contacts || []).find((c) => c.id === body.contactId) : (opts.contacts || []).find((c) => c.name === body.name);
+      if (body.contactId && !ct) return json(404, { error: "not_found", message: `No existe el contacto ${body.contactId}` });
+      const name = ct ? ct.name : body.name;
+      if (state.connections.some((c) => !c.contact.userId && (c.contact.name === name || (ct && c.contact.id === ct.id)))) return json(409, { error: "conflict", message: `Ya tienes una conexión con ${name}` });
       const accepted = body.source === "qr";
-      const connection = catalogConnection(200 + ++state.connSeq, body.name, accepted ? "accepted" : "pending");
+      const connection = catalogConnection(200 + ++state.connSeq, name, accepted ? "accepted" : "pending", ct ? { contactId: ct.id } : {});
       state.connections.push(connection);
       if (accepted) { state.user.xp += 100; state.connXp++; }
       return json(201, { connection, xpAwarded: accepted ? 100 : 0, xp: state.user.xp });
@@ -363,12 +367,16 @@ export function peerConnection(id, name, userId = `99999999-0000-4000-8000-${Str
     contact: { id: null, userId, name, initials: name.slice(0, 2).toUpperCase(), headline, industry: "tech", affinity: null, matchReason: "", interests: [], likes: [], goal: "" } };
 }
 
-/** Conexión con un contacto del catálogo (sin cuenta en KNET), pendiente o aceptada */
-export function catalogConnection(id, name, status = "pending", extra = {}) {
+/** Conexión con un contacto del catálogo (sin cuenta en KNET), pendiente o aceptada. contactId = id del contacto
+ *  (el de GET /api/contacts); sin él, el de la conexión. */
+export function catalogConnection(id, name, status = "pending", { contactId = id, ...extra } = {}) {
   const at = new Date().toISOString();
   return { id, status, source: "request", context: "", eventId: null, createdAt: at, acceptedAt: status === "accepted" ? at : null,
-    contact: { id, userId: null, name, initials: name.slice(0, 2).toUpperCase(), headline: "", industry: "tech", affinity: null, matchReason: "", interests: [], likes: [], goal: "" }, ...extra };
+    contact: { id: contactId, userId: null, name, initials: name.slice(0, 2).toUpperCase(), headline: "", industry: "tech", affinity: null, matchReason: "", interests: [], likes: [], goal: "" }, ...extra };
 }
+
+/** Clave estable con la que el frontend guarda a una persona (knet-frontend#33): u:<userId> o c:<contactId> */
+export const peerKey = (conn) => (conn.contact.userId ? `u:${conn.contact.userId}` : `c:${conn.contact.id}`);
 
 /** EventSource falso: window.__es.emit(tipo, datos) entrega un evento como lo haría /api/me/stream */
 export async function fakeEventSource(page) {
