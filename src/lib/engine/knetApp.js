@@ -1688,7 +1688,7 @@ export function bootKnetApp() {
       <h3 class="inb-h" id="inboundTitle" tabindex="-1">${svg("users")}${esc(t("req.title").replace("{0}", list.length))}</h3>
       <ul class="inb-list">${list.map(n => { const c = connInfo(n), r = inboundOf(n);
         return `<li class="inb-row">
-          ${avProf(n, "conn-av cc-av", `--h:${hashStr(n) % 360}`, esc(c.initials), c.match)}
+          ${avProf(n, "conn-av cc-av", `--h:${hashStr(n) % 360}`, esc(c.initials), true)}
           <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.via === "qr" ? "req.statusQr" : r.from === "api" ? "req.statusApi" : "req.status"))}</div></div>
           <div class="inb-acts"><button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}<span>${esc(t("req.accept"))}</span></button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}" aria-label="${esc(t("req.declineAria").replace("{0}", n))}">${esc(t("req.decline"))}</button>${c.match ? `<button type="button" class="pill-btn" data-cprof="${esc(n)}">${esc(t("req.profile"))}</button>` : ""}</div>
         </li>`; }).join("")}</ul>
@@ -1811,7 +1811,7 @@ export function bootKnetApp() {
     if (isInbound(n)) return `<span class="chip chip-accent" id="personStatus">${svg("handshake")}${esc(t("req.status"))}</span>`;
     return `<span class="chip" id="personStatus">${svg("users")}Aún no conectan</span>`;
   }
-  function personActions(n) {
+  function personActions(n, ask = true) {
     const c = coffeeOf(n);
     const coffeeBtn = !isConn(n) ? "" : c && c.status === "accepted" ? `<span class="chip chip-emerald">${svg("coffee")}Café confirmado · ${esc(c.slot)}</span>`
       : c && c.status === "pending" ? `<span class="chip chip-cyan"><span class="pend-dot"></span>Café propuesto · esperando respuesta</span>`
@@ -1820,7 +1820,24 @@ export function bootKnetApp() {
       : isPending(n) ? `<button type="button" class="btn btn-ghost btn-sm" disabled>${svg("clock")}Esperando aprobación</button><button type="button" class="pill-btn" data-pact="cancel" data-v="${esc(n)}">Cancelar solicitud</button>`
       : isInbound(n) ? `<button type="button" class="btn btn-emerald btn-sm" data-pact="accept" data-v="${esc(n)}">${svg("check")}${esc(t("req.accept"))}</button><button type="button" class="btn btn-ghost btn-sm" data-pact="decline" data-v="${esc(n)}">${esc(t("req.decline"))}</button>`
       : `<button type="button" class="btn btn-primary btn-sm" data-pact="connect" data-v="${esc(n)}">${svg("handshake")}Enviar solicitud de conexión</button>`;
-    return `${main}${coffeeBtn}<button type="button" class="btn btn-ghost btn-sm" data-pact="ask" data-v="${esc(n)}">${svg("bot")}¿Cómo me presento?</button>`;
+    return `${main}${coffeeBtn}${ask ? `<button type="button" class="btn btn-ghost btn-sm" data-pact="ask" data-v="${esc(n)}">${svg("bot")}¿Cómo me presento?</button>` : ""}`;
+  }
+  /* Ficha básica de alguien sin perfil en la API (conectado por QR, el directorio o una solicitud): los datos que hay */
+  const hasPeerCard = (n) => isConn(n) || !!qrPerson(n) || isInbound(n) || isPending(n);
+  function peerHTML(n) {
+    const c = connInfo(n), q = qrPerson(n), ints = (q && Array.isArray(q.interests) ? q.interests : []).filter(Boolean);
+    const origin = q ? [q.lugar === "En persona" ? t("peer.viaQr").replace("{0}", q.lugar) : q.lugar, q.fecha && q.hora ? t("peer.when").replace("{0}", q.fecha).replace("{1}", q.hora) : q.hora || ""].filter(Boolean)
+      : [isInbound(n) ? t("req.status") : c.via];
+    return `<div class="flex items-start justify-between gap-4">
+        <div class="person-id"><span class="conn-av peer-av" style="--h:${hashStr(n) % 360}" aria-hidden="true">${esc(c.initials)}</span><div class="min-w-0"><span class="pcard-k">${esc(t(q && q.lugar === "En persona" ? "peer.kQr" : "peer.kConn"))}</span><h3 id="personName" class="font-display font-bold text-2xl leading-tight">${esc(n)}</h3><div class="text-mute text-[14px]">${esc(c.role)}</div><div style="margin-top:8px">${personStatusChip(n)}</div></div></div>
+        <button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar perfil">${svg("x")}</button>
+      </div>
+      <div class="person-cols peer-cols">
+        <div><div class="mono text-[11px] uppercase tracking-[.12em] text-mute">${esc(t("peer.origin"))}</div><div class="grid gap-1.5 text-[13.5px]" style="margin-top:8px">${origin.map((x, i) => `<div class="peer-o">${i ? svg("clock") : svg(q ? "qr" : "link")}<span>${esc(x)}</span></div>`).join("")}</div></div>
+        <div><div class="mono text-[11px] uppercase tracking-[.12em] text-mute">${esc(t("peer.interests"))}</div>${ints.length ? `<div class="flex flex-wrap gap-2" style="margin-top:8px">${ints.map(x => `<span class="chip">${esc(apiTxt(x, 60))}</span>`).join("")}</div>` : `<p class="text-[13px] text-mute" style="margin-top:8px">${esc(t("peer.noInterests"))}</p>`}</div>
+      </div>
+      <p class="peer-note">${svg("info")}<span>${esc(t("peer.note"))}</span></p>
+      <div class="person-actions">${personActions(n, false)}</div>`;
   }
   function matchActions(n) {
     if (isConn(n)) return `<span class="chip chip-emerald">${svg("check")}Conectado</span>${act("chat", n, `${svg("msg")}Chatear`, "btn btn-primary btn-sm")}`;
@@ -1829,8 +1846,9 @@ export function bootKnetApp() {
     return act("connect", n, `${svg("handshake")}Conectar · +100 XP`, "btn btn-primary btn-sm");
   }
   function openPerson(n) {
-    if (!IND[A.ind].matches.some(m => m[1] === n)) { if (isConn(n)) openChat(n); return; } // sin ficha de la API: solo el chat
-    $("#personBody").innerHTML = personHTML(n); if ($("#m-person").hidden) openModal("person"); }
+    const match = IND[A.ind].matches.some(m => m[1] === n);
+    if (!match && !hasPeerCard(n)) { toast(`<b>${esc(t("peer.none").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("peer.noneSub"))}</div>`, "info"); return; }
+    $("#personBody").innerHTML = match ? personHTML(n) : peerHTML(n); if ($("#m-person").hidden) openModal("person"); }
   $("#m-person").addEventListener("click", (e) => { const b = e.target.closest("[data-pact]"); if (!b) return; const n = b.dataset.v;
     if (b.dataset.pact === "connect") connectMatch(n);
     if (b.dataset.pact === "cancel") cancelRequest(n);
@@ -1915,9 +1933,9 @@ export function bootKnetApp() {
     return ["Interesante. Me gustaría saber más; ¿lo hablamos en persona?", "¡Totalmente de acuerdo! Después del próximo bloque te escribo.", `Eso conecta con lo que hago en ${i0}. Te comparto mis notas al final del día.`][(A.dms[n] || []).length % 3];
   }
   function renderDm() {
-    const n = dmFor, d = IND[A.ind], q = qrPerson(n), m = d.matches.find(x => x[1] === n) || [initialsOf(n), n, q ? q.role + " · conectado por QR" : ""], idx = Math.max(0, d.matches.indexOf(m)), msgs = (A.dms || {})[n] || [], real = isRealPeer(n);
-    // Con ficha (match del catálogo) el avatar y el nombre abren el perfil; un par por QR no tiene ficha
-    const prof = d.matches.some(x => x[1] === n);
+    const n = dmFor, d = IND[A.ind], q = qrPerson(n), m = d.matches.find(x => x[1] === n) || [initialsOf(n), n, q ? q.role + " · conectado por QR" : connInfo(n).role], idx = Math.max(0, d.matches.indexOf(m)), msgs = (A.dms || {})[n] || [], real = isRealPeer(n);
+    // El avatar y el nombre abren el perfil: la ficha del match o la básica (QR, directorio)
+    const prof = d.matches.some(x => x[1] === n) || hasPeerCard(n);
     const who = prof ? `<button type="button" class="dm-who" data-dmprof aria-label="${esc(t("dm.profile").replace("{0}", n))}">${esc(n)}</button>` : esc(n);
     $("#dmBody").innerHTML = `
       <div class="mh dm-head"><div class="person-id"><div class="avatar ${prof ? "dm-av-link" : ""}" ${prof ? `data-dmprof aria-hidden="true" title="${esc(t("dm.profile").replace("{0}", n))}"` : ""} style="width:44px;height:44px;background:${avatarBg(idx)}">${m[0]}</div><div class="min-w-0"><h3 id="dmTitle" class="font-display font-bold text-[18px] leading-tight">${who}</h3><div class="text-[12.5px] text-mute">${esc(m[2])}</div><div class="dm-online"><span></span>En el Summit ahora</div></div></div>
@@ -2382,7 +2400,7 @@ export function bootKnetApp() {
       ${inboundHTML()}${sentHTML()}
       ${list.length ? `<div class="conn-list">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<div class="conn-row ${ask ? "ask" : ""}">
-          ${avProf(n, "conn-av", `--h:${hashStr(n) % 360}`, esc(c.initials), c.match)}
+          ${avProf(n, "conn-av", `--h:${hashStr(n) % 360}`, esc(c.initials), true)}
           <div class="min-w-0"><div class="conn-name">${esc(n)}${c.aff ? ` <span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="text-[12.5px] text-mute">${esc(c.role)}</div><div class="conn-via">${svg(c.via.startsWith("QR") ? "qr" : "link")}${esc(c.via)}</div></div>
           <div class="conn-actions">${ask ? `<span class="conn-q">¿Remover a ${esc(first(n))}?</span><button type="button" class="btn btn-ghost btn-sm" data-cno>Cancelar</button><button type="button" class="btn btn-sm conn-del" data-cyes="${esc(n)}">Sí, remover</button>`
             : `<button type="button" class="btn btn-ghost btn-sm" data-cmsg="${esc(n)}">${svg("msg")}Mensaje</button>${c.match ? `<button type="button" class="btn btn-ghost btn-sm" data-cprof="${esc(n)}">Ver perfil</button>` : ""}<button type="button" class="btn btn-ghost btn-sm conn-rm" data-crm="${esc(n)}" aria-label="Remover a ${esc(n)}">${svg("x")}Remover</button>`}</div>
@@ -2399,7 +2417,7 @@ export function bootKnetApp() {
       ${list.length ? `<ul class="cc-grid">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<li class="cc ${ask ? "ask" : ""}">
           <div class="cc-top">
-            ${avProf(n, "conn-av cc-av", `--h:${hashStr(n) % 360}`, esc(c.initials), c.match)}
+            ${avProf(n, "conn-av cc-av", `--h:${hashStr(n) % 360}`, esc(c.initials), true)}
             <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div></div>
             ${ask ? "" : `<button type="button" class="cc-x" data-crm="${esc(n)}" aria-label="Remover a ${esc(n)}" title="Remover conexión">${svg("x")}</button>`}
           </div>
