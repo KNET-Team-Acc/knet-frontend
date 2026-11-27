@@ -507,16 +507,156 @@ export function bootKnetApp() {
   }
   
   const initialsOf = (n) => (String(n).trim().split(/\s+/).slice(0, 2).map(w => w[0] || "").join("") || "TÚ").toUpperCase();
-  /* Matches = contactos que devuelve la API. Sin afinidad del servidor se estima por intereses en común. */
+  /* ---- Identidad de las personas (knet-frontend#33) ----
+     Conexiones, solicitudes, cafés, chats y XP se guardan por una clave estable, nunca por el nombre (dos personas
+     pueden llamarse igual y cualquiera puede cambiar su nombre):
+       u:<userId>    usuario real de KNET
+       c:<contactId> contacto del catálogo
+       c:<nombre>    respaldo local (estado anterior o persona sin id); resolveLegacy() lo pasa a u:/c:<id> en
+                     cuanto el servidor o el catálogo la reconocen.
+     A.people[clave] = ficha visible { name, initials, headline, userId, contactId, interests }: el nombre solo se muestra (nm). */
+  function personKey(p) {
+    if (!p) return null;
+    if (typeof p === "string") return /^[uc]:/.test(p) ? p : "c:" + p.trim();
+    if (p.userId) return "u:" + p.userId;
+    const cid = p.contactId !== undefined ? p.contactId : p.id;
+    if (cid !== undefined && cid !== null && cid !== "") return "c:" + cid;
+    return p.name ? "c:" + String(p.name).trim() : null;
+  }
+  /* c:<nombre>: clave de respaldo (los ids del catálogo son numéricos) */
+  function isLegacyKey(k) { return typeof k === "string" && k.startsWith("c:") && !/^c:\d+$/.test(k); }
+  /* Guarda o completa la ficha de `k` con lo que se sepa (lo vacío no borra lo que ya había) */
+  function rememberPerson(k, d) {
+    if (!k || !d) return null;
+    const P = (A.people ||= {}), cur = P[k] || {}, next = { ...cur };
+    const name = apiTxt(d.name, 120);
+    if (name) { if (name !== cur.name && !d.initials) delete next.initials; next.name = name; } // cambió de nombre: iniciales nuevas
+    const hl = apiTxt(d.headline, 160); if (hl) next.headline = hl;
+    const ini = apiTxt(d.initials, 4); if (ini) next.initials = ini;
+    if (d.userId) next.userId = d.userId;
+    const cid = d.contactId !== undefined && d.contactId !== null ? d.contactId : /^c:\d+$/.test(k) ? +k.slice(2) : null;
+    if (cid !== null) next.contactId = cid;
+    if (Array.isArray(d.interests)) next.interests = d.interests.map(x => apiTxt(x, 60)).filter(Boolean).slice(0, 12);
+    P[k] = next; return next;
+  }
+  /* Nombre visible de la persona `k` */
+  function nm(k) {
+    if (!k) return "";
+    const p = A.people && A.people[k]; if (p && p.name) return p.name;
+    for (const ind of Object.keys(IND)) { const m = (IND[ind].matches || []).find(x => x[5] === k); if (m) return m[1]; }
+    const q = (A.qrConn || []).find(x => x.key === k); if (q && q.name) return q.name;
+    return isLegacyKey(k) ? k.slice(2) : /^[uc]:/.test(k) ? "Asistente de KNET" : String(k);
+  }
+  /* Valor de un botón pintado antes de knet-frontend#33 (p. ej. en el historial del Concierge): nombre → clave */
+  function keyOf(v) {
+    if (typeof v !== "string" || !v || /^[uc]:/.test(v)) return v;
+    const m = (IND[A.ind].matches || []).find(x => x[1] === v); if (m) return m[5];
+    const hit = Object.entries(A.people || {}).filter(([, p]) => p && p.name === v);
+    return hit.length === 1 ? hit[0][0] : "c:" + v;
+  }
+  /* Clave actual de una operación de la cola (si su persona se re-identificó mientras esperaba) */
+  const rekeyed = new Map();
+  function liveKey(k) { let x = k, i = 0; while (rekeyed.has(x) && i++ < 8) x = rekeyed.get(x); return x; }
+  /* Cambia la clave de la persona en una operación de la cola (en su sitio: flushOutbox la reconoce por identidad) */
+  function remapOp(op, K) {
+    if (!op) return op;
+    if (op.t === "conn" && op.state !== "scan") op.id = K(op.id);
+    else if (op.t === "coffee") { const s = String(op.id), i = s.lastIndexOf("|"); op.id = i > 0 && op.sid !== undefined ? K(s.slice(0, i)) + s.slice(i) : K(s); }
+    else if (op.t === "dm" && op.n) { op.n = K(op.n); op.id = op.n + "|" + op.at; }
+    return op;
+  }
+  /* Mueve todo lo local de la persona `from` a la clave `to` (conexión, solicitudes, café, chat, XP y cola) */
+  function rekeyPerson(from, to) {
+    if (!from || !to || from === to) return false;
+    const mv = (o) => { if (!o || !Object.prototype.hasOwnProperty.call(o, from)) return; if (!Object.prototype.hasOwnProperty.call(o, to)) o[to] = o[from]; delete o[from]; };
+    const swap = (arr) => [...new Set((arr || []).map(x => x === from ? to : x))];
+    A.connections = swap(A.connections);
+    mv(A.requests); mv(A.inbound); mv(A.coffees);
+    if (A.dms && A.dms[from]) { A.dms[to] = (A.dms[to] || []).concat(A.dms[from]).sort((a, b) => a.at - b.at); delete A.dms[from]; }
+    if (A.inboundGone) A.inboundGone = swap(A.inboundGone);
+    const seenQ = new Set(); A.qrConn = (A.qrConn || []).filter(q => { if (q.key === from) q.key = to; if (seenQ.has(q.key)) return false; seenQ.add(q.key); return true; });
+    A.xpSynced = [...new Set((A.xpSynced || []).map(k => k === "conn:" + from ? "conn:" + to : k))];
+    (A.outbox || []).forEach(op => remapOp(op, x => x === from ? to : x));
+    Object.values(A.groupM || {}).forEach(g => { if (g && g.with === from) g.with = to; });
+    (A.myEvents || []).forEach(ev => { mv(ev.invites); mv(ev.dueInv); });
+    if (A.actions) ["f-", "cafe-"].forEach(p => { if (Object.prototype.hasOwnProperty.call(A.actions, p + from)) { if (!(p + to in A.actions)) A.actions[p + to] = A.actions[p + from]; delete A.actions[p + from]; } });
+    if (A.people && A.people[from]) { A.people[to] = { ...A.people[from], ...(A.people[to] || {}) }; delete A.people[from]; }
+    if (connIndex && connIndex.has(from)) { if (!connIndex.has(to)) connIndex.set(to, connIndex.get(from)); connIndex.delete(from); }
+    try { if (dmFor === from) dmFor = to; if (connAsk === from) connAsk = to; if (graphSel === from) graphSel = to; } catch (e) { /* aún arrancando */ }
+    rekeyed.set(from, to);
+    return true;
+  }
+  /* Personas guardadas con la clave de respaldo c:<nombre> que el servidor (conexiones) o el catálogo (matches) ya
+     reconocen: pasan a su clave real. Con dos personas del mismo nombre no se adivina: se queda como estaba. */
+  function resolveLegacy(conns) {
+    const local = new Set([...(A.connections || []), ...Object.keys(A.requests || {}), ...Object.keys(A.inbound || {}), ...Object.keys(A.coffees || {}),
+      ...Object.keys(A.dms || {}), ...(A.inboundGone || []), ...(A.qrConn || []).map(q => q.key), ...(A.outbox || []).filter(o => o.t === "conn" && o.state !== "scan").map(o => o.id)].filter(isLegacyKey));
+    if (!local.size) return false;
+    const byName = new Map(), add = (name, key) => { if (!name || !key || isLegacyKey(key)) return; const s = byName.get(name) || new Set(); s.add(key); byName.set(name, s); };
+    (conns || []).forEach(c => { if (c && c.contact) add(c.contact.name, personKey(c.contact)); });
+    (IND[A.ind].matches || []).forEach(m => add(m[1], m[5]));
+    let changed = false;
+    local.forEach(k => { const s = byName.get(k.slice(2)); if (!s || s.size !== 1) return; const to = [...s][0];
+      const c = (conns || []).find(x => x && x.contact && personKey(x.contact) === to);
+      if (c) rememberPerson(to, { ...c.contact, contactId: c.contact.userId ? null : c.contact.id });
+      changed = rekeyPerson(k, to) || changed; });
+    return changed;
+  }
+  /* Estado guardado por nombre (antes de knet-frontend#33) → claves u:/c:. Resuelve con lo que ya sabe este navegador
+     (A.qrConn, solicitudes de usuarios reales y la última lista de contactos del catálogo); lo demás queda en
+     c:<nombre> y se resuelve en el próximo sync (resolveLegacy, con las conexiones del servidor). La XP ya
+     reconciliada conserva su marca (conn:<nombre> → conn:<clave>), así que no se resta dos veces. */
+  function migrateIdentity() {
+    if (A.idv >= 1) return;
+    const names = new Map(), put = (name, key) => { if (typeof name === "string" && name && key && !names.has(name)) names.set(name, key); };
+    (A.qrConn || []).forEach(q => { if (q && q.userId) put(q.name, "u:" + q.userId); });
+    Object.entries(A.requests || {}).forEach(([n, r]) => { if (r && r.userId) put(n, "u:" + r.userId); });
+    Object.entries(A.inbound || {}).forEach(([n, r]) => { if (r && r.userId) put(n, "u:" + r.userId); });
+    Object.values(A.cat || {}).forEach(list => (Array.isArray(list) ? list : []).forEach(c => { if (c && c.name && !c.userId && c.id !== undefined && c.id !== null) put(c.name, "c:" + c.id); }));
+    const K = (n) => typeof n !== "string" || !n ? n : /^[uc]:/.test(n) ? n : names.get(n) || "c:" + n.trim();
+    const remap = (o, merge) => { const out = {}; Object.entries(o || {}).forEach(([n, v]) => { const k = K(n); out[k] = k in out && merge ? merge(out[k], v) : k in out ? out[k] : v; }); return out; };
+    // Fichas: el nombre de antes queda como dato visible
+    (A.connections || []).forEach(n => rememberPerson(K(n), { name: n }));
+    Object.entries(A.requests || {}).forEach(([n, r]) => rememberPerson(K(n), { name: n, headline: r && r.headline, userId: r && r.userId }));
+    Object.entries(A.inbound || {}).forEach(([n, r]) => rememberPerson(K(n), { name: n, headline: r && r.headline, userId: r && r.userId, interests: r && r.interests }));
+    [A.coffees, A.dms].forEach(o => Object.keys(o || {}).forEach(n => rememberPerson(K(n), { name: n })));
+    (A.qrConn || []).forEach(q => { if (!q) return; q.key = q.key || K(q.name); rememberPerson(q.key, { name: q.name, headline: q.role, userId: q.userId, interests: q.interests }); });
+    A.connections = [...new Set((A.connections || []).map(K))];
+    A.requests = remap(A.requests); A.inbound = remap(A.inbound); A.coffees = remap(A.coffees);
+    A.dms = remap(A.dms, (a, b) => a.concat(b).sort((x, y) => x.at - y.at));
+    if (A.inboundGone) A.inboundGone = [...new Set(A.inboundGone.map(K))];
+    A.xpSynced = [...new Set((A.xpSynced || []).map(k => typeof k === "string" && k.startsWith("conn:") ? "conn:" + K(k.slice(5)) : k))];
+    (A.outbox || []).forEach(op => remapOp(op, K));
+    Object.values(A.groupM || {}).forEach(g => { if (g && g.with) g.with = K(g.with); });
+    (A.myEvents || []).forEach(ev => { if (ev.invites) ev.invites = remap(ev.invites); if (ev.dueInv) ev.dueInv = remap(ev.dueInv); });
+    if (A.actions) A.actions = Object.fromEntries(Object.entries(A.actions).map(([id, v]) => { const m = /^(f-|cafe-)([\s\S]+)$/.exec(id); return [m ? m[1] + K(m[2]) : id, v]; }));
+    A.idv = 1;
+    try { localStorage.setItem(KEY, JSON.stringify(A)); } catch (e) {}
+  }
+  /* Matches = contactos que devuelve la API. Sin afinidad del servidor se estima por intereses en común.
+     Fila: [iniciales, nombre, cargo, afinidad, por qué, clave] (m[5] = c:<contactId>) */
   function adoptContact(c, ind = A.ind) {
     if (!c || !c.name || c.userId || !IND[ind]) return; // los usuarios reales van por qrConn (adoptRealPeer)
     const mine = (PERSONAS[ind] || {}).interests || [], ints = Array.isArray(c.interests) ? c.interests : [];
     const aff = Number.isFinite(c.affinity) ? c.affinity : Math.min(95, 50 + ints.filter(t => mine.includes(t)).length * 15);
-    const row = [c.initials || initialsOf(c.name), c.name, c.headline || "", aff, c.matchReason || "Comparte temas con tu perfil"];
-    const list = IND[ind].matches, i = list.findIndex(m => m[1] === c.name);
+    const key = personKey({ contactId: c.id, name: c.name });
+    const row = [c.initials || initialsOf(c.name), c.name, c.headline || "", aff, c.matchReason || "Comparte temas con tu perfil", key];
+    const list = IND[ind].matches, i = list.findIndex(m => m[5] === key);
     if (i >= 0) list[i] = row; else list.push(row);
-    MATCH_INFO[c.name] = { int: ints, likes: Array.isArray(c.likes) ? c.likes : [], goal: c.goal || "" };
+    MATCH_INFO[key] = { int: ints, likes: Array.isArray(c.likes) ? c.likes : [], goal: c.goal || "" };
+    rememberPerson(key, { name: c.name, headline: c.headline, initials: c.initials, contactId: c.id, interests: ints });
   }
+  /* Quita las fichas de personas que ya no aparecen en ningún sitio (son datos de otras personas: lo justo) */
+  function prunePeople() {
+    if (!A.people) return;
+    const keep = new Set([...(A.connections || []), ...Object.keys(A.requests || {}), ...Object.keys(A.inbound || {}), ...Object.keys(A.coffees || {}), ...Object.keys(A.dms || {}),
+      ...(A.inboundGone || []), ...(A.qrConn || []).map(q => q.key), ...Object.values(A.groupM || {}).map(g => g && g.with), ...(A.myEvents || []).flatMap(ev => Object.keys(ev.invites || {})),
+      ...(A.outbox || []).map(o => o.t === "dm" ? o.n : String(o.id).replace(/\|\d+$/, ""))]);
+    Object.values(IND).forEach(d => (d.matches || []).forEach(m => keep.add(m[5])));
+    Object.keys(A.people).forEach(k => { if (!keep.has(k)) delete A.people[k]; });
+  }
+  /* Fila del match `k` en la industria activa (o undefined) */
+  const matchOf = (k) => IND[A.ind].matches.find(m => m[5] === k);
   function setContacts(ind, contacts, persist = true) {
     if (!IND[ind] || !Array.isArray(contacts)) return;
     IND[ind].matches = []; contacts.forEach(c => adoptContact(c, ind));
@@ -532,6 +672,7 @@ export function bootKnetApp() {
   const profileMode = () => { const v = Object.values((A.profile && A.profile.src) || {}); return v.length && v.every(x => x === "manual") ? "manual" : v.some(x => x !== "mcp") ? "mixed" : "mcp"; };
   if (A.connected && !A.profile) A.profile = profileFromPersona(A.ind);
   Object.entries(A.cat || {}).forEach(([ind, list]) => setContacts(ind, list, false)); // última lista de contactos del servidor
+  migrateIdentity(); // estado guardado por nombre → claves u:/c: (knet-frontend#33)
   applyProfile();
   let editField = null;
   /* A.loggedOut = cierre de sesión explícito (no «nunca entré» ni sesión caducada); se limpia al volver a entrar */
@@ -551,7 +692,7 @@ export function bootKnetApp() {
      - XP híbrida: A.xp = XP del servidor + A.xpLocal (XP de flujos que la API aún no conoce:
        grafo, cafés, experiencias, onboarding…). Cuando la API confirma una misión, un check-in o
        una conexión aceptada, su XP pasa de A.xpLocal al servidor; el total visible no cambia.
-     - A.xpSynced: claves ("mission:c3", "checkin:and:0:2", "conn:<nombre>") cuya XP ya cuenta el
+     - A.xpSynced: claves ("mission:c3", "checkin:and:0:2", "conn:<clave de la persona>") cuya XP ya cuenta el
        servidor (evita restarla dos veces).
      - A.outbox: acciones hechas sin conexión; se reenvían en orden al volver la API.
      - A.apiLinked: false = el navegador manda en el próximo sync (sube perfil, inscripciones,
@@ -564,7 +705,7 @@ export function bootKnetApp() {
   if (!Array.isArray(A.xpSynced)) A.xpSynced = (A.doneSynced || []).map(c => "mission:" + c); // migra el formato anterior
   delete A.doneSynced;
   let apiSyncing = null, apiSyncAgain = false;
-  let connIndex = null; // nombre del contacto → { id, status, userId } en el servidor (solo en memoria; userId = otro usuario real)
+  let connIndex = null; // clave de la persona (u:/c:) → { id, status, userId } en el servidor (solo en memoria; userId = otro usuario real)
   const apiLog = (msg, e) => { try { console.info(`[KNET API] ${msg}`, (e && e.message) || ""); } catch (err) {} };
   const outbox = () => (A.outbox ||= []);
   const uniq = (arr) => [...new Set(arr)];
@@ -592,7 +733,7 @@ export function bootKnetApp() {
   function switchIndustry(ni) {
     const keep = { profile: { ...A.profile, src: { ...A.profile.src } }, avatar: A.avatar, scopes: A.scopes, xp: A.xp, xpLocal: A.xpLocal, events: A.events,
       attended: A.attended, outbox: A.outbox, apiLinked: A.apiLinked, xpSynced: A.xpSynced, regLocal: A.regLocal, accountId: A.accountId, accountEmail: A.accountEmail,
-      graphRole: A.graphRole, graphSee: A.graphSee, graphSecond: A.graphSecond };
+      graphRole: A.graphRole, graphSee: A.graphSee, graphSecond: A.graphSecond, idv: A.idv };
     A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true; editField = null;
   }
   function applyServerUser(u) {
@@ -724,25 +865,29 @@ export function bootKnetApp() {
       throw e;
     }
   }
-  const indexConnections = (list) => new Map((list || []).map(c => [c.contact.name, { id: c.id, status: c.status, userId: c.contact.userId || null }]));
+  const indexConnections = (list) => new Map((list || []).filter(c => c && c.contact).map(c => [personKey(c.contact), { id: c.id, status: c.status, userId: c.contact.userId || null }]));
+  /* Ficha de la persona de una conexión del servidor (nombre, cargo e intereses al día: un cambio de nombre se ve aquí) */
+  const rememberContact = (ct) => ct && rememberPerson(personKey(ct), { name: ct.name, headline: ct.headline, initials: ct.initials, userId: ct.userId, contactId: ct.userId ? null : ct.id, ...(ct.userId ? { interests: peerInts(ct) } : {}) });
   async function loadConnIndex() {
     const r = await api.listConnections();
     connIndex = indexConnections(r.connections);
+    resolveLegacy(r.connections);
     return connIndex;
   }
-  /* Nombre local de la conexión `id` del servidor (null si este navegador no la conoce) */
-  const connNameById = (id) => { for (const [n, c] of connIndex || []) if (c.id === id) return n; return null; };
+  /* Clave local de la conexión `id` del servidor (null si este navegador no la conoce) */
+  const connKeyById = (id) => { for (const [k, c] of connIndex || []) if (c.id === id) return k; return null; };
   /* Conexión aceptada de `n` en el servidor (recarga el índice si no la conoce); null si no existe o no está aceptada */
   async function acceptedConn(n) {
-    let cn = (connIndex || await loadConnIndex()).get(n);
-    if (!cn) cn = (await loadConnIndex()).get(n);
+    let cn = (connIndex || await loadConnIndex()).get(liveKey(n));
+    if (!cn) cn = (await loadConnIndex()).get(liveKey(n));
     return cn && cn.status === "accepted" ? cn : null;
   }
-  /* Lleva la conexión con `op.id` (nombre) al estado `op.state`: pending | accepted | removed.
+  /* Lleva la conexión con `op.id` (clave de la persona) al estado `op.state`: pending | accepted | removed.
      state "scan": QR de otro asistente escaneado sin conexión; se envía solo si el token sigue vigente. */
   async function sendConnection(op, retried = false) {
     if (op.state === "scan") return sendQueuedScan(op);
     const idx = connIndex || await loadConnIndex();
+    op.id = liveKey(op.id);
     let cur = idx.get(op.id);
     if (op.state === "removed") {
       if (cur) { try { await api.deleteConnection(cur.id); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) throw e; } idx.delete(op.id); }
@@ -751,11 +896,14 @@ export function bootKnetApp() {
     if (op.real && !cur) { revertRealAccept(op.id); return "resync"; } // aceptar una solicitud real que ya no existe
     let serverXp = null;
     if (!cur) {
-      // Usuario real (directorio del evento): solicitud por peerUserId; contacto del catálogo: por nombre
-      const target = op.peerUserId ? { peerUserId: op.peerUserId, source: "request" } : { name: op.id, source: op.source || "request" };
+      // Usuario real (directorio del evento): solicitud por peerUserId; contacto del catálogo: por su id (o, con la
+      // clave de respaldo c:<nombre>, por nombre)
+      const target = op.peerUserId ? { peerUserId: op.peerUserId, source: "request" } : /^c:\d+$/.test(op.id) ? { contactId: +op.id.slice(2), source: op.source || "request" } : { name: nm(op.id), source: op.source || "request" };
       try {
         const r = await api.createConnection({ ...target, context: op.context || undefined, eventId: op.eventId || undefined });
-        cur = { id: r.connection.id, status: r.connection.status, userId: r.connection.contact.userId || null }; idx.set(op.id, cur); serverXp = r.xp;
+        const ct = r.connection.contact, sk = personKey(ct);
+        if (sk && sk !== op.id && isLegacyKey(op.id)) { rememberContact(ct); rekeyPerson(op.id, sk); op.id = sk; } // el servidor ya sabe quién es
+        cur = { id: r.connection.id, status: r.connection.status, userId: ct.userId || null }; idx.set(op.id, cur); serverXp = r.xp;
         if (op.peerUserId && cur.status === "accepted") return "resync"; // la otra persona ya te lo había pedido: quedan conectados
       } catch (e) {
         if (e instanceof ApiError && e.status === 409 && !retried) { await loadConnIndex(); return op.peerUserId ? "resync" : sendConnection(op, true); }
@@ -792,7 +940,7 @@ export function bootKnetApp() {
     }
     return "ok";
   }
-  /* ---- Cafés 1:1: A.coffees[nombre] = { status: pending | accepted, slot (texto), sid (id en el servidor),
+  /* ---- Cafés 1:1: A.coffees[clave] = { status: pending | accepted, slot (texto), sid (id en el servidor),
      role: proposer | invitee, real (el otro es un usuario real), xpLocal (sus +50 XP se sumaron en local) } ---- */
   const COFFEE_STATUS = { proposed: "pending", accepted: "accepted", done: "accepted" };
   const keepLocal = (e) => e instanceof ApiError && [403, 404].includes(e.status);
@@ -815,6 +963,7 @@ export function bootKnetApp() {
       if (op.sid) { try { await api.updateCoffee(op.sid, op.state); } catch (e) { if (!(e instanceof ApiError && [403, 404, 409].includes(e.status))) throw e; } }
       return "ok";
     }
+    op.id = liveKey(op.id);
     const c = coffeeOf(op.id); if (!c) return "ok"; // se quitó en local antes de enviarse
     if (!c.sid) {
       const cn = await acceptedConn(op.id);
@@ -840,8 +989,9 @@ export function bootKnetApp() {
     }
     return "ok";
   }
-  /* ---- Mensajes directos: A.dms[nombre] = [{ who: me | them, text, at, sid }] (sid = id en el servidor) ---- */
+  /* ---- Mensajes directos: A.dms[clave] = [{ who: me | them, text, at, sid }] (sid = id en el servidor) ---- */
   async function sendDmOp(op) {
+    op.n = liveKey(op.n);
     const msg = ((A.dms || {})[op.n] || []).find(x => x.who === "me" && x.at === op.at);
     if (!msg || msg.sid) return "ok";
     const cn = await acceptedConn(op.n);
@@ -868,12 +1018,12 @@ export function bootKnetApp() {
   function mergeCoffees(list) {
     A.coffees ||= {};
     (list || []).forEach(s => {
-      const n = connNameById(s.connectionId) || (s.with && s.with.name); if (!n || !isConn(n)) return;
-      const c = A.coffees[n], status = COFFEE_STATUS[s.status], mine = c && (c.sid === s.id || !c.sid);
+      const n = connKeyById(s.connectionId) || (s.with && s.with.userId ? "u:" + s.with.userId : null); if (!n || !isConn(n)) return;
+      const who = nm(n), c = A.coffees[n], status = COFFEE_STATUS[s.status], mine = c && (c.sid === s.id || !c.sid);
       if (!status) { // rechazado o cancelado
         if (c && c.sid === s.id) {
           delete A.coffees[n];
-          if (c.role !== "invitee" && s.status === "declined") notify("conn", `${n} no puede tomar el café`, "Puedes proponer otro horario");
+          if (c.role !== "invitee" && s.status === "declined") notify("conn", `${who} no puede tomar el café`, "Puedes proponer otro horario");
         }
         return;
       }
@@ -884,10 +1034,10 @@ export function bootKnetApp() {
       if (next.real) delete next.due;
       if (status === "accepted") {
         coffeeXpSynced(next, null);
-        if (was === "pending" && next.role === "proposer" && next.real) { notify("conn", `${n} aceptó el café`, `${label} · lo añadimos a tu plan`); toast(`<b>${esc(n)} aceptó el café</b><div class="text-[13px] text-mute">${esc(label)}</div>`, "coffee"); }
+        if (was === "pending" && next.role === "proposer" && next.real) { notify("conn", `${who} aceptó el café`, `${label} · lo añadimos a tu plan`); toast(`<b>${esc(who)} aceptó el café</b><div class="text-[13px] text-mute">${esc(label)}</div>`, "coffee"); }
       } else if (!was && next.role === "invitee") {
-        notify("conn", `${n} te invitó a un café`, label);
-        toast(`<b>${esc(n)} te invitó a un café</b><div class="text-[13px] text-mute">${esc(label)} · respóndele desde el chat</div>`, "coffee");
+        notify("conn", `${who} te invitó a un café`, label);
+        toast(`<b>${esc(who)} te invitó a un café</b><div class="text-[13px] text-mute">${esc(label)} · respóndele desde el chat</div>`, "coffee");
       }
     });
   }
@@ -950,11 +1100,15 @@ export function bootKnetApp() {
           connIndex = indexConnections(cn.connections);
           if (ct) setContacts(A.ind, ct.contacts);
           (cn.connections || []).forEach(c => { if (c.contact && !c.contact.userId) adoptContact(c.contact); });
+          resolveLegacy(cn.connections); // estado guardado por nombre → clave real (u:/c:<id>)
+          // Fichas al día (nombre, cargo) de quienes ya están en tu red o en tus solicitudes: un cambio de nombre no rompe nada
+          (cn.connections || []).forEach(c => { const k = c.contact && personKey(c.contact); if (k && (isConn(k) || reqOf(k) || inboundOf(k) || qrPerson(k))) rememberContact(c.contact); });
           (cn.connections || []).filter(isIncoming).forEach(adoptIncoming); // solicitudes que te enviaron
           syncRealRequests(cn.connections || []); // las que enviaste a usuarios reales y las que ya no existen
-          (cn.connections || []).filter(c => c.status === "accepted").forEach(c => {
-            const n = c.contact.name, local = A.connections.includes(n), real = !!c.contact.userId;
-            if (!local && !real && !IND[A.ind].matches.some(m => m[1] === n) && !qrPerson(n)) return;
+          (cn.connections || []).filter(c => c.status === "accepted" && c.contact).forEach(c => {
+            const n = personKey(c.contact), local = A.connections.includes(n), real = !!c.contact.userId;
+            if (!local && !real && !matchOf(n) && !qrPerson(n)) return;
+            rememberContact(c.contact);
             const asked = real && reqOf(n) && reqOf(n).real; // tu solicitud a un usuario real: la aceptó
             if (real) adoptRealPeer(c, !local && Date.now() - (Date.parse(c.acceptedAt || c.createdAt) || 0) < 9e5, asked); // solo avisa de las recientes
             if (asked) delete A.requests[n];
@@ -965,6 +1119,7 @@ export function bootKnetApp() {
           const threads = [...connIndex].filter(([n, c]) => c.userId && c.status === "accepted" && A.connections.includes(n));
           const pages = await Promise.all(threads.map(([, c]) => optional(api.listMessages(c.id, { limit: 30 }), "mensajes")));
           threads.forEach(([n], i) => { if (pages[i]) mergeMessages(n, pages[i].messages); });
+          prunePeople();
           // Dossier: recupera la fecha si este navegador la perdió
           const lastDossier = (ds.dossiers || []).map(d => d.generatedAt).sort().pop();
           if (!A.dossierAt && lastDossier) A.dossierAt = lastDossier;
@@ -1068,15 +1223,15 @@ export function bootKnetApp() {
     A.extra.forEach(x => { if (!seen.has(x)) { seen.add(x); out.push({ text: x, src: "AI Concierge" }); } });
     return out; };
   const actions = () => ACTIONS[A.ind].map((x, i) => ({ id: A.ind + "-a" + i, text: x }))
-    .concat(A.connections.map(n => ({ id: "f-" + n, text: `Agendar seguimiento con ${n} (semana 1)` })))
-    .concat(Object.entries(A.coffees || {}).filter(([, c]) => c.status === "accepted").map(([n, c]) => ({ id: "cafe-" + n, text: `Café de 15 min con ${n} · ${c.slot}` })))
+    .concat(A.connections.map(n => ({ id: "f-" + n, text: `Agendar seguimiento con ${nm(n)} (semana 1)` })))
+    .concat(Object.entries(A.coffees || {}).filter(([, c]) => c.status === "accepted").map(([n, c]) => ({ id: "cafe-" + n, text: `Café de 15 min con ${nm(n)} · ${c.slot}` })))
     .concat(A.events.map(id => { const ev = EVENTS.find(e => e.id === id); return { id: "ev-" + id, text: `Asistir a ${ev.name}, ${ev.city} (${ev.date})` }; }));
   const badges = () => {
     const b = board().rows.filter(r => !r.me), third = b[2]; // siempre el ranking del evento, no el de conexiones
     const left = Math.max(0, 2 - A.attended.length);
     return [
       { i: "compass", n: "Explorador", ok: A.connected, got: "Conectaste tu perfil vía MCP.", need: "Conecta tu perfil con LinkedIn MCP." },
-      { i: "users", n: "Primer match", ok: A.connections.length >= 1, got: `Conectaste con ${A.connections[0] || "tu primer match"}.`, need: "Conecta con 1 match en el AI Concierge." },
+      { i: "users", n: "Primer match", ok: A.connections.length >= 1, got: `Conectaste con ${A.connections[0] ? nm(A.connections[0]) : "tu primer match"}.`, need: "Conecta con 1 match en el AI Concierge." },
       { i: "check", n: "Asistente fiel", ok: A.attended.length >= 2, got: "Hiciste check-in en 2 charlas.", need: `Haz check-in en ${left} charla${left === 1 ? "" : "s"} más de tu agenda.` },
       { i: "star", n: "Mente activa", ok: A.xp >= 500 || A.done.length >= 3, got: A.xp >= 500 ? "Superaste los 500 XP." : "Completaste 3 misiones.", need: `Te faltan ${fmt(Math.max(0, 500 - A.xp))} XP o completar ${Math.max(0, 3 - A.done.length)} ${3 - A.done.length === 1 ? "misión" : "misiones"}.` },
       { i: "trophy", n: "Top 3", ok: !!third && rank() <= 3, got: "Estás en el top 3 del Summit.", need: third ? `Faltan ${fmt(Math.max(1, third.x - A.xp + 1))} XP para superar a ${third.n}.` : "Se activa cuando haya al menos 3 asistentes reales con XP en tu evento." },
@@ -1280,30 +1435,31 @@ export function bootKnetApp() {
   function graphData() {
     const d = IND[A.ind], p = PERSONAS[A.ind];
     const seed = [...A.ind].reduce((a, c) => a + c.charCodeAt(0), 0) * 97 + 11, rnd = seeded(seed), rnd2 = seeded(seed + 7919);
-    const nodes = [{ label: p.name ? first(p.name) + " (tú)" : "Tú", sub: [d.role, p.company].filter(Boolean).join(" · "), type: "me", role: myRole(), deg: 0, via: [], idx: 0 }];
-    const byName = new Map();
-    const add = (n) => { if (byName.has(n.label)) return byName.get(n.label); if (nodes.length >= GRAPH_MAX) return null; n.idx = nodes.length; nodes.push(n); byName.set(n.label, n); return n; };
+    const nodes = [{ key: "me", label: p.name ? first(p.name) + " (tú)" : "Tú", sub: [d.role, p.company].filter(Boolean).join(" · "), type: "me", role: myRole(), deg: 0, via: [], idx: 0 }];
+    const byKey = new Map(); // un nodo por persona (clave u:/c:), aunque dos se llamen igual
+    const add = (n) => { if (byKey.has(n.key)) return byKey.get(n.key); if (nodes.length >= GRAPH_MAX) return null; n.idx = nodes.length; nodes.push(n); byKey.set(n.key, n); return n; };
     const apiMode = graphApiMode(), live = netLive() && net.data, pool = new Map(SUMMIT_POOL), ids = new Map(); // id de la API → nodo
+    const liveKeyOf = (n) => n.user ? "u:" + n.id : /^[uc]:/.test(n.id) ? n.id : "c:" + n.id; // la API usa c:<id> para el catálogo
     // 1.er grado: matches del catálogo (conectados o sugeridos), conexiones por QR, el resto de tus conexiones y, con cuenta, las de la API
-    d.matches.forEach(m => add({ label: m[1], sub: m[2], type: A.connections.includes(m[1]) ? "conn" : "match", role: roleOf(m[1], m[2]), deg: 1, via: [] }));
-    (A.qrConn || []).filter(q => A.connections.includes(q.name)).forEach(q => add({ label: q.name, sub: q.role || "Conectado por QR", type: "conn", role: roleOf(q.name, q.role || ""), deg: 1, via: [], uid: q.userId || null }));
+    d.matches.forEach(m => add({ key: m[5], label: m[1], sub: m[2], type: A.connections.includes(m[5]) ? "conn" : "match", role: roleOf(m[1], m[2]), deg: 1, via: [] }));
+    (A.qrConn || []).filter(q => A.connections.includes(q.key)).forEach(q => add({ key: q.key, label: nm(q.key), sub: q.role || "Conectado por QR", type: "conn", role: roleOf(nm(q.key), q.role || ""), deg: 1, via: [], uid: q.userId || null }));
     if (live) live.nodes.filter(n => n.deg === 1).forEach(n => {
-      const x = add({ label: n.name, sub: n.sub, type: "conn", role: n.role || roleOf(n.name, n.sub), deg: 1, via: [], uid: n.user ? n.id : null }); if (!x) return;
+      const x = add({ key: liveKeyOf(n), label: n.name, sub: n.sub, type: "conn", role: n.role || roleOf(n.name, n.sub), deg: 1, via: [], uid: n.user ? n.id : null }); if (!x) return;
       x.type = "conn"; if (n.role) x.role = n.role; if (n.user) x.uid = n.id; if (!x.sub) x.sub = n.sub; ids.set(n.id, x);
     });
-    A.connections.forEach(n => add({ label: n, sub: pool.get(n) || "", type: "conn", role: roleOf(n, pool.get(n) || ""), deg: 1, via: [] }));
+    A.connections.forEach(k => { const name = nm(k); add({ key: k, label: name, sub: (A.people && A.people[k] && A.people[k].headline) || pool.get(name) || "", type: "conn", role: roleOf(name, pool.get(name) || ""), deg: 1, via: [] }); });
     // 2.º grado: contactos de tus contactos, con quién te conecta (via = índices de nodos de 1.er grado)
     if (A.graphSecond) {
       if (live) live.nodes.filter(n => n.deg === 2).forEach(n => {
-        const via = n.via.map(v => ids.get(v)).filter(Boolean); if (!via.length || byName.has(n.name)) return;
-        const x = add({ label: n.name, sub: n.sub, type: "second", role: n.role || roleOf(n.name, n.sub), deg: 2, via: via.map(v => v.idx), uid: n.user ? n.id : null }); if (x) ids.set(n.id, x);
+        const via = n.via.map(v => ids.get(v)).filter(Boolean); if (!via.length || byKey.has(liveKeyOf(n))) return;
+        const x = add({ key: liveKeyOf(n), label: n.name, sub: n.sub, type: "second", role: n.role || roleOf(n.name, n.sub), deg: 2, via: via.map(v => v.idx), uid: n.user ? n.id : null }); if (x) ids.set(n.id, x);
       });
       else if (!apiMode) {
         const hubs = nodes.filter(n => n.type === "conn");
         if (hubs.length) SUMMIT_POOL.forEach(([name, sub]) => {
-          const a = rnd2(), b = rnd2(), c = rnd2(); if (byName.has(name)) return;
+          const a = rnd2(), b = rnd2(), c = rnd2(), key = personKey(name); if (byKey.has(key)) return;
           const via = [hubs[Math.floor(a * hubs.length)].idx]; if (b < .3 && hubs.length > 1) { const h = hubs[Math.floor(c * hubs.length)].idx; if (!via.includes(h)) via.push(h); }
-          add({ label: name, sub, type: "second", role: roleOf(name, sub), deg: 2, via });
+          add({ key, label: name, sub, type: "second", role: roleOf(name, sub), deg: 2, via });
         });
       }
     }
@@ -1322,7 +1478,7 @@ export function bootKnetApp() {
     return { nodes, edges };
   }
   let meRgb = null; // color mostrado del nodo central: se acerca al del rol «Soy» actual (transición suave)
-  let graphNodes = [], graphSel = null; // graphSel = nombre del nodo elegido: se conserva al repintar // nodos del último startGraph (los botones de #graphInfo los buscan por nombre: el orden cambia con cada sync)
+  let graphNodes = [], graphSel = null; // graphSel = clave del nodo elegido: se conserva al repintar; graphNodes = nodos del último startGraph (los botones de #graphInfo los buscan por clave: el orden cambia con cada sync)
   const viaText = (n, nodes = graphNodes) => t("gr.via").replace("{0}", n.via.map(v => nodes[v] && nodes[v].label).filter(Boolean).join(", "));
   function drawShape(ctx, shape, x, y, r) {
     ctx.beginPath();
@@ -1332,21 +1488,22 @@ export function bootKnetApp() {
     else ctx.arc(x, y, r, 0, 6.283);
   }
   /* «Pedir presentación»: abre el chat con quien te conecta y deja escrito el mensaje (lo envías tú) */
-  function graphAsk(label) {
-    const n = graphNodes.find(x => x.label === label), via = n && n.deg === 2 && graphNodes[n.via[0]]; if (!via) return;
-    openChat(via.label); if (!isConn(via.label)) return;
+  function graphAsk(key) {
+    const n = graphNodes.find(x => x.key === key), via = n && n.deg === 2 && graphNodes[n.via[0]]; if (!via) return;
+    openChat(via.key); if (!isConn(via.key)) return;
     setTimeout(() => { const inp = $("#dmIn"); if (inp && !inp.value) { inp.value = t("gr.askMsg").replace("{0}", first(via.label)).replace("{1}", n.label).slice(0, 300); inp.focus({ preventScroll: true }); } }, 90);
   }
   /* «Conectar» con alguien de 2.º grado: usuario real = solicitud por peerUserId (la responde esa persona); local = simulada */
-  function graphConnect(label) {
-    const n = graphNodes.find(x => x.label === label); if (!n || n.deg !== 2) return; const name = n.label;
-    if (isConn(name) || isPending(name) || isInbound(name)) return;
+  function graphConnect(key) {
+    const n = graphNodes.find(x => x.key === key); if (!n || n.deg !== 2) return; const k = n.key, name = n.label;
+    if (isConn(k) || isPending(k) || isInbound(k)) return;
     const at = Date.now();
-    (A.requests ||= {})[name] = n.uid ? { status: "pending", at, real: true, userId: n.uid, via: "graph", headline: n.sub } : { status: "pending", at, due: at + rnd(4500, 8000) };
+    rememberPerson(k, { name, headline: n.sub, userId: n.uid || null });
+    (A.requests ||= {})[k] = n.uid ? { status: "pending", at, real: true, userId: n.uid, via: "graph", headline: n.sub } : { status: "pending", at, due: at + rnd(4500, 8000) };
     save();
     toast(`<b>${esc(t("att.sent").replace("{0}", name))}</b><div class="text-[13px] text-mute">${esc(t("att.sentSub").replace("{0}", first(name)))}</div>`, "users");
     refresh();
-    if (n.uid) apiRun({ t: "conn", id: name, state: "pending", source: "request", peerUserId: n.uid }); else scheduleResponses();
+    if (n.uid) apiRun({ t: "conn", id: k, state: "pending", source: "request", peerUserId: n.uid }); else scheduleResponses();
   }
   function startGraph() {
     cancelAnimationFrame(graphRaf); if (graphRO) graphRO.disconnect();
@@ -1369,7 +1526,7 @@ export function bootKnetApp() {
     // Instantánea para depurar y para las pruebas E2E (el canvas no se puede inspeccionar)
     const G = window.__knetGraph = {
       me: { role: myRole(), rgb: rgbOf(0), target: meT.join(","), shape: G_SHAPE[myRole()] },
-      nodes: nodes.map((n, i) => ({ label: n.label, type: n.type, role: n.role, degree: n.deg, via: n.via.map(v => nodes[v].label), rgb: i ? G_ROLE[n.role][3] : meT.join(","), shape: G_SHAPE[n.role], visible: vis(i), r: R[n.type] })),
+      nodes: nodes.map((n, i) => ({ key: n.key, label: n.label, type: n.type, role: n.role, degree: n.deg, via: n.via.map(v => nodes[v].label), rgb: i ? G_ROLE[n.role][3] : meT.join(","), shape: G_SHAPE[n.role], visible: vis(i), r: R[n.type] })),
       edges: edges.map(([a, b, kind]) => { const tg = target(a, b); return { a: nodes[a].label, b: nodes[b].label, kind, role: nodes[tg].role, rgb: G_ROLE[nodes[tg].role][3], highlighted: sug.includes(nodes[tg].role), dashed: kind === "second" || kind === "match" }; }),
       second: { on: !!A.graphSecond, disabled: secondOff(), live: !!(netLive() && net.data) },
     };
@@ -1422,23 +1579,24 @@ export function bootKnetApp() {
     const describe = (i) => { const n = nodes[i]; if (n.type === "me") return `<b>${esc(n.label)}</b> · ${esc(n.sub)} · <b>${G_SING[n.role]}</b>. Ves ${direct} contactos directos con los roles elegidos.`;
       const rl = `<span class="gr-tag" style="--c:${G_ROLE[n.role][3]}">${G_ROLE[n.role][1]}</span>`;
       if (n.type !== "second") return `${rl} <b>${esc(n.label)}</b> · ${esc(n.sub)}. ${n.type === "conn" ? "Conexión directa confirmada." : "Match sugerido: aún no conectan."}`;
-      const via = nodes[n.via[0]], sent = isPending(n.label) || isConn(n.label);
+      const via = nodes[n.via[0]], sent = isPending(n.key) || isConn(n.key);
       return `${rl} <b>${esc(n.label)}</b> · ${esc(n.sub)}. ${esc(t("gr.secondDesc"))} <b class="gr-via-t">${esc(viaText(n, nodes))}</b>.
-        <div class="gr-acts"><button type="button" class="pill-btn" data-grask="${esc(n.label)}" aria-label="${esc(t("gr.askAria").replace("{0}", via.label).replace("{1}", n.label))}">${svg("msg")}${esc(t("gr.ask"))}</button>
-        <button type="button" class="pill-btn gr-act-main" data-grconn="${esc(n.label)}" aria-label="${esc(t("gr.connectAria").replace("{0}", n.label))}"${sent ? " disabled" : ""}>${svg(sent ? "check" : "users")}${esc(t(sent ? "gr.pending" : "gr.connect"))}</button></div>`; };
+        <div class="gr-acts"><button type="button" class="pill-btn" data-grask="${esc(n.key)}" aria-label="${esc(t("gr.askAria").replace("{0}", via.label).replace("{1}", n.label))}">${svg("msg")}${esc(t("gr.ask"))}</button>
+        <button type="button" class="pill-btn gr-act-main" data-grconn="${esc(n.key)}" aria-label="${esc(t("gr.connectAria").replace("{0}", n.label))}"${sent ? " disabled" : ""}>${svg(sent ? "check" : "users")}${esc(t(sent ? "gr.pending" : "gr.connect"))}</button></div>`; };
     const showTip = (i, mx, my) => { const n = nodes[i];
       tip.hidden = false; tip.innerHTML = `<b>${esc(n.label)}</b><span>${esc(n.sub)}</span><span style="color:rgb(${rgbOf(i)})">${i === 0 ? "Tú · " : ""}${G_ROLE[n.role][1]}</span>${n.deg === 2 ? `<span class="gr-via">${esc(viaText(n, nodes))}</span>` : ""}`;
       tip.style.left = Math.min(mx + 12, W - 180) + "px"; tip.style.top = (my + 12) + "px"; };
     cv.addEventListener("mousemove", (ev) => { const [i, mx, my] = pick(ev); hover = i; cv.style.cursor = i >= 0 ? "pointer" : "default"; if (i >= 0) showTip(i, mx, my); else tip.hidden = true; });
     cv.addEventListener("mouseleave", () => { hover = -1; tip.hidden = true; });
-    cv.addEventListener("click", (ev) => { const [i] = pick(ev); sel = i === sel ? -1 : i; graphSel = sel >= 0 ? nodes[sel].label : null; info.innerHTML = sel >= 0 ? describe(sel) : "Toca o pasa el cursor sobre un nodo para ver cómo llegas a esa persona."; });
-    // Teclado y pruebas: elegir un nodo por nombre (window.__knetGraph.select("Nombre"))
-    G.select = (label) => { const i = nodes.findIndex(n => n.label === label); if (i < 0 || !vis(i)) return false; sel = i; graphSel = label; info.innerHTML = describe(i); const p = pos(nodes[i], performance.now()); showTip(i, p[0], p[1]); return true; };
+    cv.addEventListener("click", (ev) => { const [i] = pick(ev); sel = i === sel ? -1 : i; graphSel = sel >= 0 ? nodes[sel].key : null; info.innerHTML = sel >= 0 ? describe(sel) : "Toca o pasa el cursor sobre un nodo para ver cómo llegas a esa persona."; });
+    // Teclado y pruebas: elegir un nodo por clave o por nombre (window.__knetGraph.select("u:…" | "Nombre"))
+    G.select = (label) => { const i = nodes.findIndex(n => n.key === label); const j = i >= 0 ? i : nodes.findIndex(n => n.label === label); if (j < 0 || !vis(j)) return false; return selectNode(j); };
+    const selectNode = (i) => { sel = i; graphSel = nodes[i].key; info.innerHTML = describe(i); const p = pos(nodes[i], performance.now()); showTip(i, p[0], p[1]); return true; };
     $("#graphStats").innerHTML = `${svg("users")}${has2 ? esc(t("gr.stats2").replace("{0}", direct).replace("{1}", second)) : `${direct} directos`}`;
     if (nodes.length === 1) info.innerHTML = "Tu grafo crece con cada conexión real: escanea credenciales QR o conecta con tus matches cuando aparezcan en tu evento.";
     else if (!see.length) info.innerHTML = "Elige al menos un rol en <b>Quiero ver</b> para mostrar personas en el grafo.";
     else if (A.graphSecond && !has2 && !secondOff() && !(netLive() && net.loading)) info.textContent = t("gr.secondEmpty");
-    if (graphSel) { const i = nodes.findIndex(n => n.label === graphSel); if (i > 0 && vis(i)) { sel = i; info.innerHTML = describe(i); } else graphSel = null; }
+    if (graphSel) { const i = nodes.findIndex(n => n.key === graphSel); if (i > 0 && vis(i)) { sel = i; info.innerHTML = describe(i); } else graphSel = null; }
     size(); graphRO = new ResizeObserver(() => size()); graphRO.observe(cv);
     graphRaf = requestAnimationFrame(draw);
   }
@@ -1450,11 +1608,11 @@ export function bootKnetApp() {
   
   const groupState = () => (A.groupM ||= {});
   function gmCandidates(g) {
-    const d = IND[A.ind], mine = PERSONAS[A.ind].interests, pool = A.connections.length ? A.connections : d.matches.map(m => m[1]);
-    return pool.map(n => { const m = d.matches.find(x => x[1] === n), info = MATCH_INFO[n] || { int: [] };
+    const d = IND[A.ind], mine = PERSONAS[A.ind].interests, pool = A.connections.length ? A.connections : d.matches.map(m => m[5]);
+    return pool.map(n => { const m = matchOf(n), info = MATCH_INFO[n] || { int: [] }, name = nm(n);
       const shared = info.int.filter(t => g.tags.includes(t) || mine.includes(t));
       const fit = info.int.filter(t => g.tags.includes(t));
-      return { n, initials: m ? m[0] : n.split(" ").map(w => w[0]).join("").slice(0, 2), role: m ? m[2] : (connInfo(n).role), aff: m ? m[3] : 70, shared, fit, conn: isConn(n),
+      return { n, name, initials: m ? m[0] : name.split(" ").map(w => w[0]).join("").slice(0, 2), role: m ? m[2] : (connInfo(n).role), aff: m ? m[3] : 70, shared, fit, conn: isConn(n),
         score: (m ? m[3] : 70) + fit.length * 9 + shared.length * 3, why: fit.length ? `Comparte el tema de la misión: ${fit.slice(0, 2).join(" y ")}` : shared.length ? `Tienen en común ${shared.slice(0, 2).join(" y ")}` : m ? m[4] : "Ya forma parte de tu red" }; })
       .sort((a, b) => b.score - a.score);
   }
@@ -1469,22 +1627,23 @@ export function bootKnetApp() {
       <div class="gm-wrap"><ul class="gm-grid">${GROUP_M.map(g => { const x = st[g.id] || {}, cands = gmCandidates(g), alt = (x.alt || 0) % Math.max(1, cands.length), c = x.with ? cands.find(k => k.n === x.with) || cands[alt] : cands[alt];
         if (!c) return "";
         const other = cands.length > 1 ? `<button type="button" class="btn btn-ghost btn-sm" data-gm="next" data-v="${g.id}">${svg("shuffle")}Otra sugerencia</button>` : "";
-        const status = x.status === "done" ? `<span class="chip chip-emerald">${svg("check")}Completada con ${esc(first(x.with))}</span>`
-          : x.status === "active" ? `<span class="chip chip-cyan">${svg("users")}En curso con ${esc(first(x.with))}</span>`
-          : x.status === "invited" ? `<span class="chip">${svg("clock")}Esperando a ${esc(first(x.with))}…</span>` : "";
+        const withName = x.with ? nm(x.with) : "";
+        const status = x.status === "done" ? `<span class="chip chip-emerald">${svg("check")}Completada con ${esc(first(withName))}</span>`
+          : x.status === "active" ? `<span class="chip chip-cyan">${svg("users")}En curso con ${esc(first(withName))}</span>`
+          : x.status === "invited" ? `<span class="chip">${svg("clock")}Esperando a ${esc(first(withName))}…</span>` : "";
         const actions = x.status === "done" ? ""
           : x.status === "active" ? `<button type="button" class="btn btn-emerald btn-sm" data-gm="done" data-v="${g.id}">${svg("check")}Marcar completada · +${g.xp} XP</button>`
           : x.status === "invited" ? `<button type="button" class="btn btn-ghost btn-sm" data-gm="cancel" data-v="${g.id}">Cancelar invitación</button>`
-          : c.conn ? `<button type="button" class="btn btn-primary btn-sm" data-gm="invite" data-v="${g.id}" data-n="${esc(c.n)}">${svg("users")}Invitar a ${esc(first(c.n))}</button>${other}`
-          : isPending(c.n) ? `<span class="chip gm-pend">${svg("clock")}Solicitud enviada a ${esc(first(c.n))}</span>${other}`
-          : `<button type="button" class="btn btn-primary btn-sm" data-gm="connect" data-n="${esc(c.n)}">${svg("handshake")}Conectar con ${esc(first(c.n))}</button>${other}`;
+          : c.conn ? `<button type="button" class="btn btn-primary btn-sm" data-gm="invite" data-v="${g.id}" data-n="${esc(c.n)}">${svg("users")}Invitar a ${esc(first(c.name))}</button>${other}`
+          : isPending(c.n) ? `<span class="chip gm-pend">${svg("clock")}Solicitud enviada a ${esc(first(c.name))}</span>${other}`
+          : `<button type="button" class="btn btn-primary btn-sm" data-gm="connect" data-n="${esc(c.n)}">${svg("handshake")}Conectar con ${esc(first(c.name))}</button>${other}`;
         return `<li class="gm2 ${x.status === "done" ? "done" : ""}">
           <div class="gm2-head"><span class="gm2-ic">${svg(g.ico)}</span><div class="gm2-meta"><span>${g.sub}</span><span class="gm2-xp tabular">+${g.xp} XP</span></div></div>
           <h3 class="gm2-title">${g.title}</h3>
           ${status ? `<div>${status}</div>` : ""}
-          ${x.status === "done" ? `<p class="gm2-done">${svg("trophy")}Misión cumplida. Sumaste +${g.xp} XP con ${esc(x.with)}.</p>` : `<div class="gm-sug">
+          ${x.status === "done" ? `<p class="gm2-done">${svg("trophy")}Misión cumplida. Sumaste +${g.xp} XP con ${esc(withName)}.</p>` : `<div class="gm-sug">
             <span class="gm-k">${x.with ? "Tu compañero" : c.conn ? "Mejor conexión para esta misión" : "Te sugerimos conectar con"}</span>
-            <div class="gm-p"><span class="gf-av" style="--h:${hashStr(c.n) % 360}">${esc(c.initials)}</span><div class="min-w-0"><div class="gm-name"><span>${esc(c.n)}</span><span class="gf-aff">${c.aff}%</span></div><div class="gm-role">${esc(c.role)}</div></div></div>
+            <div class="gm-p"><span class="gf-av" style="--h:${hashStr(c.n) % 360}">${esc(c.initials)}</span><div class="min-w-0"><div class="gm-name"><span>${esc(c.name)}</span><span class="gf-aff">${c.aff}%</span></div><div class="gm-role">${esc(c.role)}</div></div></div>
             <p class="gm-why">${svg("spark")}<span>${esc(c.why)}</span></p>
           </div>`}
           ${actions ? `<div class="gm-actions">${actions}</div>` : ""}
@@ -1497,10 +1656,10 @@ export function bootKnetApp() {
     if (k === "next") { st[id] = { ...(st[id] || {}), alt: ((st[id] || {}).alt || 0) + 1 }; save(); refresh(); return; }
     if (k === "connect") { connectMatch(b.dataset.n); return; }
     if (k === "invite") { const n = b.dataset.n; st[id] = { ...(st[id] || {}), with: n, status: "invited", due: Date.now() + 5000 }; save();
-      toast(`<b>Invitación enviada a ${esc(n)}</b><div class="text-[13px] text-mute">${g.title}</div>`, "users"); refresh();
-      setTimeout(() => { const x = groupState()[id]; if (x && x.status === "invited" && x.with === n) { x.status = "active"; save(); notify("conn", `${n} aceptó la misión grupal`, g.title); toast(`<b>${esc(n)} aceptó la misión</b><div class="text-[13px] text-mute">${g.title}</div>`, "users"); refresh(); } }, 5100); return; }
+      toast(`<b>Invitación enviada a ${esc(nm(n))}</b><div class="text-[13px] text-mute">${g.title}</div>`, "users"); refresh();
+      setTimeout(() => { const x = groupState()[id]; if (x && x.status === "invited" && x.with === n) { x.status = "active"; save(); notify("conn", `${nm(n)} aceptó la misión grupal`, g.title); toast(`<b>${esc(nm(n))} aceptó la misión</b><div class="text-[13px] text-mute">${g.title}</div>`, "users"); refresh(); } }, 5100); return; }
     if (k === "cancel") { delete st[id]; save(); refresh(); return; }
-    if (k === "done") { const n = st[id].with; award(() => { st[id] = { with: n, status: "done", at: Date.now() }; }, g.xp, `Misión grupal completada con ${n}`, "users"); return; }
+    if (k === "done") { const n = st[id].with; award(() => { st[id] = { with: n, status: "done", at: Date.now() }; }, g.xp, `Misión grupal completada con ${nm(n)}`, "users"); return; }
   });
 
   /* ---- Misión especial: experiencia presencial (arte, cocina, deporte) ---- */
@@ -1668,7 +1827,7 @@ export function bootKnetApp() {
     if (!ev) add("ai.sug.event");
     else if (isEnded("ev:" + ev.id)) add("ai.sug.summary");
     else { next = sessionsFor(ev.id, sel.day).find(x => !A.attended.includes(x.id)); if (next) add("ai.sug.next", next.ttl); }
-    const free = IND[A.ind].matches.filter(m => !isConn(m[1]) && !isPending(m[1])).sort((a, b) => b[3] - a[3])[0];
+    const free = IND[A.ind].matches.filter(m => !isConn(m[5]) && !isPending(m[5])).sort((a, b) => b[3] - a[3])[0];
     if (free) add("ai.sug.intro", free[1]);
     if (activeMissions().length) add("ai.sug.mission");
     // Respaldo: preguntas fijas (las traduce el diccionario), sin repetir lo que ya cubre una sugerencia del evento
@@ -1688,7 +1847,7 @@ export function bootKnetApp() {
     </div>`;
   }
   function personHTML(n, state) {
-    const d = IND[A.ind], p = PERSONAS[A.ind], m = d.matches.find(x => x[1] === n), info = MATCH_INFO[n] || { int: [], likes: [], goal: "" }, idx = d.matches.indexOf(m), sc = m[3];
+    const d = IND[A.ind], p = PERSONAS[A.ind], m = matchOf(n), info = MATCH_INFO[n] || { int: [], likes: [], goal: "" }, idx = d.matches.indexOf(m), sc = m[3];
     if (!info.likes) info.likes = [];
     const common = info.int.filter(x => p.interests.includes(x));
     const shared = [idx, 3].filter((v, i, a) => a.indexOf(v) === i).map(i => d.agenda[i]);
@@ -1697,7 +1856,7 @@ export function bootKnetApp() {
     const status = personStatusChip(n);
     const C = 289;
     return `<div class="flex items-start justify-between gap-4">
-        <div class="person-id"><div class="avatar" style="width:60px;height:60px;font-size:20px;background:${avatarBg(idx)}">${m[0]}</div><div class="min-w-0"><span class="pcard-k">Perfil de match</span><h3 id="personName" class="font-display font-bold text-2xl leading-tight">${n}</h3><div class="text-mute text-[14px]">${m[2]}</div><div style="margin-top:8px">${status}</div></div></div>
+        <div class="person-id"><div class="avatar" style="width:60px;height:60px;font-size:20px;background:${avatarBg(idx)}">${m[0]}</div><div class="min-w-0"><span class="pcard-k">Perfil de match</span><h3 id="personName" data-k="${esc(n)}" class="font-display font-bold text-2xl leading-tight">${m[1]}</h3><div class="text-mute text-[14px]">${m[2]}</div><div style="margin-top:8px">${status}</div></div></div>
         <button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar perfil">${svg("x")}</button>
       </div>
       <div class="person-grid">
@@ -1727,7 +1886,7 @@ export function bootKnetApp() {
   const coffeeOf = (n) => (A.coffees || {})[n];
   const isConn = (n) => A.connections.includes(n);
   const isPending = (n) => !isConn(n) && reqOf(n) && reqOf(n).status === "pending";
-  const isRealPeer = (n) => !!((connIndex && connIndex.get(n) && connIndex.get(n).userId) || (qrPerson(n) && qrPerson(n).userId));
+  const isRealPeer = (n) => typeof n === "string" && (n.startsWith("u:") || !!((connIndex && connIndex.get(n) && connIndex.get(n).userId) || (qrPerson(n) && qrPerson(n).userId)));
   const rnd = (a, b) => a + Math.floor(Math.random() * (b - a));
   const timers = new Set();
   function scheduleResponses() {
@@ -1738,36 +1897,36 @@ export function bootKnetApp() {
     Object.entries(A.requests || {}).forEach(([n, r]) => { const k = "req:" + n + r.at; if (r.status !== "pending" || r.real || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveRequest(n, r.at); }, Math.max(400, r.due - now)); });
     Object.entries(A.coffees || {}).forEach(([n, c]) => { const k = "cof:" + n + c.at; if (c.status !== "pending" || c.real || c.role === "invitee" || isRealPeer(n) || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveCoffee(n, c.at); }, Math.max(400, c.due - now)); });
   }
-  const personOpenFor = (n) => !$("#m-person").hidden && $("#personName") && $("#personName").textContent === n;
+  const personOpenFor = (n) => !$("#m-person").hidden && $("#personName") && $("#personName").dataset.k === n;
   function resolveRequest(n, at) {
     const r = reqOf(n); if (!A.connected || !r || r.at !== at || r.status !== "pending") return;
-    award(() => { r.status = "accepted"; r.answered = Date.now(); if (!isConn(n)) A.connections.push(n); }, CONN_XP, `${n} aceptó tu solicitud de conexión`, "users", "conn");
+    award(() => { r.status = "accepted"; r.answered = Date.now(); if (!isConn(n)) A.connections.push(n); }, CONN_XP, `${nm(n)} aceptó tu solicitud de conexión`, "users", "conn");
     apiRun({ t: "conn", id: n, state: "accepted", source: "request" });
     if (personOpenFor(n)) openPerson(n);
     if (!$("#m-dm").hidden && dmFor === n) renderDm();
   }
   function resolveCoffee(n, at) {
     const c = coffeeOf(n); if (!A.connected || !c || c.at !== at || c.status !== "pending") return;
-    award(() => { c.status = "accepted"; c.answered = Date.now(); c.xpLocal = true; }, COFFEE_XP, `${n} aceptó el café`, "coffee");
+    award(() => { c.status = "accepted"; c.answered = Date.now(); c.xpLocal = true; }, COFFEE_XP, `${nm(n)} aceptó el café`, "coffee");
     apiRun({ t: "coffee", id: n, state: "accepted" }); // contacto del catálogo: quien propone registra la respuesta simulada
     setTimeout(() => toast(`<b>Café confirmado</b><div class="text-[13px] text-mute">${esc(c.slot)} · lo añadimos a tu plan</div>`, "calendar"), 500);
     if (personOpenFor(n)) openPerson(n);
   }
   function connectMatch(n) {
     if (isConn(n)) { openPerson(n); return; }
-    if (isPending(n)) { toast(`<b>Ya enviaste la solicitud</b><div class="text-[13px] text-mute">Esperando que ${esc(first(n))} la apruebe.</div>`, "clock"); openPerson(n); return; }
+    if (isPending(n)) { toast(`<b>Ya enviaste la solicitud</b><div class="text-[13px] text-mute">Esperando que ${esc(first(nm(n)))} la apruebe.</div>`, "clock"); openPerson(n); return; }
     A.requests = A.requests || {}; const at = Date.now();
     A.requests[n] = { status: "pending", at, due: at + rnd(4500, 8000) };
-    save(); toast(`<b>Solicitud enviada a ${esc(n)}</b><div class="text-[13px] text-mute">La conexión se crea cuando la apruebe. +100 XP al aceptar.</div>`, "users");
+    save(); toast(`<b>Solicitud enviada a ${esc(nm(n))}</b><div class="text-[13px] text-mute">La conexión se crea cuando la apruebe. +100 XP al aceptar.</div>`, "users");
     refresh(); openPerson(n); scheduleResponses();
     apiRun({ t: "conn", id: n, state: "pending", source: "request" });
   }
   function cancelRequest(n) { if (!isPending(n)) return; delete A.requests[n]; save(); apiConnRemoved(n); toast(`<b>Solicitud cancelada</b>`, "x"); refresh(); if (personOpenFor(n)) openPerson(n); }
 
-  /* ---- Solicitudes recibidas: A.inbound[nombre] = { at, from: match | api, sid (id en el servidor), userId } ----
+  /* ---- Solicitudes recibidas: A.inbound[clave] = { at, from: match | api, sid (id en el servidor), userId } ----
      Hoy llegan de contactos del catálogo (un match afín te escribe una vez por industria). Si el servidor
      publica una solicitud entrante (connection.request con direction "incoming"), entra igual con su sid.
-     Aceptar = conexión aceptada (+100 XP una vez: clave conn:<nombre>); rechazar no vuelve a mostrarla. */
+     Aceptar = conexión aceptada (+100 XP una vez: clave conn:<clave>); rechazar no vuelve a mostrarla. */
   const inboundOf = (n) => (A.inbound || {})[n];
   const isInbound = (n) => !isConn(n) && !!inboundOf(n);
   const inboundList = () => Object.entries(A.inbound || {}).filter(([n]) => !isConn(n)).sort((a, b) => b[1].at - a[1].at).map(([n]) => n);
@@ -1775,8 +1934,8 @@ export function bootKnetApp() {
     // inboundGone solo frena la solicitud automática del catálogo: una persona real puede volver a pedirlo
     if (!n || isConn(n) || inboundOf(n) || (data.from !== "api" && (A.inboundGone || []).includes(n))) return false;
     (A.inbound ||= {})[n] = { at: Date.now(), ...data }; save();
-    notify("conn", t("req.notif").replace("{0}", n), t("req.notifSub"), { n });
-    toast(`<b>${esc(t("req.notif").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("req.notifSub"))}</div>`, "users");
+    notify("conn", t("req.notif").replace("{0}", nm(n)), t("req.notifSub"), { n });
+    toast(`<b>${esc(t("req.notif").replace("{0}", nm(n)))}</b><div class="text-[13px] text-mute">${esc(t("req.notifSub"))}</div>`, "users");
     refresh(); if (personOpenFor(n)) openPerson(n);
     return true;
   }
@@ -1784,19 +1943,19 @@ export function bootKnetApp() {
   function seedInbound() {
     if (inboundTimer || A.inboundSeeded === A.ind || !A.profile || isAdminMode()) return;
     const gone = A.inboundGone || [];
-    const m = IND[A.ind].matches.filter(x => !isConn(x[1]) && !isPending(x[1]) && !inboundOf(x[1]) && !gone.includes(x[1])).sort((a, b) => b[3] - a[3])[0];
+    const m = IND[A.ind].matches.filter(x => !isConn(x[5]) && !isPending(x[5]) && !inboundOf(x[5]) && !gone.includes(x[5])).sort((a, b) => b[3] - a[3])[0];
     if (!m) return;
     inboundTimer = setTimeout(() => {
       inboundTimer = 0; if (!A.connected || A.inboundSeeded === A.ind) return;
       A.inboundSeeded = A.ind; save();
-      addInbound(m[1], { from: "match" });
+      addInbound(m[5], { from: "match" });
     }, rnd(6000, 10000));
   }
   function acceptInbound(n) {
     const r = inboundOf(n); if (!r) return;
     if (isConn(n)) { delete A.inbound[n]; save(); refresh(); return; }
     if (r.sid && !(connIndex && connIndex.get(n))) (connIndex ||= new Map()).set(n, { id: r.sid, status: "pending", userId: r.userId || null });
-    award(() => { delete A.inbound[n]; A.connections.push(n); if (r.userId) addPeerCard(n, r.userId, r.headline, r.via, new Date(), r.interests); }, CONN_XP, t("req.accepted").replace("{0}", n), "users", "conn");
+    award(() => { delete A.inbound[n]; A.connections.push(n); if (r.userId) addPeerCard(n, r.userId, r.headline, r.via, new Date(), r.interests); }, CONN_XP, t("req.accepted").replace("{0}", nm(n)), "users", "conn");
     apiRun({ t: "conn", id: n, state: "accepted", source: "request", ...(r.userId ? { real: true } : {}) }); // offline: queda en A.outbox
     if (personOpenFor(n)) openPerson(n);
     if (!$("#m-conns").hidden) renderConns();
@@ -1804,24 +1963,25 @@ export function bootKnetApp() {
   /* La solicitud de un usuario real ya no existía al aceptarla (la canceló): se deshace la conexión local y su XP */
   function revertRealAccept(n) {
     if (!isConn(n) || synced("conn:" + n)) return;
-    A.connections = A.connections.filter(x => x !== n); A.qrConn = (A.qrConn || []).filter(x => x.name !== n);
+    A.connections = A.connections.filter(x => x !== n); A.qrConn = (A.qrConn || []).filter(x => x.key !== n);
     A.xp = Math.max(0, A.xp - CONN_XP); A.xpLocal = Math.max(0, (A.xpLocal || 0) - CONN_XP);
     if (connIndex) connIndex.delete(n);
     save(); refresh();
-    toast(`<b>${esc(t("req.gone").replace("{0}", n))}</b>`, "info");
+    toast(`<b>${esc(t("req.gone").replace("{0}", nm(n)))}</b>`, "info");
   }
   function declineInbound(n) {
     const r = inboundOf(n); if (!r) return;
     delete A.inbound[n]; if (r.from !== "api") A.inboundGone = uniq((A.inboundGone || []).concat(n)); save();
     if (r.sid) apiConnRemoved(n); // solicitud del servidor: se borra allí (y la otra persona se entera)
-    toast(`<b>${esc(t("req.declined").replace("{0}", first(n)))}</b>`, "x");
+    toast(`<b>${esc(t("req.declined").replace("{0}", first(nm(n))))}</b>`, "x");
     refresh(); if (personOpenFor(n)) openPerson(n);
     if (!$("#m-conns").hidden) renderConns();
   }
   /* Conexión pendiente que otra persona te envió (campo direction del servidor; sin él es una solicitud tuya) */
   const isIncoming = (c) => !!(c && c.status === "pending" && c.direction === "incoming" && c.contact && c.contact.name);
   function adoptIncoming(c) {
-    const n = c.contact.name, ints = peerInts(c.contact), r = inboundOf(n);
+    const n = personKey(c.contact), ints = peerInts(c.contact), r = inboundOf(n);
+    rememberContact(c.contact);
     (connIndex ||= new Map()).set(n, { id: c.id, status: c.status, userId: c.contact.userId || null });
     if (r && r.from === "api") { r.interests = ints; if (c.contact.headline) r.headline = c.contact.headline; } // ya guardada: se completa
     return addInbound(n, { from: "api", sid: c.id, userId: c.contact.userId || null, headline: c.contact.headline || "", interests: ints, via: c.source || "request", at: Date.parse(c.createdAt) || Date.now() });
@@ -1830,10 +1990,11 @@ export function bootKnetApp() {
      ya no existen (rechazadas, canceladas o borradas en otro dispositivo) se quitan, salvo si aún esperan en la cola */
   function syncRealRequests(list) {
     const queued = new Set(outbox().filter(o => o.t === "conn").map(o => o.id));
-    const pendOut = new Map(list.filter(c => c.status === "pending" && c.direction === "outgoing" && c.contact && c.contact.userId).map(c => [c.contact.name, c]));
-    const pendIn = new Set(list.filter(isIncoming).map(c => c.contact.name));
-    pendOut.forEach((c, n) => { if (!isConn(n) && !(reqOf(n) && reqOf(n).status === "pending"))
-      (A.requests ||= {})[n] = { status: "pending", at: Date.parse(c.createdAt) || Date.now(), real: true, userId: c.contact.userId, via: c.source === "qr" ? "qr" : "dir", headline: c.contact.headline || "" }; });
+    const pendOut = new Map(list.filter(c => c.status === "pending" && c.direction === "outgoing" && c.contact && c.contact.userId).map(c => [personKey(c.contact), c]));
+    const pendIn = new Set(list.filter(isIncoming).map(c => personKey(c.contact)));
+    pendOut.forEach((c, n) => { if (!isConn(n) && !(reqOf(n) && reqOf(n).status === "pending")) {
+      rememberContact(c.contact);
+      (A.requests ||= {})[n] = { status: "pending", at: Date.parse(c.createdAt) || Date.now(), real: true, userId: c.contact.userId, via: c.source === "qr" ? "qr" : "dir", headline: c.contact.headline || "" }; } });
     Object.entries(A.requests || {}).forEach(([n, r]) => { if (r.real && r.status === "pending" && !pendOut.has(n) && !queued.has(n) && !(connIndex && connIndex.get(n) && connIndex.get(n).status === "accepted")) delete A.requests[n]; });
     Object.entries(A.inbound || {}).forEach(([n, r]) => { if (r.from === "api" && !pendIn.has(n) && !isConn(n)) delete A.inbound[n]; });
   }
@@ -1845,8 +2006,8 @@ export function bootKnetApp() {
       <ul class="inb-list">${list.map(n => { const c = connInfo(n), r = inboundOf(n);
         return `<li class="inb-row">
           ${avProf(n, "conn-av cc-av", `--h:${hashStr(n) % 360}`, esc(c.initials), true)}
-          <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.via === "qr" ? "req.statusQr" : r.from === "api" ? "req.statusApi" : "req.status"))}</div></div>
-          <div class="inb-acts"><button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}<span>${esc(t("req.accept"))}</span></button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}" aria-label="${esc(t("req.declineAria").replace("{0}", n))}">${esc(t("req.decline"))}</button>${c.match ? `<button type="button" class="pill-btn" data-cprof="${esc(n)}">${esc(t("req.profile"))}</button>` : ""}</div>
+          <div class="min-w-0"><div class="cc-name"><span>${esc(c.name)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.via === "qr" ? "req.statusQr" : r.from === "api" ? "req.statusApi" : "req.status"))}</div></div>
+          <div class="inb-acts"><button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}<span>${esc(t("req.accept"))}</span></button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}" aria-label="${esc(t("req.declineAria").replace("{0}", c.name))}">${esc(t("req.decline"))}</button>${c.match ? `<button type="button" class="pill-btn" data-cprof="${esc(n)}">${esc(t("req.profile"))}</button>` : ""}</div>
         </li>`; }).join("")}</ul>
     </section>`;
   }
@@ -1859,8 +2020,8 @@ export function bootKnetApp() {
       <ul class="inb-list">${list.map(([n, r]) => { const c = connInfo(n);
         return `<li class="inb-row">
           <span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
-          <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span></div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.via === "qr" ? "req.sentQr" : "req.sentDir"))}</div></div>
-          <div class="inb-acts"><button type="button" class="btn btn-ghost btn-sm" data-attcancel="${esc(n)}" aria-label="${esc(t("req.cancelAria").replace("{0}", n))}">${esc(t("req.cancel"))}</button></div>
+          <div class="min-w-0"><div class="cc-name"><span>${esc(c.name)}</span></div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.via === "qr" ? "req.sentQr" : "req.sentDir"))}</div></div>
+          <div class="inb-acts"><button type="button" class="btn btn-ghost btn-sm" data-attcancel="${esc(n)}" aria-label="${esc(t("req.cancelAria").replace("{0}", c.name))}">${esc(t("req.cancel"))}</button></div>
         </li>`; }).join("")}</ul>
     </section>`;
   }
@@ -1880,6 +2041,8 @@ export function bootKnetApp() {
       const r = await api.listAttendees(ev);
       att.list = { ev, items: (Array.isArray(r.attendees) ? r.attendees : []).filter(a => a && typeof a.userId === "string" && typeof a.name === "string" && a.name.trim()).slice(0, 100) };
       att.err = null;
+      // Si alguien de tu red cambió su nombre o su cargo, su ficha se pone al día (la clave u:<userId> no cambia)
+      att.list.items.forEach(a => { const k = personKey({ userId: a.userId }); if (A.people && A.people[k]) rememberPerson(k, { name: a.name, headline: a.headline, userId: a.userId }); });
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) att.missing = true; // el backend aún no tiene el directorio
       else att.err = isOffline(e) ? "offline" : e instanceof ApiError && e.code === "not_registered" ? "notReg" : e instanceof ApiError && e.status === 403 ? "network" : "error";
@@ -1888,18 +2051,18 @@ export function bootKnetApp() {
     if (curTab === "red") renderTab(false);
   }
   function attCardHTML(a, mine) {
-    const n = a.name, ints = Array.isArray(a.interests) ? a.interests.map(x => apiTxt(x, 60)).filter(Boolean) : [];
+    const n = personKey({ userId: a.userId }), name = apiTxt(a.name, 120), ints = Array.isArray(a.interests) ? a.interests.map(x => apiTxt(x, 60)).filter(Boolean) : [];
     const common = ints.filter(x => mine.has(intKey(x))), rest = ints.filter(x => !mine.has(intKey(x))).slice(0, Math.max(0, 3 - common.length));
     const sc = a.connection || {};
     const state = isConn(n) ? "conn" : isInbound(n) ? "in" : isPending(n) ? "out"
       : sc.status === "accepted" ? "conn" : sc.status === "pending" ? (sc.direction === "incoming" ? "in" : "out") : "none";
     const acts = state === "conn" ? `<span class="chip chip-emerald">${svg("check")}${esc(t("att.connected"))}</span>${isConn(n) ? act("chat", n, `${svg("msg")}${esc(t("att.chat"))}`, "btn btn-ghost btn-sm") : ""}`
       : state === "in" ? `<button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}${esc(t("req.accept"))}</button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}">${esc(t("req.decline"))}</button>`
-      : state === "out" ? `<span class="chip chip-cyan"><span class="pend-dot"></span>${esc(t("att.pending"))}</span><button type="button" class="pill-btn" data-attcancel="${esc(n)}" aria-label="${esc(t("req.cancelAria").replace("{0}", n))}">${esc(t("req.cancel"))}</button>`
-      : `<button type="button" class="btn btn-primary btn-sm" data-attconn="${esc(a.userId)}" aria-label="${esc(t("att.connectAria").replace("{0}", n))}">${svg("handshake")}${esc(t("att.connect"))}</button>`;
+      : state === "out" ? `<span class="chip chip-cyan"><span class="pend-dot"></span>${esc(t("att.pending"))}</span><button type="button" class="pill-btn" data-attcancel="${esc(n)}" aria-label="${esc(t("req.cancelAria").replace("{0}", name))}">${esc(t("req.cancel"))}</button>`
+      : `<button type="button" class="btn btn-primary btn-sm" data-attconn="${esc(a.userId)}" aria-label="${esc(t("att.connectAria").replace("{0}", name))}">${svg("handshake")}${esc(t("att.connect"))}</button>`;
     return `<li class="att">
-      <div class="att-top"><span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(String(a.initials || initialsOf(n)).slice(0, 3))}</span>
-        <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span></div><div class="cc-role">${esc(apiTxt(a.headline, 160) || t("att.noHeadline"))}</div></div></div>
+      <div class="att-top"><span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(String(a.initials || initialsOf(name)).slice(0, 3))}</span>
+        <div class="min-w-0"><div class="cc-name"><span>${esc(name)}</span></div><div class="cc-role">${esc(apiTxt(a.headline, 160) || t("att.noHeadline"))}</div></div></div>
       ${common.length || rest.length ? `<div class="att-ints">${common.map(x => `<span class="chip chip-accent">${svg("check")}${esc(intLabel(x))}</span>`).join("")}${rest.map(x => `<span class="chip">${esc(intLabel(x))}</span>`).join("")}</div>` : ""}
       ${common.length ? `<div class="att-why">${esc(t(common.length === 1 ? "att.common1" : "att.commonN").replace("{0}", common.length))}</div>` : ""}
       <div class="att-acts">${acts}</div>
@@ -1923,10 +2086,11 @@ export function bootKnetApp() {
   }
   function connectAttendee(userId) {
     const ev = att.list && att.list.ev, a = att.list && att.list.items.find(x => x.userId === userId); if (!a) return;
-    const n = a.name; if (isConn(n) || isPending(n) || isInbound(n)) return;
+    const n = personKey({ userId }); if (isConn(n) || isPending(n) || isInbound(n)) return;
+    const p = rememberPerson(n, { name: a.name, headline: a.headline, initials: a.initials, userId, interests: a.interests });
     (A.requests ||= {})[n] = { status: "pending", at: Date.now(), real: true, userId, via: "dir", headline: apiTxt(a.headline, 160) };
     save();
-    toast(`<b>${esc(t("att.sent").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("att.sentSub").replace("{0}", first(n)))}</div>`, "users");
+    toast(`<b>${esc(t("att.sent").replace("{0}", p.name))}</b><div class="text-[13px] text-mute">${esc(t("att.sentSub").replace("{0}", first(p.name)))}</div>`, "users");
     refresh();
     apiRun({ t: "conn", id: n, state: "pending", source: "request", peerUserId: userId, eventId: ev }); // offline: queda en A.outbox
     setTimeout(() => { const b = document.querySelector(`#attendeesCard [data-attcancel="${CSS.escape(n)}"]`); if (b) b.focus(); }, 0);
@@ -1943,9 +2107,9 @@ export function bootKnetApp() {
   function proposeCoffee(n) {
     if (!isConn(n)) { toast("<b>Primero conecten</b><div class='text-[13px] text-mute'>Puedes proponer un café cuando acepte tu solicitud.</div>", "info"); return; }
     const c = coffeeOf(n); if (c && (c.status === "pending" || c.status === "accepted")) return;
-    A.coffees = A.coffees || {}; const at = Date.now(), idx = IND[A.ind].matches.findIndex(m => m[1] === n), real = isRealPeer(n);
+    A.coffees = A.coffees || {}; const at = Date.now(), idx = IND[A.ind].matches.findIndex(m => m[5] === n), real = isRealPeer(n);
     A.coffees[n] = { status: "pending", at, role: "proposer", slot: COFFEE_SLOTS[(Math.max(0, idx) + Object.keys(A.coffees).length) % COFFEE_SLOTS.length], ...(real ? { real: true } : { due: at + rnd(5000, 9000) }) };
-    save(); toast(`<b>Invitación a café enviada</b><div class="text-[13px] text-mute">${esc(A.coffees[n].slot)} · esperando que ${esc(first(n))} acepte.</div>`, "coffee");
+    save(); toast(`<b>Invitación a café enviada</b><div class="text-[13px] text-mute">${esc(A.coffees[n].slot)} · esperando que ${esc(first(nm(n)))} acepte.</div>`, "coffee");
     refresh(); if (personOpenFor(n)) openPerson(n); if (!$("#m-dm").hidden && dmFor === n) renderDm(); scheduleResponses();
     apiRun({ t: "coffee", id: n, state: "proposed" });
   }
@@ -1953,10 +2117,10 @@ export function bootKnetApp() {
   function answerCoffee(n, yes) {
     const c = coffeeOf(n); if (!c || c.role !== "invitee" || c.status !== "pending") return;
     if (yes) {
-      award(() => { c.status = "accepted"; c.answered = Date.now(); c.xpLocal = true; }, COFFEE_XP, `Café confirmado con ${n}`, "coffee");
+      award(() => { c.status = "accepted"; c.answered = Date.now(); c.xpLocal = true; }, COFFEE_XP, `Café confirmado con ${nm(n)}`, "coffee");
       apiRun({ t: "coffee", id: n, state: "accepted" });
     } else {
-      delete A.coffees[n]; save(); toast(`<b>Rechazaste el café</b><div class="text-[13px] text-mute">Le avisamos a ${esc(first(n))}.</div>`, "x"); refresh();
+      delete A.coffees[n]; save(); toast(`<b>Rechazaste el café</b><div class="text-[13px] text-mute">Le avisamos a ${esc(first(nm(n)))}.</div>`, "x"); refresh();
       apiRun({ t: "coffee", id: n + "|" + c.sid, state: "declined", sid: c.sid });
     }
     if (!$("#m-dm").hidden && dmFor === n) renderDm();
@@ -1972,7 +2136,7 @@ export function bootKnetApp() {
     const coffeeBtn = !isConn(n) ? "" : c && c.status === "accepted" ? `<span class="chip chip-emerald">${svg("coffee")}Café confirmado · ${esc(c.slot)}</span>`
       : c && c.status === "pending" ? `<span class="chip chip-cyan"><span class="pend-dot"></span>Café propuesto · esperando respuesta</span>`
       : `<button type="button" class="btn btn-ghost btn-sm" data-pact="coffee" data-v="${esc(n)}">${svg("coffee")}Proponer café de 15 min</button>`;
-    const main = isConn(n) ? `<button type="button" class="btn btn-primary btn-sm" data-pact="chat" data-v="${esc(n)}">${svg("msg")}Chatear con ${esc(first(n))}</button>`
+    const main = isConn(n) ? `<button type="button" class="btn btn-primary btn-sm" data-pact="chat" data-v="${esc(n)}">${svg("msg")}Chatear con ${esc(first(nm(n)))}</button>`
       : isPending(n) ? `<button type="button" class="btn btn-ghost btn-sm" disabled>${svg("clock")}Esperando aprobación</button><button type="button" class="pill-btn" data-pact="cancel" data-v="${esc(n)}">Cancelar solicitud</button>`
       : isInbound(n) ? `<button type="button" class="btn btn-emerald btn-sm" data-pact="accept" data-v="${esc(n)}">${svg("check")}${esc(t("req.accept"))}</button><button type="button" class="btn btn-ghost btn-sm" data-pact="decline" data-v="${esc(n)}">${esc(t("req.decline"))}</button>`
       : `<button type="button" class="btn btn-primary btn-sm" data-pact="connect" data-v="${esc(n)}">${svg("handshake")}Enviar solicitud de conexión</button>`;
@@ -1981,11 +2145,11 @@ export function bootKnetApp() {
   /* Ficha básica de alguien sin perfil en la API (conectado por QR, el directorio o una solicitud): los datos que hay */
   const hasPeerCard = (n) => isConn(n) || !!qrPerson(n) || isInbound(n) || isPending(n);
   function peerHTML(n) {
-    const c = connInfo(n), q = qrPerson(n), src = q || inboundOf(n) || {}, ints = (Array.isArray(src.interests) ? src.interests : []).filter(Boolean);
+    const c = connInfo(n), q = qrPerson(n), src = q || inboundOf(n) || (A.people || {})[n] || {}, ints = (Array.isArray(src.interests) ? src.interests : []).filter(Boolean);
     const origin = q ? [q.lugar === "En persona" ? t("peer.viaQr").replace("{0}", q.lugar) : q.lugar, q.fecha && q.hora ? t("peer.when").replace("{0}", q.fecha).replace("{1}", q.hora) : q.hora || ""].filter(Boolean)
       : [isInbound(n) ? t("req.status") : c.via];
     return `<div class="flex items-start justify-between gap-4">
-        <div class="person-id"><span class="conn-av peer-av" style="--h:${hashStr(n) % 360}" aria-hidden="true">${esc(c.initials)}</span><div class="min-w-0"><span class="pcard-k">${esc(t(q && q.lugar === "En persona" ? "peer.kQr" : "peer.kConn"))}</span><h3 id="personName" class="font-display font-bold text-2xl leading-tight">${esc(n)}</h3><div class="text-mute text-[14px]">${esc(c.role)}</div><div style="margin-top:8px">${personStatusChip(n)}</div></div></div>
+        <div class="person-id"><span class="conn-av peer-av" style="--h:${hashStr(n) % 360}" aria-hidden="true">${esc(c.initials)}</span><div class="min-w-0"><span class="pcard-k">${esc(t(q && q.lugar === "En persona" ? "peer.kQr" : "peer.kConn"))}</span><h3 id="personName" data-k="${esc(n)}" class="font-display font-bold text-2xl leading-tight">${esc(c.name)}</h3><div class="text-mute text-[14px]">${esc(c.role)}</div><div style="margin-top:8px">${personStatusChip(n)}</div></div></div>
         <button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar perfil">${svg("x")}</button>
       </div>
       <div class="person-cols peer-cols">
@@ -2002,8 +2166,8 @@ export function bootKnetApp() {
     return act("connect", n, `${svg("handshake")}Conectar · +100 XP`, "btn btn-primary btn-sm");
   }
   function openPerson(n) {
-    const match = IND[A.ind].matches.some(m => m[1] === n);
-    if (!match && !hasPeerCard(n)) { toast(`<b>${esc(t("peer.none").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("peer.noneSub"))}</div>`, "info"); return; }
+    const match = !!matchOf(n);
+    if (!match && !hasPeerCard(n)) { toast(`<b>${esc(t("peer.none").replace("{0}", nm(n)))}</b><div class="text-[13px] text-mute">${esc(t("peer.noneSub"))}</div>`, "info"); return; }
     $("#personBody").innerHTML = match ? personHTML(n) : peerHTML(n); if ($("#m-person").hidden) openModal("person"); }
   $("#m-person").addEventListener("click", (e) => { const b = e.target.closest("[data-pact]"); if (!b) return; const n = b.dataset.v;
     if (b.dataset.pact === "connect") connectMatch(n);
@@ -2012,7 +2176,7 @@ export function bootKnetApp() {
     if (b.dataset.pact === "decline") declineInbound(n);
     if (b.dataset.pact === "coffee") proposeCoffee(n);
     if (b.dataset.pact === "chat") { closeModal($("#m-person")); openChat(n); }
-    if (b.dataset.pact === "ask") { closeModal($("#m-person")); goTo("concierge"); setTimeout(() => ask(`¿Cómo me presento con ${n}?`), 350); }
+    if (b.dataset.pact === "ask") { closeModal($("#m-person")); goTo("concierge"); setTimeout(() => ask(`¿Cómo me presento con ${nm(n)}?`), 350); }
   });
 
   /* ---- IA del servidor (POST /api/ai/*) con fallback silencioso a las respuestas locales ----
@@ -2058,7 +2222,8 @@ export function bootKnetApp() {
     if (!aiReady()) return null;
     const history = ((A.dms || {})[n] || []).slice(0, -1).slice(-10).map(x => ({ role: x.who === "me" ? "user" : "assistant", content: String(x.text).slice(0, 2000) }));
     try {
-      const r = await api.aiSimulate({ contactName: n, message: text.slice(0, 600), history, lang: LANG });
+      const who = /^c:\d+$/.test(n) ? { contactId: +n.slice(2) } : { contactName: nm(n) };
+      const r = await api.aiSimulate({ ...who, message: text.slice(0, 600), history, lang: LANG });
       return r && r.reply ? String(r.reply).slice(0, 1200) : null;
     } catch (e) { aiFail("simulador", e); return null; }
   }
@@ -2080,7 +2245,7 @@ export function bootKnetApp() {
   let dmFor = null, dmBusy = false;
   
   function dmReply(n, q) {
-    const t = norm(q), info = MATCH_INFO[n] || { int: [] }, d = IND[A.ind], idx = d.matches.findIndex(m => m[1] === n), ses = d.agenda[Math.max(0, idx) % d.agenda.length], me = first(PERSONAS[A.ind].name || "");
+    const t = norm(q), info = MATCH_INFO[n] || { int: [] }, d = IND[A.ind], idx = d.matches.findIndex(m => m[5] === n), ses = d.agenda[Math.max(0, idx) % d.agenda.length], me = first(PERSONAS[A.ind].name || "");
     const i0 = String(info.int[0] || "innovación").toLowerCase(), i1 = String(info.int[1] || "datos").toLowerCase();
     if (/cafe|tinto/.test(t)) { const c = coffeeOf(n); return c && c.status === "accepted" ? `¡Sí! Ya lo tenemos: ${c.slot}. Nos vemos allá.` : c && c.status === "pending" ? "Ya vi tu invitación, déjame revisar mi agenda y te confirmo." : "¡Me encantaría! Envíame la invitación desde mi perfil y la acepto."; }
     if (/hola|buen|que bueno|gusto/.test(t)) return `¡Hola, ${me}! El gusto es mío. Vine al Summit sobre todo por ${i0}. ¿Tú qué estás buscando?`;
@@ -2089,17 +2254,17 @@ export function bootKnetApp() {
     return ["Interesante. Me gustaría saber más; ¿lo hablamos en persona?", "¡Totalmente de acuerdo! Después del próximo bloque te escribo.", `Eso conecta con lo que hago en ${i0}. Te comparto mis notas al final del día.`][(A.dms[n] || []).length % 3];
   }
   function renderDm() {
-    const n = dmFor, d = IND[A.ind], q = qrPerson(n), m = d.matches.find(x => x[1] === n) || [initialsOf(n), n, q ? q.role + " · conectado por QR" : connInfo(n).role], idx = Math.max(0, d.matches.indexOf(m)), msgs = (A.dms || {})[n] || [], real = isRealPeer(n);
+    const n = dmFor, name = nm(n), d = IND[A.ind], q = qrPerson(n), m = matchOf(n) || [initialsOf(name), name, q ? q.role + " · conectado por QR" : connInfo(n).role], idx = Math.max(0, d.matches.indexOf(m)), msgs = (A.dms || {})[n] || [], real = isRealPeer(n);
     // El avatar y el nombre abren el perfil: la ficha del match o la básica (QR, directorio)
-    const prof = d.matches.some(x => x[1] === n) || hasPeerCard(n);
-    const who = prof ? `<button type="button" class="dm-who" data-dmprof aria-label="${esc(t("dm.profile").replace("{0}", n))}">${esc(n)}</button>` : esc(n);
+    const prof = !!matchOf(n) || hasPeerCard(n);
+    const who = prof ? `<button type="button" class="dm-who" data-dmprof aria-label="${esc(t("dm.profile").replace("{0}", name))}">${esc(name)}</button>` : esc(name);
     $("#dmBody").innerHTML = `
-      <div class="mh dm-head"><div class="person-id"><div class="avatar ${prof ? "dm-av-link" : ""}" ${prof ? `data-dmprof aria-hidden="true" title="${esc(t("dm.profile").replace("{0}", n))}"` : ""} style="width:44px;height:44px;background:${avatarBg(idx)}">${m[0]}</div><div class="min-w-0"><h3 id="dmTitle" class="font-display font-bold text-[18px] leading-tight">${who}</h3><div class="text-[12.5px] text-mute">${esc(m[2])}</div><div class="dm-online"><span></span>En el Summit ahora</div></div></div>
+      <div class="mh dm-head"><div class="person-id"><div class="avatar ${prof ? "dm-av-link" : ""}" ${prof ? `data-dmprof aria-hidden="true" title="${esc(t("dm.profile").replace("{0}", name))}"` : ""} style="width:44px;height:44px;background:${avatarBg(idx)}">${m[0]}</div><div class="min-w-0"><h3 id="dmTitle" class="font-display font-bold text-[18px] leading-tight">${who}</h3><div class="text-[12.5px] text-mute">${esc(m[2])}</div><div class="dm-online"><span></span>En el Summit ahora</div></div></div>
         <button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar chat">${svg("x")}</button></div>
       <div class="chat-log dm-log" id="dmLog" aria-live="polite">${msgs.length ? "" : `<div class="dm-empty">${svg("msg")}<span>Ya están conectados. Rompe el hielo con un mensaje.</span></div>`}${msgs.map(x => `<div class="bubble ${x.who === "me" ? "me" : "ai"}">${esc(x.text)}<span class="dm-time">${new Date(x.at).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</span></div>`).join("")}</div>
       ${real ? dmCoffeeHTML(n) : ""}
       <div class="flex flex-wrap gap-2 dm-pills">${DM_PILLS.map(q => `<button type="button" class="pill-btn" data-dmq="${esc(q)}">${esc(q)}</button>`).join("")}</div>
-      <form id="dmForm" class="chat-form" autocomplete="off"><label for="dmIn" class="sr-only">Mensaje para ${esc(n)}</label><input id="dmIn" class="select" maxlength="300" placeholder="Escribe un mensaje…"><button class="btn btn-primary btn-sm" type="submit">${svg("arrow")}<span>Enviar</span></button></form>
+      <form id="dmForm" class="chat-form" autocomplete="off"><label for="dmIn" class="sr-only">Mensaje para ${esc(name)}</label><input id="dmIn" class="select" maxlength="300" placeholder="Escribe un mensaje…"><button class="btn btn-primary btn-sm" type="submit">${svg("arrow")}<span>Enviar</span></button></form>
       <p class="text-[12px] text-mute dm-note">${real ? "Tus mensajes se guardan en KNET y le llegan a la otra persona. No compartas datos sensibles." : "Este contacto aún no usa la app de KNET: sus respuestas son automáticas. No compartas datos sensibles."}</p>`;
     dmToEnd();
   }
@@ -2117,7 +2282,7 @@ export function bootKnetApp() {
   function dmCoffeeHTML(n) {
     const c = coffeeOf(n);
     const body = c && c.status === "accepted" ? `<span class="chip chip-emerald">${svg("coffee")}Café confirmado · ${esc(c.slot)}</span>`
-      : c && c.status === "pending" && c.role === "invitee" ? `<span class="chip chip-cyan">${svg("coffee")}${esc(first(n))} te invitó a un café · ${esc(c.slot)}</span><button type="button" class="btn btn-emerald btn-sm" data-dmcof="yes">${svg("check")}Aceptar · +50 XP</button><button type="button" class="pill-btn" data-dmcof="no">Rechazar</button>`
+      : c && c.status === "pending" && c.role === "invitee" ? `<span class="chip chip-cyan">${svg("coffee")}${esc(first(nm(n)))} te invitó a un café · ${esc(c.slot)}</span><button type="button" class="btn btn-emerald btn-sm" data-dmcof="yes">${svg("check")}Aceptar · +50 XP</button><button type="button" class="pill-btn" data-dmcof="no">Rechazar</button>`
       : c && c.status === "pending" ? `<span class="chip chip-cyan"><span class="pend-dot"></span>Café propuesto · esperando respuesta</span>`
       : `<button type="button" class="btn btn-ghost btn-sm" data-dmcof="propose">${svg("coffee")}Proponer café de 15 min</button>`;
     return `<div class="flex flex-wrap gap-2 items-center">${body}</div>`;
@@ -2144,7 +2309,7 @@ export function bootKnetApp() {
     (A.dms[n] = A.dms[n] || []).push({ who: "me", text, at }); save(); renderDm();
     apiRun({ t: "dm", id: n + "|" + at, n, at }, { localQueue: false }); // sin cuenta no se encola: linkLocalToApi sube los pendientes
     if (isRealPeer(n)) { dmBusy = false; const i = $("#dmIn"); if (i) i.focus(); return; } // responde la otra persona, no una simulación
-    const log = $("#dmLog"); log.insertAdjacentHTML("beforeend", `<div class="bubble ai typing" id="dmTyping" aria-label="${esc(first(n))} está escribiendo"><span></span><span></span><span></span></div>`); log.scrollTop = log.scrollHeight;
+    const log = $("#dmLog"); log.insertAdjacentHTML("beforeend", `<div class="bubble ai typing" id="dmTyping" aria-label="${esc(first(nm(n)))} está escribiendo"><span></span><span></span><span></span></div>`); log.scrollTop = log.scrollHeight;
     setBusy("#dmForm input, #dmForm button, #m-dm [data-dmq]", true); // sin envíos dobles mientras responde
     const ai = await aiSimulator(n, text);
     if (ai === null) await sleep(rnd(1100, 2000));
@@ -2162,14 +2327,14 @@ export function bootKnetApp() {
     const tq = q.toLowerCase(), d = IND[A.ind];
     const selM = myEvIds().length ? getSel("main") : null, todays = selM ? sessionsFor(selM.ev, selM.day) : [];
     const nextS = todays.find(x => !A.attended.includes(x.id));
-    const free = d.matches.filter(m => !A.connections.includes(m[1]));
+    const free = d.matches.filter(m => !A.connections.includes(m[5]));
     const btn = (a, v, l) => `<div style="margin-top:8px">${act(a, v, l)}</div>`;
-    const named = d.matches.find(m => tq.includes(m[1].toLowerCase()));
-    if (named && /present|hablar|abord|romper/.test(tq)) { const info = MATCH_INFO[named[1]] || { int: [] }, mine = PERSONAS[A.ind]; return `Con <b>${esc(named[1])}</b> abre por ${info.goal ? "su objetivo: " + esc(info.goal) : "lo que comparten"}. Un buen arranque: “Vi que te interesa ${esc(String(info.int[0] || "lo mismo que a mí").toLowerCase())}; en ${esc(mine.company || "mi equipo")} estamos trabajando en ${esc(String(mine.interests[0] || "IA").toLowerCase())}.” Si fluye, propón un café de 15 min.`; }
+    const named = d.matches.find(m => tq.includes(m[1].toLowerCase())); // la pregunta nombra a la persona: se busca por su nombre
+    if (named && /present|hablar|abord|romper/.test(tq)) { const info = MATCH_INFO[named[5]] || { int: [] }, mine = PERSONAS[A.ind]; return `Con <b>${esc(named[1])}</b> abre por ${info.goal ? "su objetivo: " + esc(info.goal) : "lo que comparten"}. Un buen arranque: “Vi que te interesa ${esc(String(info.int[0] || "lo mismo que a mí").toLowerCase())}; en ${esc(mine.company || "mi equipo")} estamos trabajando en ${esc(String(mine.interests[0] || "IA").toLowerCase())}.” Si fluye, propón un café de 15 min.`; }
     const noMatches = "Todavía no hay asistentes reales de tu evento para sugerirte. Cuando se inscriban personas afines, te diré quién está cerca y por qué te conviene conocerle." + btn("goto", "eventos", "Explorar eventos");
-    if (/sala|lado|cerca/.test(tq)) { if (!d.matches.length) return noMatches; const m = free[0] || d.matches[0]; return `En <b>Sala Orbit</b>, a 30 m, está <b>${m[1]}</b> (${m[2]}, ${m[3]}% afinidad). ${m[4]}.` + (free.length ? btn("connect", m[1], `Enviar solicitud a ${first(m[1])}`) : btn("person", m[1], "Ver perfil")); }
+    if (/sala|lado|cerca/.test(tq)) { if (!d.matches.length) return noMatches; const m = free[0] || d.matches[0]; return `En <b>Sala Orbit</b>, a 30 m, está <b>${m[1]}</b> (${m[2]}, ${m[3]}% afinidad). ${m[4]}.` + (free.length ? btn("connect", m[5], `Enviar solicitud a ${first(m[1])}`) : btn("person", m[5], "Ver perfil")); }
     if (/agenda|sesi|pr[oó]xim|charla/.test(tq)) { if (!selM) return "Aún no estás inscrito en ningún evento. Inscríbete y armo tu agenda por día." + btn("goto", "eventos", "Explorar eventos"); const evS = evById(selM.ev); if (!nextS) return `Ya hiciste check-in en todas tus sesiones del <b>Día ${selM.day + 1}</b> de ${evS.name}.` + btn("goto", "agenda", "Ver mi agenda"); return `Tu próxima sesión en <b>${evS.name}</b> (Día ${selM.day + 1}, ${dayTxt(evS.days[selM.day])}): <b>${nextS.ttl}</b>, a las ${nextS.tm} en <b>${nextS.room}</b>. ${nextS.why}.` + (isEnded("ev:" + evS.id) ? "" : btn("attend", nextS.id, "Hacer check-in · +40 XP")); }
-    if (/match|conect|network|qui[eé]n|conocer/.test(tq)) { if (!d.matches.length) return noMatches; if (!free.length) return "Ya conectaste con todos tus matches sugeridos. Te aviso si llega alguien con alta afinidad."; const m = free[0]; return `Te recomiendo a <b>${m[1]}</b>, ${m[2]} (${m[3]}% afinidad): ${m[4]}.` + btn("connect", m[1], "Enviar solicitud de conexión") + btn("person", m[1], "Ver perfil completo") + btn("goto", "red:matchesCard", "Ver todos en Mi red"); }
+    if (/match|conect|network|qui[eé]n|conocer/.test(tq)) { if (!d.matches.length) return noMatches; if (!free.length) return "Ya conectaste con todos tus matches sugeridos. Te aviso si llega alguien con alta afinidad."; const m = free[0]; return `Te recomiendo a <b>${m[1]}</b>, ${m[2]} (${m[3]}% afinidad): ${m[4]}.` + btn("connect", m[5], "Enviar solicitud de conexión") + btn("person", m[5], "Ver perfil completo") + btn("goto", "red:matchesCard", "Ver todos en Mi red"); }
     if (/misi|xp|punto|nivel|insignia/.test(tq)) { const m = activeMissions().sort((a, b) => b.xp - a.xp)[0]; return m ? `La misión con más impacto ahora: <b>${m.title}</b> (+${m.xp} XP). Llevas ${fmt(A.xp)} XP.` + btn("goto", "quests", "Ver misiones") : "Completaste todas las misiones de la temporada."; }
     if (/resum|keynote|aprend|idea|insight/.test(tq)) { const ins = INSIGHTS[A.ind][0]; if (!A.extra.includes(ins)) A.extra.push(ins); return `Resumen del keynote: “${ins}” Lo guardé en tu Dossier.` + btn("goto", "dossier", "Ver Dossier"); }
     if (/evento|bogot|medell|barranq|pr[oó]ximo summit/.test(tq)) { const top = EVENTS.filter(e => !e.demo && (!e.lvl || lvl() >= e.lvl)).map(ev => [ev, evAffinity(ev).score]).sort((a, b) => b[1] - a[1])[0]; return `El evento más afín a tu perfil es <b>${top[0].name}</b> en ${top[0].city} (${top[0].date}), con ${top[1]}% de afinidad.` + btn("goto", "eventos", "Ver mapa de eventos"); }
@@ -2227,7 +2392,7 @@ export function bootKnetApp() {
       <div class="dgrid">
         ${col("evento", "calendar", "Evento", "Lo que viviste", sess.length ? sess.map(x => `<div class="ditem">${esc(x.ttl)}<small>${esc(evById(x.ev).city)} · Día ${x.day + 1} · ${x.tm} · ${esc(x.room)}</small></div>`).join("") : empty(`Aún no hay check-ins en ${esc(scope)}. Haz check-in desde tu Agenda IA.`, "agenda", "Ir a mi agenda"))}
         ${col("insight", "bulb", "Insight", "Lo que aprendiste", ins.length ? ins.map(x => `<div class="ditem">${x.text}<small>Fuente: ${x.src}</small></div>`).join("") : empty("Asiste a sesiones o pide un resumen al Concierge.", "concierge", "Abrir Concierge"))}
-        ${col("conexion", "handshake", "Conexión", "A quién conociste", A.connections.length ? A.connections.map(n => { const m = d.matches.find(x => x[1] === n), q = qrPerson(n); return m ? `<button type="button" class="ditem ditem-btn" data-act="person" data-v="${esc(n)}">${n}<small>${m[2]} · ver perfil</small></button>` : `<button type="button" class="ditem ditem-btn" data-act="chat" data-v="${esc(n)}">${esc(n)}<small>${q ? esc(q.role) + " · por QR en " + esc(q.lugar) + ", " + esc(q.hora) : ""} · chatear</small></button>`; }).join("") : empty("Conecta con tus matches estratégicos.", "red:matchesCard", "Ver matches"))}
+        ${col("conexion", "handshake", "Conexión", "A quién conociste", A.connections.length ? A.connections.map(n => { const m = matchOf(n), q = qrPerson(n); return m ? `<button type="button" class="ditem ditem-btn" data-act="person" data-v="${esc(n)}">${m[1]}<small>${m[2]} · ver perfil</small></button>` : `<button type="button" class="ditem ditem-btn" data-act="chat" data-v="${esc(n)}">${esc(nm(n))}<small>${q ? esc(q.role) + " · por QR en " + esc(q.lugar) + ", " + esc(q.hora) : ""} · chatear</small></button>`; }).join("") : empty("Conecta con tus matches estratégicos.", "red:matchesCard", "Ver matches"))}
         ${col("accion", "bolt", "Acción", "Plan de 30 días", acts.map(a => `<label class="ditem dcheck" for="da-${esc(a.id)}"><input type="checkbox" id="da-${esc(a.id)}" data-action="${esc(a.id)}" ${A.actions[a.id] ? "checked" : ""}><span>${a.text}</span></label>`).join(""))}
       </div>
     </div>`;
@@ -2242,7 +2407,7 @@ export function bootKnetApp() {
     L.push(`DOSSIER POST-SUMMIT · ${p.name} (${d.role}, ${p.company})`, `XP ${A.xp} · Nivel ${lvl()} · Misiones ${A.done.length} · Conexiones ${A.connections.length}`, "", "EVENTO");
     resSessions().forEach(x => L.push(`- ${evById(x.ev).name} · Día ${x.day + 1} · ${x.tm} ${x.ttl} (${x.room})`));
     L.push("", "INSIGHT"); insights().forEach(x => L.push(`- ${x.text} [${x.src}]`));
-    L.push("", "CONEXIÓN"); A.connections.forEach(n => { const m = d.matches.find(x => x[1] === n); L.push(`- ${n}${m ? " · " + m[2] : ""}`); });
+    L.push("", "CONEXIÓN"); A.connections.forEach(n => { const m = matchOf(n); L.push(`- ${nm(n)}${m ? " · " + m[2] : ""}`); });
     L.push("", "ACCIÓN"); actions().forEach(a => L.push(`[${A.actions[a.id] ? "x" : " "}] ${a.text}`));
     L.push("", "Generado por KNET · Evento → Insight → Conexión → Acción");
     return L.join("\n");
@@ -2538,18 +2703,25 @@ export function bootKnetApp() {
   /* ---- Mis conexiones: lista y opción de remover ---- */
   let connAsk = null;
   function connInfo(n) {
-    const m = IND[A.ind].matches.find(x => x[1] === n), q = (A.qrConn || []).find(x => x.name === n), pend = (A.inbound || {})[n] || (A.requests || {})[n] || {};
-    const initials = m ? m[0] : n.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
-    return { initials, role: m ? m[2] : q ? q.role : pend.headline || "Asistente del evento", aff: m ? m[3] : null, match: !!m,
+    const m = matchOf(n), q = qrPerson(n), pend = (A.inbound || {})[n] || (A.requests || {})[n] || {}, p = (A.people || {})[n] || {}, name = nm(n);
+    const initials = m ? m[0] : name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
+    return { name, initials, role: m ? m[2] : q ? q.role : pend.headline || p.headline || "Asistente del evento", aff: m ? m[3] : null, match: !!m,
       via: q ? `QR · ${q.lugar}` : m ? "AI Concierge" : "Summit" };
   }
   /* Avatar que abre el perfil (issue #39): botón accesible con nombre; sin ficha de la API queda decorativo */
   function avProf(n, cls, style, inner, on) {
-    return on ? `<button type="button" class="${cls} av-prof" data-avprof="${esc(n)}" aria-label="${esc(t("dm.profile").replace("{0}", n))}" title="${esc(t("dm.profile").replace("{0}", n))}" style="${style}">${inner}</button>`
+    return on ? `<button type="button" class="${cls} av-prof" data-avprof="${esc(n)}" aria-label="${esc(t("dm.profile").replace("{0}", nm(n)))}" title="${esc(t("dm.profile").replace("{0}", nm(n)))}" style="${style}">${inner}</button>`
       : `<span class="${cls}" style="${style}">${inner}</span>`;
   }
   document.addEventListener("click", (e) => { const b = e.target.closest("[data-avprof]"); if (!b) return;
     const m = b.closest(".modal"); if (m && m.id !== "m-person") closeModal(m); openPerson(b.dataset.avprof); });
+  /* Remover la conexión `n` (desde Mi red o el modal): deja de estar en tu red y se cierra el chat; la XP no cambia */
+  function removeConn(n) {
+    const name = nm(n);
+    A.connections = A.connections.filter(x => x !== n); if (A.requests) delete A.requests[n]; if (A.coffees) delete A.coffees[n];
+    A.qrConn = (A.qrConn || []).filter(x => x.key !== n); save(); apiConnRemoved(n); refresh();
+    toast(`<b>Conexión removida</b><div class="text-[13px] text-mute">${esc(name)} ya no está en tu red.</div>`, "users");
+  }
   function renderConns() {
     const list = A.connections.slice().reverse();
     $("#connsBody").innerHTML = `<div class="mh"><div><span class="chip chip-cyan">${svg("users")}Tu red en el Summit</span><h3 id="connsTitle" class="font-display font-bold text-xl" style="margin-top:10px">Mis conexiones <span class="text-mute tabular">(${list.length})</span></h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
@@ -2557,9 +2729,9 @@ export function bootKnetApp() {
       ${list.length ? `<div class="conn-list">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<div class="conn-row ${ask ? "ask" : ""}">
           ${avProf(n, "conn-av", `--h:${hashStr(n) % 360}`, esc(c.initials), true)}
-          <div class="min-w-0"><div class="conn-name">${esc(n)}${c.aff ? ` <span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="text-[12.5px] text-mute">${esc(c.role)}</div><div class="conn-via">${svg(c.via.startsWith("QR") ? "qr" : "link")}${esc(c.via)}</div></div>
-          <div class="conn-actions">${ask ? `<span class="conn-q">¿Remover a ${esc(first(n))}?</span><button type="button" class="btn btn-ghost btn-sm" data-cno>Cancelar</button><button type="button" class="btn btn-sm conn-del" data-cyes="${esc(n)}">Sí, remover</button>`
-            : `<button type="button" class="btn btn-ghost btn-sm" data-cmsg="${esc(n)}">${svg("msg")}Mensaje</button>${c.match ? `<button type="button" class="btn btn-ghost btn-sm" data-cprof="${esc(n)}">Ver perfil</button>` : ""}<button type="button" class="btn btn-ghost btn-sm conn-rm" data-crm="${esc(n)}" aria-label="Remover a ${esc(n)}">${svg("x")}Remover</button>`}</div>
+          <div class="min-w-0"><div class="conn-name">${esc(c.name)}${c.aff ? ` <span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="text-[12.5px] text-mute">${esc(c.role)}</div><div class="conn-via">${svg(c.via.startsWith("QR") ? "qr" : "link")}${esc(c.via)}</div></div>
+          <div class="conn-actions">${ask ? `<span class="conn-q">¿Remover a ${esc(first(c.name))}?</span><button type="button" class="btn btn-ghost btn-sm" data-cno>Cancelar</button><button type="button" class="btn btn-sm conn-del" data-cyes="${esc(n)}">Sí, remover</button>`
+            : `<button type="button" class="btn btn-ghost btn-sm" data-cmsg="${esc(n)}">${svg("msg")}Mensaje</button>${c.match ? `<button type="button" class="btn btn-ghost btn-sm" data-cprof="${esc(n)}">Ver perfil</button>` : ""}<button type="button" class="btn btn-ghost btn-sm conn-rm" data-crm="${esc(n)}" aria-label="Remover a ${esc(c.name)}">${svg("x")}Remover</button>`}</div>
         </div>`; }).join("")}</div>
         <p class="text-[12.5px] text-mute">Al remover una conexión, deja de aparecer en tu red y se cierra el chat. Tus XP no cambian y podrás volver a conectar cuando quieras.</p>`
       : `<div class="conn-empty">${svg("users")}<div><b>Aún no tienes conexiones</b><p class="text-mute text-[14px]">Envía solicitudes a tus matches sugeridos o conecta escaneando un QR.</p></div></div><div class="flex justify-end"><button type="button" class="btn btn-primary btn-sm" data-cgo>${svg("users")}Ver matches sugeridos</button></div>`}`;
@@ -2574,11 +2746,11 @@ export function bootKnetApp() {
         return `<li class="cc ${ask ? "ask" : ""}">
           <div class="cc-top">
             ${avProf(n, "conn-av cc-av", `--h:${hashStr(n) % 360}`, esc(c.initials), true)}
-            <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div></div>
-            ${ask ? "" : `<button type="button" class="cc-x" data-crm="${esc(n)}" aria-label="Remover a ${esc(n)}" title="Remover conexión">${svg("x")}</button>`}
+            <div class="min-w-0"><div class="cc-name"><span>${esc(c.name)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div></div>
+            ${ask ? "" : `<button type="button" class="cc-x" data-crm="${esc(n)}" aria-label="Remover a ${esc(c.name)}" title="Remover conexión">${svg("x")}</button>`}
           </div>
           <div class="cc-via">${svg(c.via.startsWith("QR") ? "qr" : "link")}<span>${esc(c.via)}</span></div>
-          ${ask ? `<div class="cc-ask"><span class="conn-q">¿Remover a ${esc(first(n))}?</span><div class="cc-acts"><button type="button" class="btn btn-ghost btn-sm" data-cno>Cancelar</button><button type="button" class="btn btn-sm conn-del" data-cyes="${esc(n)}">Sí, remover</button></div></div>`
+          ${ask ? `<div class="cc-ask"><span class="conn-q">¿Remover a ${esc(first(c.name))}?</span><div class="cc-acts"><button type="button" class="btn btn-ghost btn-sm" data-cno>Cancelar</button><button type="button" class="btn btn-sm conn-del" data-cyes="${esc(n)}">Sí, remover</button></div></div>`
             : `<div class="cc-acts ${c.match ? "" : "one"}"><button type="button" class="btn btn-ghost btn-sm" data-cmsg="${esc(n)}">${svg("msg")}<span>Mensaje</span></button>${c.match ? `<button type="button" class="btn btn-ghost btn-sm" data-cprof="${esc(n)}">${svg("users")}<span>Ver perfil</span></button>` : ""}</div>`}
         </li>`; }).join("")}</ul>
         <p class="text-[12.5px] text-mute">Al remover una conexión, deja de aparecer en tu red y se cierra el chat. Tus XP no cambian y podrás volver a conectar cuando quieras.</p>`
@@ -2589,10 +2761,7 @@ export function bootKnetApp() {
     if (!$("#connsCard")) return; const t = e.target;
     const rm = t.closest("#connsCard [data-crm]"); if (rm) { connAsk = rm.dataset.crm; renderTab(false); const y = $("#connsCard [data-cyes]"); if (y) y.focus(); return; }
     if (t.closest("#connsCard [data-cno]")) { connAsk = null; renderTab(false); return; }
-    const yes = t.closest("#connsCard [data-cyes]"); if (yes) { const n = yes.dataset.cyes; connAsk = null;
-      A.connections = A.connections.filter(x => x !== n); if (A.requests) delete A.requests[n]; if (A.coffees) delete A.coffees[n];
-      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); apiConnRemoved(n); refresh();
-      toast(`<b>Conexión removida</b><div class="text-[13px] text-mute">${esc(n)} ya no está en tu red.</div>`, "users"); return; }
+    const yes = t.closest("#connsCard [data-cyes]"); if (yes) { connAsk = null; removeConn(yes.dataset.cyes); return; }
     const mg = t.closest("#connsCard [data-cmsg]"); if (mg) { openChat(mg.dataset.cmsg); return; }
     const pf = t.closest("#connsCard [data-cprof]"); if (pf) { openPerson(pf.dataset.cprof); return; }
     if (t.closest("#connsCard [data-cgo]")) showTab("red", "matchesCard");
@@ -2608,7 +2777,7 @@ export function bootKnetApp() {
     }
     const x = e.target.closest("[data-attcancel]");
     if (x) { // tras cancelar, el foco vuelve a «Conectar» de esa persona en el directorio (o al título de Mis conexiones)
-      const n = x.dataset.attcancel, a = att.list && att.list.items.find(i => i.name === n); cancelRequest(n);
+      const n = x.dataset.attcancel, a = att.list && att.list.items.find(i => personKey({ userId: i.userId }) === n); cancelRequest(n);
       setTimeout(() => { const b = (a && document.querySelector(`#attendeesCard [data-attconn="${CSS.escape(a.userId)}"]`)) || $("#connsCard .pcard-t"); if (b) b.focus(); }, 0);
     }
   });
@@ -2619,10 +2788,7 @@ export function bootKnetApp() {
     const cx = t.closest("[data-attcancel]"); if (cx) { cancelRequest(cx.dataset.attcancel); renderConns(); return; }
     const rm = t.closest("[data-crm]"); if (rm) { connAsk = rm.dataset.crm; renderConns(); const y = $("#connsBody [data-cyes]"); if (y) y.focus(); return; }
     if (t.closest("[data-cno]")) { connAsk = null; renderConns(); return; }
-    const yes = t.closest("[data-cyes]"); if (yes) { const n = yes.dataset.cyes; connAsk = null;
-      A.connections = A.connections.filter(x => x !== n); if (A.requests) delete A.requests[n]; if (A.coffees) delete A.coffees[n];
-      A.qrConn = (A.qrConn || []).filter(x => x.name !== n); save(); apiConnRemoved(n); refresh(); renderConns();
-      toast(`<b>Conexión removida</b><div class="text-[13px] text-mute">${esc(n)} ya no está en tu red.</div>`, "users"); return; }
+    const yes = t.closest("[data-cyes]"); if (yes) { connAsk = null; removeConn(yes.dataset.cyes); renderConns(); return; }
     const mg = t.closest("[data-cmsg]"); if (mg) { closeModal($("#m-conns")); openChat(mg.dataset.cmsg); return; }
     const pf = t.closest("[data-cprof]"); if (pf) { closeModal($("#m-conns")); openPerson(pf.dataset.cprof); return; }
     if (t.closest("[data-cgo]")) { closeModal($("#m-conns")); showTab("red", "matchesCard"); }
@@ -2646,7 +2812,7 @@ export function bootKnetApp() {
         made.map(e => row("spark", esc(e.name), `${e.type} · ${new Date(e.date + "T12:00:00").toLocaleDateString("es-CO", { day: "numeric", month: "short" })} · ${e.status === "approved" ? "Aprobado" : "En revisión"}`)),
         "Todavía no has propuesto ningún evento. Puedes crear uno en la sección «Eventos que creaste»."],
       act: ["Actividades presenciales", "Las experiencias presenciales en las que te inscribiste y los cafés de networking que te aceptaron.", "actCard",
-        (ex ? [row(ex.ic, `${ex.name}`, `Día ${ex.day + 1} · ${ex.time} · ${ex.where}`)] : []).concat(caf.map(([n, c]) => row("coffee", `Café con ${esc(n)}`, esc(c.slot)))),
+        (ex ? [row(ex.ic, `${ex.name}`, `Día ${ex.day + 1} · ${ex.time} · ${ex.where}`)] : []).concat(caf.map(([n, c]) => row("coffee", `Café con ${esc(nm(n))}`, esc(c.slot)))),
         "No tienes actividades presenciales. Los cafés que confirmes con tus conexiones aparecerán aquí."],
       hist: ["Tu historial", "Los eventos, sesiones y actividades que ya terminaron. En cada uno puedes ver el resumen con IA y responder la encuesta.", "historyCard",
         hist.slice(0, 5).map(h => row("clock", esc(h.s.title), `${esc(h.s.kind || "Evento")} · ${new Date(h.at).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`)),
@@ -2834,7 +3000,7 @@ export function bootKnetApp() {
     $("#ivBody").innerHTML = `<div class="mh"><div><span class="chip chip-emerald">${svg("check")}Evento aprobado</span><h3 id="ivTitle" class="font-display font-bold text-xl" style="margin-top:10px">Invita a tu red</h3><p class="text-mute text-[14px]" style="margin-top:4px">${esc(ev.name)} · ${fmtDate(ev.date)} · ${esc(ev.time)}</p></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
       ${conns.length ? `<form id="ivForm" data-v="${ev.id}" class="iv-form"><div class="iv-tools"><span class="text-[13px] text-mute">${conns.length} personas en tu red</span><button type="button" class="gf-link" data-ivall>Seleccionar todos</button></div>
         <div class="iv-list">${conns.map(n => { const c = connInfo(n), st = ev.invites[n];
-          return `<label class="iv-row ${st ? "done" : ""}"><input type="checkbox" name="who" value="${esc(n)}" ${st ? "checked disabled" : ""}><span class="gf-av" style="--h:${hashStr(n) % 360};width:38px;height:38px;font-size:12px">${esc(c.initials)}</span><span class="min-w-0"><b>${esc(n)}</b><span class="block text-[12px] text-mute">${esc(c.role)}</span></span>${st ? `<span class="chip ${st === "accepted" ? "chip-emerald" : ""}">${st === "accepted" ? "Confirmó" : "Invitado"}</span>` : ""}</label>`; }).join("")}</div>
+          return `<label class="iv-row ${st ? "done" : ""}"><input type="checkbox" name="who" value="${esc(n)}" ${st ? "checked disabled" : ""}><span class="gf-av" style="--h:${hashStr(n) % 360};width:38px;height:38px;font-size:12px">${esc(c.initials)}</span><span class="min-w-0"><b>${esc(c.name)}</b><span class="block text-[12px] text-mute">${esc(c.role)}</span></span>${st ? `<span class="chip ${st === "accepted" ? "chip-emerald" : ""}">${st === "accepted" ? "Confirmó" : "Invitado"}</span>` : ""}</label>`; }).join("")}</div>
         <label class="gf-f"><span>Mensaje <span class="text-mute">(opcional)</span></span><textarea class="input" name="msg" rows="2" maxlength="200">Hola, te invito a ${esc(ev.name)} el ${fmtDate(ev.date)}. ¡Me encantaría que vinieras!</textarea></label>
         <p class="gf-err" id="ivErr" hidden></p>
         <div class="gf-form-foot"><button type="button" class="btn btn-ghost btn-sm" data-close>Cerrar</button><button type="submit" class="btn btn-primary">${svg("arrow")}Enviar invitaciones</button></div></form>`
@@ -2870,7 +3036,7 @@ export function bootKnetApp() {
       if (ev.status === "pending" && ev.due <= now) { ch = true;
         award(() => { ev.status = "approved"; ev.approvedAt = now; notify("event", `¡Tu evento “${ev.name}” fue aprobado!`, "Ya puedes invitar a personas de tu red"); }, NE_XP, `Evento aprobado · ${ev.name}`, "calendar");
         toast(`<b>¡${esc(ev.name)} fue aprobado!</b><div class="text-[13px] text-mute">Ya puedes invitar a tu red desde Mis eventos.</div>`, "check"); }
-      Object.entries(ev.dueInv || {}).forEach(([n, t]) => { if (t <= now && ev.invites[n] === "invited") { ev.invites[n] = "accepted"; delete ev.dueInv[n]; ch = true; notify("conn", `${n} confirmó asistencia`, ev.name); } });
+      Object.entries(ev.dueInv || {}).forEach(([n, t]) => { if (t <= now && ev.invites[n] === "invited") { ev.invites[n] = "accepted"; delete ev.dueInv[n]; ch = true; notify("conn", `${nm(n)} confirmó asistencia`, ev.name); } });
     });
     if (ch) { save(); refresh(); if (!$("#m-invite").hidden) { const f = $("#ivForm"); if (f) renderInvite(f.dataset.v); } }
   }, 2000);
@@ -2901,8 +3067,8 @@ export function bootKnetApp() {
   function invitesHTML() {
     const recv = invReceived(), evs = invEvents().slice().reverse(), n = invPending();
     const row = (ic, title, sub, extra) => `<li class="ms-row"><span class="ms-ic">${svg(ic)}</span><div class="min-w-0"><b>${title}</b><span>${sub}</span></div>${extra}</li>`;
-    const recvRows = recv.map(([nm, c]) => row("coffee", esc(nm), tf("inv.coffee", esc((c.slot || "").replace(/^\s*·\s*/, ""))),
-      `<div class="me-actions"><button type="button" class="btn btn-emerald btn-sm" data-inv="yes" data-n="${esc(nm)}">${svg("check")}${t("inv.accept")}</button><button type="button" class="pill-btn" data-inv="no" data-n="${esc(nm)}">${t("inv.decline")}</button><button type="button" class="btn btn-ghost btn-sm" data-inv="chat" data-n="${esc(nm)}">${t("inv.chat")}</button></div>`));
+    const recvRows = recv.map(([k, c]) => row("coffee", esc(nm(k)), tf("inv.coffee", esc((c.slot || "").replace(/^\s*·\s*/, ""))),
+      `<div class="me-actions"><button type="button" class="btn btn-emerald btn-sm" data-inv="yes" data-n="${esc(k)}">${svg("check")}${t("inv.accept")}</button><button type="button" class="pill-btn" data-inv="no" data-n="${esc(k)}">${t("inv.decline")}</button><button type="button" class="btn btn-ghost btn-sm" data-inv="chat" data-n="${esc(k)}">${t("inv.chat")}</button></div>`));
     const evRows = evs.map(ev => { const w = invWaiting(ev), yes = Object.values(ev.invites || {}).filter(v => v === "accepted").length;
       return row("calendar", esc(ev.name), w || yes ? `${w ? tf("inv.waiting", w) : ""}${w && yes ? " · " : ""}${yes ? tf("inv.confirmed", yes) : ""}` : t("inv.noneSent"),
         `<button type="button" class="btn btn-primary btn-sm" data-ne="invite" data-v="${ev.id}">${svg("users")}${t("inv.invite")}</button>`); });
@@ -2948,7 +3114,7 @@ export function bootKnetApp() {
         resumen: `${ev.name} reunió a ${att.length + 1} persona${att.length ? "s" : ""} de tu red. ${ev.desc} La conversación giró en torno a experiencias prácticas y próximos pasos concretos para cada participante.`,
         puntos: [`Objetivo del encuentro: ${ev.desc}`, ins[0], ins[1] || ins[0]], ideas: [],
         paraTi: forYou, acciones: [`Enviar a los asistentes un resumen y los próximos pasos`, acts[0], `Agendar la siguiente edición de ${ev.name}`],
-        personas: att.length ? att.map(n => `${n} · ${connInfo(n).role}`) : ["Invita a tu red a la próxima edición desde Mis eventos."] };
+        personas: att.length ? att.map(n => `${nm(n)} · ${connInfo(n).role}`) : ["Invita a tu red a la próxima edición desde Mis eventos."] };
     }
     const e = EXPS.find(x => x.id === id) || { name: "Experiencia presencial", time: "", where: "", desc: "", day: 0 };
     return { title: e.name, kind: "Experiencia presencial", meta: `${e.time} · ${e.where}`, when, tags: ["Networking", "Experiencia"], evId: MAIN_EV, day: e.day,
@@ -3038,7 +3204,7 @@ export function bootKnetApp() {
   function dossierData() {
     const p = PERSONAS[A.ind], d = IND[A.ind], rs = getSel("res"), sess = resSessions(), ins = insights(sess), scope = resScopeLabel(rs), ai = aiDossierOf(rs);
     const when = new Date(A.dossierAt || Date.now()).toLocaleString("es-CO", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
-    const people = A.connections.map(n => { const m = d.matches.find(x => x[1] === n), q = typeof qrPerson === "function" ? qrPerson(n) : null; return m ? `${n} · ${m[2]}` : q && q.role ? `${n} · ${q.role}` : n; });
+    const people = A.connections.map(n => { const m = matchOf(n), q = typeof qrPerson === "function" ? qrPerson(n) : null, name = nm(n); return m ? `${name} · ${m[2]}` : q && q.role ? `${name} · ${q.role}` : name; });
     return {
       title: `Dossier de ${p.name}`, kind: "Dossier post-Summit", whenLabel: "Generado", meta: `${d.role} · ${p.company} · ${scope}`, when, tags: p.interests.slice(0, 5),
       resumen: ai && ai.notes ? ai.notes : `${p.name} (${d.role}, ${p.company}) cerró ${scope} con ${fmt(A.xp)} XP, en el nivel ${lvl()} · ${lvlName()}. Hizo check-in en ${sess.length} sesión${sess.length === 1 ? "" : "es"}, reunió ${ins.length} insight${ins.length === 1 ? "" : "s"} y sumó ${A.connections.length} ${A.connections.length === 1 ? "conexión" : "conexiones"} a su red. Este Dossier reúne lo que vivió, lo que aprendió, a quién conoció y qué hará en los próximos 30 días.`,
@@ -3233,7 +3399,7 @@ export function bootKnetApp() {
   const hashStr = (t) => { let h = 2166136261; for (const c of String(t)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
   const qrEpochNow = () => Math.floor(Date.now() / 30000);
   const qrToken = () => "knet:" + (hashStr(PERSONAS[A.ind].name + "|" + qrEpochNow()) >>> 0).toString(36).padStart(7, "0").slice(0, 7);
-  const qrPerson = (n) => (A.qrConn || []).find(x => x.name === n);
+  const qrPerson = (n) => (A.qrConn || []).find(x => x.key === n); // ficha QR/usuario real por clave (u:<userId>)
   function qrSVG(seed, uid) {
     const N = 25, r = seeded(hashStr(seed) % 2147483646 + 1); let mods = "";
     const inFinder = (x, y) => (x < 8 && y < 8) || (x >= N - 8 && y < 8) || (x < 8 && y >= N - 8);
@@ -3379,7 +3545,7 @@ export function bootKnetApp() {
     VN.people = P; VN.rnd = rnd;
   }
   function vnMatches() { const d = IND[A.ind], pref = ["lounge", "booths", "labs"];
-    return d.matches.map((m, i) => { const q = VZ.find(z => z.type === pref[i % 3] && !(i && VZ.find(y => y.type === pref[(i - 1) % 3]) === z)) || VZ[(i + 1) % 4], [cx, cz] = vzCenter(q); return { n: m[1], ini: m[0], sc: m[3], x: cx + [-1, 3, 1][i % 3], z: cz + [0.5, 3, 2.5][i % 3], zone: q.id, conn: isConn(m[1]) }; }); }
+    return d.matches.map((m, i) => { const q = VZ.find(z => z.type === pref[i % 3] && !(i && VZ.find(y => y.type === pref[(i - 1) % 3]) === z)) || VZ[(i + 1) % 4], [cx, cz] = vzCenter(q); return { n: m[1], k: m[5], ini: m[0], sc: m[3], x: cx + [-1, 3, 1][i % 3], z: cz + [0.5, 3, 2.5][i % 3], zone: q.id, conn: isConn(m[5]) }; }); }
 
   function venueHTML() {
     const ev = vnEnsureEv(); vnInitPeople();
@@ -3431,7 +3597,7 @@ export function bootKnetApp() {
       <div class="vn-zgrid">${VZ.map(q => { const here = ms.filter(m => m.zone === q.id), n = VN.people ? VN.people.filter(p => p.q === q).length : 0;
         return `<article class="vn-zc" style="--zc:${q.hex}"><div class="vn-zc-h"><span class="vn-zl">${q.id}</span><div class="min-w-0"><b>${q.name}</b><span>${q.desc}</span></div></div>
           ${nw && nw.q.id === q.id ? `<div class="vn-zc-now on">${svg("clock")}<span>${nw.live ? "Ahora" : "En agenda"} · ${nw.s.tm}: ${esc(nw.s.ttl)}</span></div>` : ""}
-          <div class="vn-zc-meta"><span>${svg("users")}${n} personas</span>${here.map(m => `<button type="button" class="vn-zc-m" data-act="person" data-v="${esc(m.n)}">${m.conn ? svg("check") : svg("spark")}${esc(m.n)} · ${m.sc}%</button>`).join("")}</div>
+          <div class="vn-zc-meta"><span>${svg("users")}${n} personas</span>${here.map(m => `<button type="button" class="vn-zc-m" data-act="person" data-v="${esc(m.k)}">${m.conn ? svg("check") : svg("spark")}${esc(m.n)} · ${m.sc}%</button>`).join("")}</div>
           <button type="button" class="pill-btn" data-vnz="${q.id}">Trazar ruta ${svg("arrow")}</button></article>`; }).join("")}</div>
     </div>`;
   }
@@ -3460,7 +3626,7 @@ export function bootKnetApp() {
     /* etiquetas HTML: zonas, matches y "tú" */
     const ms = vnMatches();
     labels.innerHTML = VZ.map(q => `<span class="vn-lab ${VN.nowZone === q.id ? "now" : ""}" data-lz="${q.id}" style="--zc:${q.hex}"><b>${q.id}</b>${q.name}${VN.nowZone === q.id ? (VN.nowLive ? "<em>Ahora</em>" : "<em>Sesión</em>") : ""}</span>`).join("")
-      + ms.map((m, i) => `<button type="button" class="vn-lab vn-lab-m ${m.conn ? "conn" : ""}" data-lm="${i}" data-act="person" data-v="${esc(m.n)}" tabindex="-1">${m.conn ? svg("check") : svg("spark")}${esc(m.n)} · ${m.sc}%</button>`).join("")
+      + ms.map((m, i) => `<button type="button" class="vn-lab vn-lab-m ${m.conn ? "conn" : ""}" data-lm="${i}" data-act="person" data-v="${esc(m.k)}" tabindex="-1">${m.conn ? svg("check") : svg("spark")}${esc(m.n)} · ${m.sc}%</button>`).join("")
       + `<span class="vn-lab vn-lab-you" data-lyou>${svg("pin")}Tú</span>`;
     const labEls = { z: VZ.map(q => labels.querySelector(`[data-lz="${q.id}"]`)), m: ms.map((m, i) => labels.querySelector(`[data-lm="${i}"]`)), you: labels.querySelector("[data-lyou]") };
 
@@ -3665,15 +3831,15 @@ export function bootKnetApp() {
   }
   function redChipsHTML() {
     const d = IND[A.ind];
-    const pend = d.matches.filter(m => !isConn(m[1])); if (!pend.length) return "";
-    return `<div class="red-chips" aria-label="Accesos rápidos a tus matches">${pend.map(m => act("person", m[1], esc(m[1]), "red-chip")).join("")}</div>`;
+    const pend = d.matches.filter(m => !isConn(m[5])); if (!pend.length) return "";
+    return `<div class="red-chips" aria-label="Accesos rápidos a tus matches">${pend.map(m => act("person", m[5], esc(m[1]), "red-chip")).join("")}</div>`;
   }
   function redMatchesHTML() {
-    const d = IND[A.ind], pend = d.matches.filter(m => !isConn(m[1]));
+    const d = IND[A.ind], pend = d.matches.filter(m => !isConn(m[5]));
     return `<section class="red-sec" id="matchesCard" aria-labelledby="redMatchT">
       <div class="red-sec-h"><h2 id="redMatchT" class="red-k">Matches sugeridos</h2><span class="red-link" style="border:0">Calculados con tu rol, industria, intereses y agenda</span></div>
-      ${!d.matches.length ? `<div class="conn-empty">${svg("users")}<div><b>Aún no hay matches en tu evento</b><p class="text-mute text-[14px]">KNET solo te sugiere asistentes reales. Cuando más personas se inscriban en tus eventos, verás aquí a quién te conviene conocer y por qué. Mientras tanto, escanea la credencial QR de quien conozcas en persona.</p><div class="flex flex-wrap gap-2" style="margin-top:10px">${act("goto", "eventos", `${svg("map")}Explorar eventos`)}</div></div></div>` : pend.length ? `<div class="red-mgrid">${pend.map(([ini, n, r, sc, why]) => { const i = d.matches.findIndex(m => m[1] === n); return `<article class="rm">
-        <div class="rm-top">${avProf(n, "avatar rm-av", `background:${avatarBg(i)}`, ini, true)}<div class="min-w-0 flex-1"><div class="rm-name">${n}</div><div class="rm-role">${r}</div></div><div class="rm-aff"><b class="tabular">${sc}%</b><span>Afinidad</span></div></div>
+      ${!d.matches.length ? `<div class="conn-empty">${svg("users")}<div><b>Aún no hay matches en tu evento</b><p class="text-mute text-[14px]">KNET solo te sugiere asistentes reales. Cuando más personas se inscriban en tus eventos, verás aquí a quién te conviene conocer y por qué. Mientras tanto, escanea la credencial QR de quien conozcas en persona.</p><div class="flex flex-wrap gap-2" style="margin-top:10px">${act("goto", "eventos", `${svg("map")}Explorar eventos`)}</div></div></div>` : pend.length ? `<div class="red-mgrid">${pend.map(([ini, name, r, sc, why, n]) => { const i = d.matches.findIndex(m => m[5] === n); return `<article class="rm">
+        <div class="rm-top">${avProf(n, "avatar rm-av", `background:${avatarBg(i)}`, ini, true)}<div class="min-w-0 flex-1"><div class="rm-name">${name}</div><div class="rm-role">${r}</div></div><div class="rm-aff"><b class="tabular">${sc}%</b><span>Afinidad</span></div></div>
         <p class="rm-why">${why}</p>
         <div class="mcard-actions">${matchActions(n)}${act("person", n, "Detalle", "btn btn-ghost btn-sm")}</div>
       </article>`; }).join("")}</div>` : `<div class="conn-empty">${svg("check")}<div><b>Ya conectaste con todos tus matches sugeridos</b><p class="text-mute text-[14px]">Te avisaremos cuando la IA encuentre a alguien nuevo con alta afinidad. Mientras tanto, puedes escanear credenciales para sumar contactos.</p></div></div>`}
@@ -3737,7 +3903,7 @@ export function bootKnetApp() {
         </div>
       </div>` : ""}
       <div class="flex flex-wrap gap-2">${act("qrtoggle", "", `${svg("qr")}${qrOpen ? "Ocultar mi QR" : "Mostrar mi QR"}`, "btn btn-primary btn-sm")}${act("qrscan", "", `${svg("qr")}Escanear QR`, "btn btn-ghost btn-sm")}</div>
-      ${list.length ? `<div class="grid gap-2"><div class="av-lbl" style="margin:0">Conexiones recientes por QR</div>${list.map(c => `<button type="button" class="qr-recent" data-act="chat" data-v="${esc(c.name)}"><span class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,#2F55E0,#7500C0)">${initialsOf(c.name)}</span><span class="min-w-0"><b>${esc(c.name)}</b><span class="block text-[12px] text-mute">${esc(c.role)} · ${esc(c.hora)} · ${esc(c.lugar)}</span></span>${svg("msg")}</button>`).join("")}</div>` : ""}
+      ${list.length ? `<div class="grid gap-2"><div class="av-lbl" style="margin:0">Conexiones recientes por QR</div>${list.map(c => `<button type="button" class="qr-recent" data-act="chat" data-v="${esc(c.key)}"><span class="avatar" style="width:32px;height:32px;font-size:11px;background:linear-gradient(135deg,#2F55E0,#7500C0)">${initialsOf(nm(c.key))}</span><span class="min-w-0"><b>${esc(nm(c.key))}</b><span class="block text-[12px] text-mute">${esc(c.role)} · ${esc(c.hora)} · ${esc(c.lugar)}</span></span>${svg("msg")}</button>`).join("")}</div>` : ""}
     </article>`;
   }
   function startQrTimer() {
@@ -3840,7 +4006,7 @@ export function bootKnetApp() {
     try {
       const r = await api.scanQr(token, context), n = adoptScan(r);
       if (run !== scanRun || $("#m-qrscan").hidden) return;
-      if (r.connection.status === "accepted") scanDone(qrPerson(n) || { name: n, role: "", hora: "", fecha: "", lugar: "" }, r.xpAwarded || 0, true);
+      if (r.connection.status === "accepted") scanDone(qrPerson(n) || { key: n, name: nm(n), role: "", hora: "", fecha: "", lugar: "" }, r.xpAwarded || 0, true);
       else scanSent(n, r.connection.contact.headline || "", r.created === false);
     } catch (e) {
       if (run !== scanRun) return;
@@ -3864,8 +4030,8 @@ export function bootKnetApp() {
     }
     try {
       const r = await api.scanQr(op.token, op.context), n = adoptScan(r);
-      if (r.connection.status === "accepted") toast(`<b>Conexión por QR con ${esc(n)}</b>${r.xpAwarded ? xpLine(r.xpAwarded) : ""}`, "qr");
-      else toast(`<b>${esc(t("scan.sentNotif").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("scan.sentSub"))}</div>`, "qr");
+      if (r.connection.status === "accepted") toast(`<b>Conexión por QR con ${esc(nm(n))}</b>${r.xpAwarded ? xpLine(r.xpAwarded) : ""}`, "qr");
+      else toast(`<b>${esc(t("scan.sentNotif").replace("{0}", nm(n)))}</b><div class="text-[13px] text-mute">${esc(t("scan.sentSub"))}</div>`, "qr");
     }
     catch (e) {
       if (!(e instanceof ApiError)) throw e;
@@ -3876,31 +4042,35 @@ export function bootKnetApp() {
   /* Conexión entre usuarios reales: ficha en A.qrConn (para el chat, el Dossier y Mi red) */
   /* asked = la conexión nació de tu solicitud y la otra persona la aceptó */
   function adoptRealPeer(c, announce, asked) {
-    const n = c.contact.name, q = qrPerson(n), when = new Date(c.acceptedAt || c.createdAt || Date.now());
-    addPeerCard(n, c.contact.userId, c.contact.headline, c.source, when, peerInts(c.contact)); // ya guardada: se completan cargo e intereses
+    const n = personKey(c.contact), q = qrPerson(n), when = new Date(c.acceptedAt || c.createdAt || Date.now());
+    rememberContact(c.contact);
+    addPeerCard(n, c.contact.userId, c.contact.headline, c.source, when, peerInts(c.contact)); // ya guardada: se completan nombre, cargo e intereses
     if (q) return;
     if (!announce) return;
-    if (asked) { notify("conn", t("req.theyAccepted").replace("{0}", n), t("req.theyAcceptedSub")); toast(`<b>${esc(t("req.theyAccepted").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("req.theyAcceptedSub"))}</div>`, "users"); }
-    else notify("conn", c.source === "qr" ? `${n} se conectó contigo por QR` : t("req.accepted").replace("{0}", n), "Nueva conexión · ya pueden chatear");
+    const name = nm(n);
+    if (asked) { notify("conn", t("req.theyAccepted").replace("{0}", name), t("req.theyAcceptedSub")); toast(`<b>${esc(t("req.theyAccepted").replace("{0}", name))}</b><div class="text-[13px] text-mute">${esc(t("req.theyAcceptedSub"))}</div>`, "users"); }
+    else notify("conn", c.source === "qr" ? `${name} se conectó contigo por QR` : t("req.accepted").replace("{0}", name), "Nueva conexión · ya pueden chatear");
   }
-  /* Ficha local de un usuario real conectado (A.qrConn: chat, Dossier, grafo y Mi red) */
+  /* Ficha local de un usuario real conectado (A.qrConn: chat, Dossier, grafo y Mi red), por su clave u:<userId>.
+     El nombre guardado es solo para mostrar: se actualiza si la persona lo cambia. */
   /* interests: los del servidor (ya filtrados por su permiso «interests»); undefined = no se tocan */
   function addPeerCard(n, userId, headline, source, when = new Date(), interests) {
     const q = qrPerson(n);
-    if (q) { q.userId = userId; if (headline) q.role = apiTxt(headline, 160); if (Array.isArray(interests)) q.interests = interests; return; }
-    (A.qrConn ||= []).push({ name: n, role: apiTxt(headline, 160) || "Asistente de KNET", lugar: source === "qr" ? "En persona" : t("att.place"), userId, at: when.getTime(), interests: Array.isArray(interests) ? interests : [],
+    if (q) { q.userId = userId; q.name = nm(n); if (headline) q.role = apiTxt(headline, 160); if (Array.isArray(interests)) q.interests = interests; return; }
+    (A.qrConn ||= []).push({ key: n, name: nm(n), role: apiTxt(headline, 160) || "Asistente de KNET", lugar: source === "qr" ? "En persona" : t("att.place"), userId, at: when.getTime(), interests: Array.isArray(interests) ? interests : [],
       hora: when.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }), fecha: when.toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" }) });
   }
   /* Respuesta de POST /api/me/connections/scan → estado local.
      Pendiente (el servidor actual): es una solicitud a la otra persona; la XP llega cuando la acepte.
      Aceptada (servidor anterior, o ella ya te lo había pedido): conexión lista y la XP la puso el servidor. */
   function adoptScan(r) {
-    const c = r.connection, n = c.contact.name, isNew = !isConn(n);
+    const c = r.connection, n = personKey(c.contact), isNew = !isConn(n);
+    rememberContact(c.contact);
     (connIndex ||= new Map()).set(n, { id: c.id, status: c.status, userId: c.contact.userId || null });
     if (typeof r.xp === "number") A.xp = r.xp + A.xpLocal;
     if (c.status !== "accepted") {
       if (!isConn(n)) (A.requests ||= {})[n] = { status: "pending", at: Date.now(), real: true, userId: c.contact.userId || null, via: "qr", headline: c.contact.headline || "" };
-      if (r.created !== false) notify("conn", t("scan.sentNotif").replace("{0}", n), t("scan.sentSub"));
+      if (r.created !== false) notify("conn", t("scan.sentNotif").replace("{0}", nm(n)), t("scan.sentSub"));
       save(); refresh(); return n;
     }
     adoptRealPeer(c, false);
@@ -3908,7 +4078,7 @@ export function bootKnetApp() {
     if (A.requests) delete A.requests[n];
     if (A.inbound) delete A.inbound[n];
     if (!synced("conn:" + n)) A.xpSynced.push("conn:" + n);
-    if (isNew) notify("conn", `Conexión por QR con ${n}`, r.xpAwarded ? `Nueva conexión · +${r.xpAwarded} XP` : "Nueva conexión");
+    if (isNew) notify("conn", `Conexión por QR con ${nm(n)}`, r.xpAwarded ? `Nueva conexión · +${r.xpAwarded} XP` : "Nueva conexión");
     save(); refresh(); return n;
   }
 
@@ -3989,7 +4159,7 @@ export function bootKnetApp() {
   /* connection.removed: la otra persona rechazó tu solicitud o canceló la suya. Se retira sin avisar (el rechazo
      es silencioso: el botón vuelve a «Conectar»). Sin la conexión en el índice, basta con sincronizar. */
   function onLiveRemoved(d) {
-    const n = d.connectionId ? connNameById(d.connectionId) : null;
+    const n = d.connectionId ? connKeyById(d.connectionId) : null;
     if (!n) { liveSync(); return; }
     if (connIndex) connIndex.delete(n);
     if (reqOf(n) && reqOf(n).real && reqOf(n).status === "pending") delete A.requests[n];
@@ -3999,14 +4169,14 @@ export function bootKnetApp() {
     if (!$("#m-conns").hidden) renderConns();
   }
   function onLiveMessage(d) {
-    const n = d.connectionId ? connNameById(d.connectionId) : null;
+    const n = d.connectionId ? connKeyById(d.connectionId) : null;
     if (!n || !d.message || !isConn(n)) { liveSync(); return; }
     const fresh = mergeMessages(n, [d.message]); save();
     if (!$("#m-dm").hidden && dmFor === n) { if (!dmBusy) renderDm(); }
     else if (fresh) {
       const body = String(d.message.body || "");
-      notify("conn", `Nuevo mensaje de ${n}`, body.slice(0, 80));
-      toast(`<b>${esc(n)}</b><div class="text-[13px] text-mute">${esc(body.slice(0, 120))}</div>`, "msg");
+      notify("conn", `Nuevo mensaje de ${nm(n)}`, body.slice(0, 80));
+      toast(`<b>${esc(nm(n))}</b><div class="text-[13px] text-mute">${esc(body.slice(0, 120))}</div>`, "msg");
     }
   }
   /* Sin QR dinámico (sin API, sin cuenta o servidor sin el endpoint) no hay asistentes reales a los que conectar:
@@ -4024,12 +4194,14 @@ export function bootKnetApp() {
   }
   function acceptScan() {
     const c = scanCur; if (!c) return; scanCur = null;
-    award(() => { (A.qrConn = A.qrConn || []).push(c); if (!A.connections.includes(c.name)) A.connections.push(c.name); }, CONN_XP, `Conexión por QR con ${c.name}`, "qr", "conn");
-    apiRun({ t: "conn", id: c.name, state: "accepted", source: "qr", context: (c.interests || []).join(", ").slice(0, 280) });
+    c.key = c.key || personKey(c); rememberPerson(c.key, { name: c.name, headline: c.role, userId: c.userId });
+    award(() => { (A.qrConn = A.qrConn || []).push(c); if (!A.connections.includes(c.key)) A.connections.push(c.key); }, CONN_XP, `Conexión por QR con ${c.name}`, "qr", "conn");
+    apiRun({ t: "conn", id: c.key, state: "accepted", source: "qr", context: (c.interests || []).join(", ").slice(0, 280) });
     scanDone(c, CONN_XP, false);
   }
   /* QR escaneado con el servidor actual: la solicitud quedó enviada; la conexión y la XP llegan cuando la acepte */
-  function scanSent(n, headline, already) {
+  function scanSent(k, headline, already) {
+    const n = nm(k);
     $("#qsBody").innerHTML = `
       <div class="mh"><div><span class="chip chip-cyan"><span class="pend-dot"></span>${esc(t("scan.sentChip"))}</span><h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">${esc(t(already ? "scan.alreadyTitle" : "scan.sentTitle").replace("{0}", first(n)))}</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
       <div class="qs-done reveal-in">
@@ -4052,7 +4224,7 @@ export function bootKnetApp() {
           <div><span>Guardado en</span><b>Tu Dossier · sección Conexión</b></div>
         </div>
       </div>
-      <div class="av-foot"><button type="button" class="btn btn-ghost btn-sm" data-qs="${live ? "cam" : "again"}">${svg("qr")}${live ? "Escanear otro QR" : "Simular otro escaneo"}</button><button type="button" class="btn btn-primary btn-sm" data-qs="chat" data-v="${esc(c.name)}">${svg("msg")}Chatear con ${esc(first(c.name))}</button></div>`;
+      <div class="av-foot"><button type="button" class="btn btn-ghost btn-sm" data-qs="${live ? "cam" : "again"}">${svg("qr")}${live ? "Escanear otro QR" : "Simular otro escaneo"}</button><button type="button" class="btn btn-primary btn-sm" data-qs="chat" data-v="${esc(c.key || personKey(c))}">${svg("msg")}Chatear con ${esc(first(c.name))}</button></div>`;
     const el = $("#qsXp"), t0 = performance.now();
     const step = (t) => { const k = Math.min(1, (t - t0) / 900); if (!el.isConnected) return; el.textContent = "+" + Math.round(xp * (1 - Math.pow(1 - k, 3))); if (k < 1) requestAnimationFrame(step); };
     requestAnimationFrame(reduce ? () => { el.textContent = "+" + xp; } : step);
@@ -5141,9 +5313,9 @@ export function bootKnetApp() {
     if (a === "agses") { openAgendaSession(v); return; }
     if (a === "kvinfo") { const box = document.getElementById(v), open = box.hidden; box.hidden = !open; b.setAttribute("aria-expanded", String(open)); return; }
     if (a === "attend") { const s = sessionById(v); if (!s || A.attended.includes(s.id) || isEnded("ev:" + s.ev)) return; award(() => A.attended.push(s.id), CHECKIN_XP, `Check-in · ${s.ttl} (${evById(s.ev).city}, Día ${s.day + 1})`, "qr"); apiRun({ t: "checkin", id: s.id }); return; }
-    if (a === "connect") { connectMatch(v); return; }
-    if (a === "person") { openPerson(v); return; }
-    if (a === "chat") { openChat(v); return; }
+    if (a === "connect") { connectMatch(keyOf(v)); return; } // v = clave de la persona (o su nombre en mensajes guardados antes de #33)
+    if (a === "person") { openPerson(keyOf(v)); return; }
+    if (a === "chat") { openChat(keyOf(v)); return; }
     if (a === "qrtoggle") { qrOpen = !qrOpen; refresh(); const c = $("#qrCard"); if (c && qrOpen) flash(c); return; }
     if (a === "qrscan") { simulateScan(); return; }
     if (a === "qrcam") { startCamScan(); return; }

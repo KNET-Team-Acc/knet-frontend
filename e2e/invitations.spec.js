@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { installMockApi, seedSession, engineState, peerConnection } from "./support/mock-api.js";
+import { installMockApi, seedSession, engineState, peerConnection, peerKey } from "./support/mock-api.js";
 
 const PEER = "Diego R.";
 const seedPeer = { extra: { connections: [PEER], xpSynced: [`conn:${PEER}`] } };
@@ -34,8 +34,9 @@ test("Invitaciones: pestaña dentro de Mis eventos, con contador de pendientes, 
   await expect(card).toBeVisible();
   await expect(card).toContainText(PEER);
 
-  await card.locator(`[data-inv="yes"][data-n="${PEER}"]`).click();
-  await expect.poll(async () => (await engineState(page)).coffees[PEER]?.status).toBe("accepted");
+  const PK = peerKey(peerConnection(7, PEER)); // u:<userId> (knet-frontend#33)
+  await card.locator(`[data-inv="yes"][data-n="${PK}"]`).click();
+  await expect.poll(async () => (await engineState(page)).coffees[PK]?.status).toBe("accepted");
   await expect(page.locator("#invTab .me-seg-n")).toHaveCount(0);
   await expect(page.locator("#invTab")).toHaveAttribute("aria-label", "Invitaciones · Sin pendientes");
   await expect(meTab.locator(".app-tab-dot")).toHaveCount(0);

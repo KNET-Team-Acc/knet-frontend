@@ -1,15 +1,19 @@
 import { test, expect } from "@playwright/test";
-import { installMockApi, seedSession, engineState, goOnline, peerConnection, catalogConnection, fakeEventSource } from "./support/mock-api.js";
+import { installMockApi, seedSession, engineState, goOnline, peerConnection, catalogConnection, fakeEventSource, peerKey } from "./support/mock-api.js";
 import { goTab } from "./support/ui.js";
 
 /** Espera a que termine el sync (GET /api/me/connections es una de sus lecturas) */
 const waitSync = (api, n = 1) => expect.poll(() => api.log.filter((r) => r.path === "/api/me/connections").length).toBeGreaterThanOrEqual(n);
 const PEER = "Diego R.";
+const PEER_KEY = peerKey(peerConnection(7, PEER)); // u:<userId>: el estado local identifica a cada persona por su id (knet-frontend#33)
+// Estado guardado con el formato anterior (por nombre): el motor lo migra a claves al sincronizar
 const seedPeer = { extra: { connections: [PEER], xpSynced: [`conn:${PEER}`] } };
+/** Clave de la persona `name` según las conexiones del servidor simulado */
+const keyOf = (api, name) => peerKey(api.connections.find((c) => c.contact.name === name));
 
 async function openPeerChat(page) {
   await goTab(page, "red");
-  await page.locator(`#connsCard [data-cmsg="${PEER}"]`).click();
+  await page.locator(`#connsCard [data-cmsg="${PEER_KEY}"]`).click();
   await expect(page.locator("#m-dm")).toBeVisible();
 }
 
@@ -23,7 +27,7 @@ test("usuario real: café y DM llegan al servidor, sin respuestas simuladas y si
 
   await openPeerChat(page);
   await page.locator('#m-dm [data-dmcof="propose"]').click();
-  await expect.poll(async () => (await engineState(page)).coffees[PEER]?.sid).toBe(1);
+  await expect.poll(async () => (await engineState(page)).coffees[PEER_KEY]?.sid).toBe(1);
   expect(api.coffees[0]).toMatchObject({ connectionId: 7, status: "proposed" });
   await expect(page.locator("#m-dm")).toContainText("esperando respuesta");
 
@@ -33,15 +37,15 @@ test("usuario real: café y DM llegan al servidor, sin respuestas simuladas y si
   expect(api.messages[0]).toMatchObject({ connectionId: 7, body: "Hola Diego, ¿café a las 3?" });
   await page.waitForTimeout(2500); // con un usuario real no hay respuesta simulada
   let A = await engineState(page);
-  expect(A.dms[PEER].map((m) => m.who)).toEqual(["me"]);
-  expect(A.dms[PEER][0].sid).toBe(1);
+  expect(A.dms[PEER_KEY].map((m) => m.who)).toEqual(["me"]);
+  expect(A.dms[PEER_KEY][0].sid).toBe(1);
 
   // La otra persona acepta el café (el servidor suma +50 XP una vez) y responde desde su app
   api.coffees[0].status = "accepted"; api.user.xp += 50;
   api.messages.push({ id: 2, connectionId: 7, fromMe: false, body: "¡Claro! Nos vemos en el Lounge B.", createdAt: new Date().toISOString() });
   const before = A;
   await goOnline(page, api);
-  await expect.poll(async () => (await engineState(page)).coffees[PEER].status).toBe("accepted");
+  await expect.poll(async () => (await engineState(page)).coffees[PEER_KEY].status).toBe("accepted");
   await expect(page.locator("#dmLog")).toContainText("Nos vemos en el Lounge B");
   A = await engineState(page);
   expect(A.xpSynced).toContain("coffee:1");
@@ -82,7 +86,7 @@ test("contacto del catálogo: la respuesta simulada del café se registra en el 
   await seedSession(page, { extra: { connections: ["Laura M."], xpSynced: ["conn:Laura M."] } });
   await page.goto("/#red");
   await waitSync(api);
-  await page.locator('#connsCard [data-cprof="Laura M."]').click();
+  await page.locator('#connsCard [data-cprof="c:1"]').click(); // c:<contactId>, ya no el nombre
   await page.locator('#m-person [data-pact="coffee"]').click();
 
   await expect.poll(() => api.coffees[0]?.status, { timeout: 20_000 }).toBe("accepted");
@@ -139,10 +143,10 @@ test("escáner (backend anterior): un QR válido crea la conexión real con la X
 
   await page.evaluate(() => { window.__qrValue = "knet1.Valentina Q.firma"; });
   await expect(page.locator("#m-qrscan")).toContainText("¡Conexión lista con Valentina!");
-  const A = await engineState(page);
-  expect(A.connections).toContain("Valentina Q");
-  expect(A.qrConn.find((q) => q.name === "Valentina Q").userId).toBeTruthy();
-  expect(A.xpSynced).toContain("conn:Valentina Q");
+  const A = await engineState(page), VQ = keyOf(api, "Valentina Q");
+  expect(A.connections).toContain(VQ);
+  expect(A.qrConn.find((q) => q.name === "Valentina Q")).toMatchObject({ key: VQ, userId: VQ.slice(2) });
+  expect(A.xpSynced).toContain(`conn:${VQ}`);
   expect(A.xp).toBe(api.user.xp + A.xpLocal); // +100 del servidor, nada local
 });
 
@@ -174,6 +178,7 @@ test("check-in NFC: la opción solo aparece con Web NFC y registra el check-in c
 
 /* ---- Solicitudes recibidas (issue #19 · 4a) ---- */
 const MATCH = "Laura M.";
+const MK = "c:1"; // clave del contacto del catálogo (id 1)
 /** Contacto del catálogo tal como lo devuelve GET /api/contacts */
 const contact = (name = MATCH, id = 1) => ({ id, userId: null, name, initials: name.slice(0, 2).toUpperCase(), headline: "CTO · Fintech", industry: "tech", affinity: 88,
   matchReason: "Comparte Datos contigo", interests: ["Datos"], likes: [], goal: "Escalar IA" });
@@ -192,17 +197,18 @@ test("solicitud recibida: aceptar en Mi red crea la conexión y suma +100 XP una
   await expect(sec).toContainText(MATCH);
   const before = await engineState(page);
 
-  await sec.locator(`[data-inacc="${MATCH}"]`).click();
+  await sec.locator(`[data-inacc="${MK}"]`).click();
   await expect.poll(() => api.connXp).toBe(1);
   expect(connWrites(api)).toEqual(["POST /api/me/connections", "PATCH /api/me/connections/201"]);
-  await expect.poll(async () => (await engineState(page)).xpSynced).toContain(`conn:${MATCH}`);
+  expect(api.connections[0].contact.id).toBe(1); // se pidió por contactId, no por nombre
+  await expect.poll(async () => (await engineState(page)).xpSynced).toContain(`conn:${MK}`);
   const A = await engineState(page);
-  expect(A.connections).toContain(MATCH);
-  expect(A.inbound[MATCH]).toBeUndefined();
+  expect(A.connections).toContain(MK);
+  expect(A.inbound[MK]).toBeUndefined();
   expect(A.xpLocal).toBe(before.xpLocal);       // los +100 locales pasaron al servidor
   expect(A.xp).toBe(api.user.xp + A.xpLocal);
   await expect(page.locator("#inboundSec")).toHaveCount(0);
-  await expect(page.locator(`#connsCard [data-cmsg="${MATCH}"]`)).toBeVisible();
+  await expect(page.locator(`#connsCard [data-cmsg="${MK}"]`)).toBeVisible();
 
   // Otro sync no vuelve a sumar
   const gets = connGets(api);
@@ -219,9 +225,9 @@ test("solicitud recibida sin conexión: aceptar se encola (conn accepted) y se e
   await waitSync(api);
 
   api.offline = true;
-  await page.locator(`#inboundSec [data-inacc="${MATCH}"]`).click();
-  await expect.poll(async () => (await engineState(page)).outbox.map((o) => [o.t, o.id, o.state])).toEqual([["conn", MATCH, "accepted"]]);
-  expect((await engineState(page)).connections).toContain(MATCH);
+  await page.locator(`#inboundSec [data-inacc="${MK}"]`).click();
+  await expect.poll(async () => (await engineState(page)).outbox.map((o) => [o.t, o.id, o.state])).toEqual([["conn", MK, "accepted"]]);
+  expect((await engineState(page)).connections).toContain(MK);
 
   const start = api.log.length;
   await goOnline(page, api);
@@ -229,7 +235,7 @@ test("solicitud recibida sin conexión: aceptar se encola (conn accepted) y se e
   expect(connWrites(api, start)).toEqual(["POST /api/me/connections", "PATCH /api/me/connections/201"]);
   expect(api.connXp).toBe(1);
   const A = await engineState(page);
-  expect(A.xpSynced).toContain(`conn:${MATCH}`);
+  expect(A.xpSynced).toContain(`conn:${MK}`);
   expect(A.xp).toBe(api.user.xp + A.xpLocal);
 });
 
@@ -239,14 +245,14 @@ test("solicitud recibida: se rechaza desde el perfil, no llega al servidor y no 
   await page.goto("/#red");
   await waitSync(api);
 
-  await page.locator(`#inboundSec [data-cprof="${MATCH}"]`).click();
+  await page.locator(`#inboundSec [data-cprof="${MK}"]`).click();
   await expect(page.locator("#personStatus")).toContainText("Te envió una solicitud");
   await expect(page.locator('#m-person [data-pact="accept"]')).toBeVisible();
   await page.locator('#m-person [data-pact="decline"]').click();
   await expect(page.locator('#m-person [data-pact="connect"]')).toBeVisible();
   const A = await engineState(page);
-  expect(A.inbound[MATCH]).toBeUndefined();
-  expect(A.inboundGone).toContain(MATCH);
+  expect(A.inbound[MK]).toBeUndefined();
+  expect(A.inboundGone).toContain(MK);
   expect(connWrites(api)).toEqual([]);
 
   await page.keyboard.press("Escape");
@@ -265,7 +271,7 @@ test("solicitud recibida automática: un match afín te escribe una vez y llega 
   await expect(page.locator("#inboundSec")).toContainText(MATCH, { timeout: 15_000 });
   const A = await engineState(page);
   expect(A.inboundSeeded).toBe("tech");
-  expect(A.notifs[0]).toMatchObject({ type: "conn", n: MATCH });
+  expect(A.notifs[0]).toMatchObject({ type: "conn", n: MK });
   expect(A.notifs[0].title).toContain("quiere conectar contigo");
 });
 
@@ -286,13 +292,13 @@ test("SSE: una solicitud entrante (connection.request) aparece en vivo y aceptar
   await expect(sec).toContainText("desde KNET");
   expect((await engineState(page)).notifs[0].title).toBe("Andrés V. quiere conectar contigo");
 
-  const start = api.log.length;
-  await sec.locator('[data-inacc="Andrés V."]').click();
+  const start = api.log.length, AK = peerKey(req);
+  await sec.locator(`[data-inacc="${AK}"]`).click();
   await expect.poll(() => api.connXp).toBe(1);
   expect(connWrites(api, start)).toEqual(["PATCH /api/me/connections/9"]);
-  await expect.poll(async () => (await engineState(page)).xpSynced).toContain("conn:Andrés V.");
+  await expect.poll(async () => (await engineState(page)).xpSynced).toContain(`conn:${AK}`);
   const A = await engineState(page);
-  expect(A.connections).toContain("Andrés V.");
+  expect(A.connections).toContain(AK);
   expect(A.xp).toBe(api.user.xp + A.xpLocal);
 });
 
@@ -311,12 +317,12 @@ test("SSE: una solicitud propia (sin direction) no entra en «Solicitudes recibi
 
 /* ---- Perfil desde el chat (4b) ---- */
 test("chat: el nombre del encabezado abre el perfil con clic y con Enter", async ({ page }) => {
-  const api = await installMockApi(page, { contacts: [contact()], connections: [catalogConnection(3, MATCH, "accepted")] });
+  const api = await installMockApi(page, { contacts: [contact()], connections: [catalogConnection(3, MATCH, "accepted", { contactId: 1 })] });
   await seedSession(page, { extra: { connections: [MATCH], xpSynced: [`conn:${MATCH}`] } });
   await page.goto("/#red");
   await waitSync(api);
 
-  const openChat = async () => { await page.locator(`#connsCard [data-cmsg="${MATCH}"]`).click(); await expect(page.locator("#m-dm")).toBeVisible(); };
+  const openChat = async () => { await page.locator(`#connsCard [data-cmsg="${MK}"]`).click(); await expect(page.locator("#m-dm")).toBeVisible(); };
   await openChat();
   const who = page.locator("#m-dm .dm-who");
   await expect(who).toHaveText(MATCH);
@@ -415,7 +421,7 @@ test("inglés: solicitudes recibidas y categorías de intereses con su clave", a
   await page.goto("/#red");
   await waitSync(api);
   await expect(page.locator("#inboundSec")).toContainText("Received requests (1)");
-  await expect(page.locator(`#inboundSec [data-inacc="${MATCH}"]`)).toHaveText("Accept · +100 XP");
+  await expect(page.locator(`#inboundSec [data-inacc="${MK}"]`)).toHaveText("Accept · +100 XP");
   await goTab(page, "perfil");
   await page.locator('[data-act="pfedit"][data-v="interests"]').click();
   await expect(page.locator('.int-cat[data-icat="ai"]')).toHaveText("AI & LLMs");
@@ -429,6 +435,7 @@ const ATT = [
   { userId: "aaaaaaaa-0000-4000-8000-000000000002", name: "Tomás Rey", initials: "TR", headline: "CTO · Nubia", industry: "tech", interests: [] },
 ];
 const esReady = (page) => expect.poll(() => page.evaluate(() => !!window.__es)).toBe(true);
+const SARA = `u:${ATT[0].userId}`, TOMAS = `u:${ATT[1].userId}`;
 
 test("escáner: el QR envía una solicitud pendiente sin XP; la conexión y los +100 llegan cuando la otra persona acepta", async ({ page }) => {
   const api = await installMockApi(page);
@@ -445,10 +452,11 @@ test("escáner: el QR envía una solicitud pendiente sin XP; la conexión y los 
   await page.locator('#qrCard [data-act="qrcam"]').click();
   await expect(page.locator("#qsTitle")).toHaveText("Le pedimos a Valentina que confirme");
   await expect(page.locator("#m-qrscan")).not.toContainText("XP SUMADOS");
+  const VQ = keyOf(api, "Valentina Q");
   let A = await engineState(page);
-  expect(A.connections).not.toContain("Valentina Q");
-  expect(A.requests["Valentina Q"]).toMatchObject({ status: "pending", real: true, via: "qr" });
-  expect(A.xpSynced).not.toContain("conn:Valentina Q");
+  expect(A.connections).not.toContain(VQ);
+  expect(A.requests[VQ]).toMatchObject({ status: "pending", real: true, via: "qr" });
+  expect(A.xpSynced).not.toContain(`conn:${VQ}`);
   expect(A.xp).toBe(before.xp);
   await page.keyboard.press("Escape");
   await expect(page.locator("#sentSec")).toContainText("Valentina Q");
@@ -458,15 +466,15 @@ test("escáner: el QR envía una solicitud pendiente sin XP; la conexión y los 
   const cn = api.connections.find((c) => c.contact.name === "Valentina Q");
   Object.assign(cn, { status: "accepted", acceptedAt: new Date().toISOString() }); delete cn.direction; api.user.xp += 100;
   await page.evaluate((c) => window.__es.emit("connection.accepted", { connection: c }), cn);
-  await expect.poll(async () => (await engineState(page)).connections).toContain("Valentina Q");
+  await expect.poll(async () => (await engineState(page)).connections).toContain(VQ);
   A = await engineState(page);
-  expect(A.requests["Valentina Q"]).toBeUndefined();
-  expect(A.xpSynced).toContain("conn:Valentina Q");
+  expect(A.requests[VQ]).toBeUndefined();
+  expect(A.xpSynced).toContain(`conn:${VQ}`);
   expect(A.xp).toBe(api.user.xp + A.xpLocal);
   expect(A.xp).toBe(before.xp + 100);
   expect(A.notifs.some((n) => n.title === "Valentina Q aceptó tu solicitud")).toBe(true);
   await expect(page.locator("#sentSec")).toHaveCount(0);
-  await expect(page.locator('#connsCard [data-cmsg="Valentina Q"]')).toBeVisible();
+  await expect(page.locator(`#connsCard [data-cmsg="${VQ}"]`)).toBeVisible();
 });
 
 test("directorio: lista a los asistentes del evento; conectar envía la solicitud por peerUserId sin XP y se puede cancelar", async ({ page }) => {
@@ -484,21 +492,22 @@ test("directorio: lista a los asistentes del evento; conectar envía la solicitu
   await card.locator(`[data-attconn="${ATT[0].userId}"]`).click();
   await expect.poll(() => api.peerRequests.length).toBe(1);
   expect(api.peerRequests[0]).toMatchObject({ peerUserId: ATT[0].userId, eventId: "and", source: "request" });
-  await expect(card.locator('[data-attcancel="Sara Núñez"]')).toBeFocused();
+  await expect(card.locator(`[data-attcancel="${SARA}"]`)).toBeFocused();
   let A = await engineState(page);
-  expect(A.requests["Sara Núñez"]).toMatchObject({ status: "pending", real: true, via: "dir", userId: ATT[0].userId });
-  expect(A.connections).not.toContain("Sara Núñez");
+  expect(A.requests[SARA]).toMatchObject({ status: "pending", real: true, via: "dir", userId: ATT[0].userId });
+  expect(A.people[SARA]).toMatchObject({ name: "Sara Núñez", userId: ATT[0].userId });
+  expect(A.connections).not.toContain(SARA);
   expect(A.xp).toBe(before.xp);
   await expect(page.locator("#sentSec")).toContainText("Desde el directorio del evento");
   await page.waitForTimeout(9000); // a un usuario real no se le simula la respuesta
-  expect((await engineState(page)).requests["Sara Núñez"].status).toBe("pending");
+  expect((await engineState(page)).requests[SARA].status).toBe("pending");
 
   const start = api.log.length;
-  await card.locator('[data-attcancel="Sara Núñez"]').click();
+  await card.locator(`[data-attcancel="${SARA}"]`).click();
   await expect.poll(() => connWrites(api, start)).toEqual(["DELETE /api/me/connections/301"]);
   await expect(card.locator(`[data-attconn="${ATT[0].userId}"]`)).toBeFocused();
   A = await engineState(page);
-  expect(A.requests["Sara Núñez"]).toBeUndefined();
+  expect(A.requests[SARA]).toBeUndefined();
   await expect(page.locator("#sentSec")).toHaveCount(0);
 });
 
@@ -511,11 +520,11 @@ test("directorio sin conexión: la solicitud se encola con peerUserId y se enví
 
   api.offline = true;
   await page.locator(`#attendeesCard [data-attconn="${ATT[1].userId}"]`).click();
-  await expect.poll(async () => (await engineState(page)).outbox.map((o) => [o.t, o.id, o.state, o.peerUserId])).toEqual([["conn", "Tomás Rey", "pending", ATT[1].userId]]);
+  await expect.poll(async () => (await engineState(page)).outbox.map((o) => [o.t, o.id, o.state, o.peerUserId])).toEqual([["conn", TOMAS, "pending", ATT[1].userId]]);
   await goOnline(page, api);
   await expect.poll(async () => (await engineState(page)).outbox.length).toBe(0);
   expect(api.peerRequests).toEqual([expect.objectContaining({ peerUserId: ATT[1].userId })]);
-  expect((await engineState(page)).requests["Tomás Rey"]).toMatchObject({ status: "pending", real: true });
+  expect((await engineState(page)).requests[TOMAS]).toMatchObject({ status: "pending", real: true });
 });
 
 test("solicitudes reales por SSE: aceptar desde el directorio hace PATCH y suma +100 una vez; connection.removed retira la otra", async ({ page }) => {
@@ -532,15 +541,15 @@ test("solicitudes reales por SSE: aceptar desde el directorio hace PATCH y suma 
   await page.evaluate((c) => window.__es.emit("connection.request", { connection: c }), tomas);
   await expect(page.locator("#inboundSec")).toContainText("Tomás Rey");
   const start = api.log.length;
-  await page.locator('#attendeesCard [data-inacc="Tomás Rey"]').click();
+  await page.locator(`#attendeesCard [data-inacc="${TOMAS}"]`).click();
   await expect.poll(() => api.connXp).toBe(1);
   expect(connWrites(api, start)).toEqual(["PATCH /api/me/connections/41"]);
-  await expect.poll(async () => (await engineState(page)).xpSynced).toContain("conn:Tomás Rey");
+  await expect.poll(async () => (await engineState(page)).xpSynced).toContain(`conn:${TOMAS}`);
   const A = await engineState(page);
-  expect(A.connections).toContain("Tomás Rey");
-  expect(A.qrConn.find((q) => q.name === "Tomás Rey")).toMatchObject({ userId: ATT[1].userId, role: "CTO · Nubia" });
+  expect(A.connections).toContain(TOMAS);
+  expect(A.qrConn.find((q) => q.key === TOMAS)).toMatchObject({ name: "Tomás Rey", userId: ATT[1].userId, role: "CTO · Nubia" });
   expect(A.xp).toBe(api.user.xp + A.xpLocal);
-  await expect(page.locator('#attendeesCard [data-act="chat"][data-v="Tomás Rey"]')).toBeVisible();
+  await expect(page.locator(`#attendeesCard [data-act="chat"][data-v="${TOMAS}"]`)).toBeVisible();
 
   // Sara te escanea en persona y luego cancela: la solicitud desaparece sin recargar
   const sara = peerConnection(42, "Sara Núñez", ATT[0].userId, { status: "pending", direction: "incoming", source: "qr" });
@@ -550,7 +559,7 @@ test("solicitudes reales por SSE: aceptar desde el directorio hace PATCH y suma 
   api.connections.splice(api.connections.indexOf(sara), 1);
   await page.evaluate((u) => window.__es.emit("connection.removed", { connectionId: 42, peerUserId: u, reason: "cancelled" }), ATT[0].userId);
   await expect(page.locator("#inboundSec")).toHaveCount(0);
-  expect((await engineState(page)).inbound["Sara Núñez"]).toBeUndefined();
+  expect((await engineState(page)).inbound[SARA]).toBeUndefined();
 });
 
 test("solicitud enviada rechazada: connection.removed la retira en silencio y vuelve «Conectar»", async ({ page }) => {
@@ -570,7 +579,7 @@ test("solicitud enviada rechazada: connection.removed la retira en silencio y vu
   await expect(page.locator(`#attendeesCard [data-attconn="${ATT[0].userId}"]`)).toBeVisible();
   await expect(page.locator("#sentSec")).toHaveCount(0);
   const A = await engineState(page);
-  expect(A.requests["Sara Núñez"]).toBeUndefined();
+  expect(A.requests[SARA]).toBeUndefined();
   expect(A.notifs.length).toBe(notifs); // sin aviso de rechazo
 });
 
