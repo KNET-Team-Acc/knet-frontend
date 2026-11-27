@@ -302,6 +302,16 @@ export async function installMockApi(page, opts = {}) {
       state.connections.push(connection);
       return json(201, { connection, created: true, xpAwarded: 0, xp: state.user.xp });
     }
+    // Ranking del evento: opts.leaderboard = { event: [{ userId, name, xp }], connections: [...] } con los demás
+    // (el usuario se añade con su XP del servidor); sin la opción, 404 como un backend sin el endpoint
+    if (path === "/api/me/leaderboard" && opts.leaderboard) {
+      const scope = url.searchParams.get("scope") || "event";
+      const all = [...(opts.leaderboard[scope] || []), { userId: USER_ID, name: state.user.name, xp: state.user.xp, me: true }].sort((a, b) => b.xp - a.xp);
+      const entries = all.map((e) => ({ pos: 1 + all.filter((o) => o.xp > e.xp).length, userId: e.userId, name: e.name, initials: "", xp: e.xp,
+        level: Math.min(Math.floor(e.xp / 500) + 1, 5), me: !!e.me }));
+      const me = entries.find((e) => e.me);
+      return json(200, { eventId: url.searchParams.get("eventId"), scope, entries, me: { pos: me.pos, xp: me.xp, level: me.level }, total: entries.length });
+    }
     // Directorio de asistentes del evento: opts.attendees (sin la opción, 404 como un backend sin el endpoint)
     if (path === "/api/me/attendees" && opts.attendees) {
       if (state.attendeesError) return json(state.attendeesError[0], { error: state.attendeesError[1], message: state.attendeesError[1] });

@@ -321,3 +321,23 @@ const PEER_EN = {
 };
 Object.assign(I18N.es, PEER_ES);
 Object.assign(I18N.en, PEER_EN);
+
+/* Ranking de asistentes de la pestaña Misiones (lb.*): general del evento o solo tus conexiones */
+const LB_ES = {
+  "lb.scopeAria": "Qué ranking ver", "lb.event": "Todo el evento", "lb.conns": "Mis conexiones", "lb.level": "Nivel {0}",
+  "lb.loading": "Cargando el ranking…",
+  "lb.connEmpty": "Aún no tienes conexiones en este evento", "lb.connEmptySub": "Conecta con asistentes desde el directorio de «Mi red»: cuando acepten, competirán contigo aquí.",
+  "lb.connGo": "Ver asistentes",
+  "lb.err.offline": "Sin conexión: el ranking se actualiza cuando vuelva la red.", "lb.err.notReg": "Tu inscripción a este evento aún no está en el servidor: el ranking aparecerá cuando se sincronice.",
+  "lb.err.network": "Activa el permiso «Red de contactos» para ver el ranking del evento.", "lb.err.error": "No pudimos cargar el ranking. Vuelve a intentarlo en un momento.",
+};
+const LB_EN = {
+  "lb.scopeAria": "Which leaderboard to show", "lb.event": "Whole event", "lb.conns": "My connections", "lb.level": "Level {0}",
+  "lb.loading": "Loading the leaderboard…",
+  "lb.connEmpty": "You don’t have connections at this event yet", "lb.connEmptySub": "Connect with attendees from the “My network” directory: once they accept, they’ll compete with you here.",
+  "lb.connGo": "See attendees",
+  "lb.err.offline": "You’re offline: the leaderboard updates when you’re back online.", "lb.err.notReg": "Your registration for this event isn’t on the server yet: the leaderboard will show up once it syncs.",
+  "lb.err.network": "Turn on the “Contact network” permission to see the event leaderboard.", "lb.err.error": "We couldn’t load the leaderboard. Try again in a moment.",
+};
+Object.assign(I18N.es, LB_ES);
+Object.assign(I18N.en, LB_EN);
