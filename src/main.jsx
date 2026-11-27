@@ -19,6 +19,7 @@ import "./styles/main/05-themes.css";
 import "./styles/main/06-venue.css";
 import "./styles/main/07-landing-motion.css";
 import "./styles/main/08-auth.css";
+import "./styles/main/09-network-concierge.css";
 
 // KNET se muestra solo en modo oscuro.
 document.documentElement.classList.remove("theme-light");
