@@ -285,3 +285,39 @@ const NET_EN = {
 };
 Object.assign(I18N.es, NET_ES);
 Object.assign(I18N.en, NET_EN);
+
+/* Solicitudes entre usuarios reales (knet-backend#24): directorio del evento (att.*), QR como solicitud pendiente (scan.*) */
+const PEER_ES = {
+  "req.statusQr": "Te escaneó en persona y quiere conectar", "req.theyAccepted": "{0} aceptó tu solicitud", "req.theyAcceptedSub": "Nueva conexión · +100 XP · ya pueden chatear",
+  "req.gone": "La solicitud de {0} ya no está disponible", "req.sentTitle": "Solicitudes enviadas ({0})", "req.sentQr": "Le escaneaste el QR · esperando que acepte",
+  "req.sentDir": "Desde el directorio del evento · esperando que acepte", "req.cancel": "Cancelar", "req.cancelAria": "Cancelar la solicitud a {0}",
+  "att.kicker": "Directorio del evento", "att.title": "Asistentes de {0}", "att.lede": "Personas inscritas que comparten su red. Al conectar le envías una solicitud: cuando la acepte, los dos suman +100 XP.",
+  "att.loading": "Buscando asistentes…", "att.empty": "Todavía no hay otros asistentes de este evento que compartan su red.",
+  "att.err.offline": "Sin conexión: no podemos mostrar el directorio ahora.", "att.err.notReg": "Tu inscripción a este evento aún no está en el servidor: el directorio aparecerá cuando se sincronice.",
+  "att.err.network": "Activa el permiso «Red de contactos» para ver a los asistentes y conectar con ellos.", "att.err.error": "No pudimos cargar el directorio. Vuelve a intentarlo en un momento.",
+  "att.connected": "Conectados", "att.chat": "Mensaje", "att.pending": "Solicitud enviada", "att.connect": "Conectar", "att.connectAria": "Enviar solicitud de conexión a {0}",
+  "att.noHeadline": "Asistente del evento", "att.common1": "1 interés en común", "att.commonN": "{0} intereses en común",
+  "att.sent": "Solicitud enviada a {0}", "att.sentSub": "Cuando {0} la acepte, los dos suman +100 XP y se abre el chat.", "att.place": "Directorio del evento",
+  "scan.sentChip": "Solicitud enviada", "scan.sentTitle": "Le pedimos a {0} que confirme", "scan.alreadyTitle": "Ya le enviaste una solicitud a {0}",
+  "scan.with": "Con", "scan.next": "Qué sigue", "scan.nextTxt": "Cuando {0} la acepte, los dos suman +100 XP y se abre el chat.", "scan.done": "Listo",
+  "scan.sentNotif": "Solicitud por QR enviada a {0}", "scan.sentSub": "La conexión se crea cuando la acepte",
+  "scan.credNote": "Quien te escanee te enviará una solicitud: la aceptas en «Solicitudes recibidas».",
+};
+const PEER_EN = {
+  "req.statusQr": "Scanned your QR in person and wants to connect", "req.theyAccepted": "{0} accepted your request", "req.theyAcceptedSub": "New connection · +100 XP · you can chat now",
+  "req.gone": "{0}’s request is no longer available", "req.sentTitle": "Sent requests ({0})", "req.sentQr": "You scanned their QR · waiting for them to accept",
+  "req.sentDir": "From the event directory · waiting for them to accept", "req.cancel": "Cancel", "req.cancelAria": "Cancel your request to {0}",
+  "att.kicker": "Event directory", "att.title": "Attendees of {0}", "att.lede": "Registered people who share their network. Connecting sends them a request: when they accept, you both get +100 XP.",
+  "att.loading": "Looking for attendees…", "att.empty": "No other attendees of this event are sharing their network yet.",
+  "att.err.offline": "You’re offline: we can’t show the directory right now.", "att.err.notReg": "Your registration for this event isn’t on the server yet: the directory will show up once it syncs.",
+  "att.err.network": "Turn on the “Contact network” permission to see attendees and connect with them.", "att.err.error": "We couldn’t load the directory. Try again in a moment.",
+  "att.connected": "Connected", "att.chat": "Message", "att.pending": "Request sent", "att.connect": "Connect", "att.connectAria": "Send a connection request to {0}",
+  "att.noHeadline": "Event attendee", "att.common1": "1 shared interest", "att.commonN": "{0} shared interests",
+  "att.sent": "Request sent to {0}", "att.sentSub": "When {0} accepts, you both get +100 XP and the chat opens.", "att.place": "Event directory",
+  "scan.sentChip": "Request sent", "scan.sentTitle": "We asked {0} to confirm", "scan.alreadyTitle": "You already sent {0} a request",
+  "scan.with": "With", "scan.next": "What’s next", "scan.nextTxt": "When {0} accepts, you both get +100 XP and the chat opens.", "scan.done": "Done",
+  "scan.sentNotif": "QR request sent to {0}", "scan.sentSub": "The connection is created when they accept",
+  "scan.credNote": "Whoever scans you will send you a request: accept it in “Received requests”.",
+};
+Object.assign(I18N.es, PEER_ES);
+Object.assign(I18N.en, PEER_EN);

@@ -739,18 +739,28 @@ export function bootKnetApp() {
       if (cur) { try { await api.deleteConnection(cur.id); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) throw e; } idx.delete(op.id); }
       return "ok";
     }
+    if (op.real && !cur) { revertRealAccept(op.id); return "resync"; } // aceptar una solicitud real que ya no existe
     let serverXp = null;
     if (!cur) {
+      // Usuario real (directorio del evento): solicitud por peerUserId; contacto del catálogo: por nombre
+      const target = op.peerUserId ? { peerUserId: op.peerUserId, source: "request" } : { name: op.id, source: op.source || "request" };
       try {
-        const r = await api.createConnection({ name: op.id, source: op.source || "request", context: op.context || undefined, eventId: op.eventId || undefined });
-        cur = { id: r.connection.id, status: r.connection.status }; idx.set(op.id, cur); serverXp = r.xp;
+        const r = await api.createConnection({ ...target, context: op.context || undefined, eventId: op.eventId || undefined });
+        cur = { id: r.connection.id, status: r.connection.status, userId: r.connection.contact.userId || null }; idx.set(op.id, cur); serverXp = r.xp;
+        if (op.peerUserId && cur.status === "accepted") return "resync"; // la otra persona ya te lo había pedido: quedan conectados
       } catch (e) {
-        if (e instanceof ApiError && e.status === 409 && !retried) { await loadConnIndex(); return sendConnection(op, true); }
+        if (e instanceof ApiError && e.status === 409 && !retried) { await loadConnIndex(); return op.peerUserId ? "resync" : sendConnection(op, true); }
         throw e;
       }
     }
     if (op.state === "accepted") {
-      if (cur.status !== "accepted") { const r = await api.acceptConnection(cur.id); cur.status = "accepted"; serverXp = r.xp; }
+      if (cur.status !== "accepted") {
+        try { const r = await api.acceptConnection(cur.id); cur.status = "accepted"; serverXp = r.xp; }
+        catch (e) {
+          if (e instanceof ApiError && [403, 404].includes(e.status)) { apiLog(`el servidor no aceptó la conexión con ${op.id}`, e); if (op.real) revertRealAccept(op.id); return "resync"; }
+          throw e;
+        }
+      }
       moveXp("conn:" + op.id, CONN_XP, serverXp);
     }
     return "ok";
@@ -898,7 +908,7 @@ export function bootKnetApp() {
     for (const id of srv) if (!A.events.includes(id)) queueOp({ t: "reg", id, on: false });
     for (const code of A.done) if (!synced("mission:" + code)) queueOp({ t: "mission", id: code });
     for (const code of A.attended) if (!synced("checkin:" + code)) queueOp({ t: "checkin", id: code });
-    Object.entries(A.requests || {}).forEach(([n, r]) => { if (r.status === "pending" && !A.connections.includes(n)) queueOp({ t: "conn", id: n, state: "pending", source: "request" }); });
+    Object.entries(A.requests || {}).forEach(([n, r]) => { if (r.status === "pending" && !A.connections.includes(n)) queueOp({ t: "conn", id: n, state: "pending", source: "request", ...(r.real && r.userId ? { peerUserId: r.userId } : {}) }); });
     for (const n of A.connections) if (!synced("conn:" + n)) queueOp({ t: "conn", id: n, state: "accepted", source: qrPerson(n) ? "qr" : "request" });
     if (A.dossierAt) { const body = dossierPayload(); for (const id of myEvIds()) queueOp({ t: "dossier", id, body }); }
     Object.entries(A.coffees || {}).forEach(([n, c]) => { if (isConn(n) && !c.sid && c.role !== "invitee") queueOp({ t: "coffee", id: n, state: c.status === "accepted" ? "accepted" : "proposed" }); });
@@ -932,10 +942,14 @@ export function bootKnetApp() {
           if (ct) setContacts(A.ind, ct.contacts);
           (cn.connections || []).forEach(c => { if (c.contact && !c.contact.userId) adoptContact(c.contact); });
           (cn.connections || []).filter(isIncoming).forEach(adoptIncoming); // solicitudes que te enviaron
+          syncRealRequests(cn.connections || []); // las que enviaste a usuarios reales y las que ya no existen
           (cn.connections || []).filter(c => c.status === "accepted").forEach(c => {
             const n = c.contact.name, local = A.connections.includes(n), real = !!c.contact.userId;
             if (!local && !real && !IND[A.ind].matches.some(m => m[1] === n) && !qrPerson(n)) return;
-            if (real) adoptRealPeer(c, !local && Date.now() - (Date.parse(c.acceptedAt || c.createdAt) || 0) < 9e5); // solo avisa de las recientes
+            const asked = real && reqOf(n) && reqOf(n).real; // tu solicitud a un usuario real: la aceptó
+            if (real) adoptRealPeer(c, !local && Date.now() - (Date.parse(c.acceptedAt || c.createdAt) || 0) < 9e5, asked); // solo avisa de las recientes
+            if (asked) delete A.requests[n];
+            if (real && A.inbound) delete A.inbound[n]; // aceptada (aquí o en otro dispositivo)
             adoptServerAction("conn:" + n, CONN_XP, local); if (!local) A.connections.push(n); });
           if (cf) mergeCoffees(cf.coffees);
           // Mensajes: solo los hilos con usuarios reales (los contactos del catálogo responden en local)
@@ -1503,7 +1517,8 @@ export function bootKnetApp() {
     if (!A.connected) return;
     seedInbound();
     const now = Date.now();
-    Object.entries(A.requests || {}).forEach(([n, r]) => { const k = "req:" + n + r.at; if (r.status !== "pending" || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveRequest(n, r.at); }, Math.max(400, r.due - now)); });
+    // Solicitudes a usuarios reales (r.real): responde la otra persona, no se simula
+    Object.entries(A.requests || {}).forEach(([n, r]) => { const k = "req:" + n + r.at; if (r.status !== "pending" || r.real || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveRequest(n, r.at); }, Math.max(400, r.due - now)); });
     Object.entries(A.coffees || {}).forEach(([n, c]) => { const k = "cof:" + n + c.at; if (c.status !== "pending" || c.real || c.role === "invitee" || isRealPeer(n) || timers.has(k)) return; timers.add(k); setTimeout(() => { timers.delete(k); resolveCoffee(n, c.at); }, Math.max(400, c.due - now)); });
   }
   const personOpenFor = (n) => !$("#m-person").hidden && $("#personName") && $("#personName").textContent === n;
@@ -1540,7 +1555,8 @@ export function bootKnetApp() {
   const isInbound = (n) => !isConn(n) && !!inboundOf(n);
   const inboundList = () => Object.entries(A.inbound || {}).filter(([n]) => !isConn(n)).sort((a, b) => b[1].at - a[1].at).map(([n]) => n);
   function addInbound(n, data) {
-    if (!n || isConn(n) || inboundOf(n) || (A.inboundGone || []).includes(n)) return false;
+    // inboundGone solo frena la solicitud automática del catálogo: una persona real puede volver a pedirlo
+    if (!n || isConn(n) || inboundOf(n) || (data.from !== "api" && (A.inboundGone || []).includes(n))) return false;
     (A.inbound ||= {})[n] = { at: Date.now(), ...data }; save();
     notify("conn", t("req.notif").replace("{0}", n), t("req.notifSub"), { n });
     toast(`<b>${esc(t("req.notif").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("req.notifSub"))}</div>`, "users");
@@ -1562,15 +1578,25 @@ export function bootKnetApp() {
   function acceptInbound(n) {
     const r = inboundOf(n); if (!r) return;
     if (isConn(n)) { delete A.inbound[n]; save(); refresh(); return; }
-    award(() => { delete A.inbound[n]; A.connections.push(n); }, CONN_XP, t("req.accepted").replace("{0}", n), "users", "conn");
-    apiRun({ t: "conn", id: n, state: "accepted", source: "request" }); // offline: queda en A.outbox
+    if (r.sid && !(connIndex && connIndex.get(n))) (connIndex ||= new Map()).set(n, { id: r.sid, status: "pending", userId: r.userId || null });
+    award(() => { delete A.inbound[n]; A.connections.push(n); if (r.userId) addPeerCard(n, r.userId, r.headline, r.via); }, CONN_XP, t("req.accepted").replace("{0}", n), "users", "conn");
+    apiRun({ t: "conn", id: n, state: "accepted", source: "request", ...(r.userId ? { real: true } : {}) }); // offline: queda en A.outbox
     if (personOpenFor(n)) openPerson(n);
     if (!$("#m-conns").hidden) renderConns();
   }
+  /* La solicitud de un usuario real ya no existía al aceptarla (la canceló): se deshace la conexión local y su XP */
+  function revertRealAccept(n) {
+    if (!isConn(n) || synced("conn:" + n)) return;
+    A.connections = A.connections.filter(x => x !== n); A.qrConn = (A.qrConn || []).filter(x => x.name !== n);
+    A.xp = Math.max(0, A.xp - CONN_XP); A.xpLocal = Math.max(0, (A.xpLocal || 0) - CONN_XP);
+    if (connIndex) connIndex.delete(n);
+    save(); refresh();
+    toast(`<b>${esc(t("req.gone").replace("{0}", n))}</b>`, "info");
+  }
   function declineInbound(n) {
     const r = inboundOf(n); if (!r) return;
-    delete A.inbound[n]; A.inboundGone = uniq((A.inboundGone || []).concat(n)); save();
-    if (r.sid) apiConnRemoved(n); // solicitud del servidor: se borra allí
+    delete A.inbound[n]; if (r.from !== "api") A.inboundGone = uniq((A.inboundGone || []).concat(n)); save();
+    if (r.sid) apiConnRemoved(n); // solicitud del servidor: se borra allí (y la otra persona se entera)
     toast(`<b>${esc(t("req.declined").replace("{0}", first(n)))}</b>`, "x");
     refresh(); if (personOpenFor(n)) openPerson(n);
     if (!$("#m-conns").hidden) renderConns();
@@ -1580,7 +1606,18 @@ export function bootKnetApp() {
   function adoptIncoming(c) {
     const n = c.contact.name;
     (connIndex ||= new Map()).set(n, { id: c.id, status: c.status, userId: c.contact.userId || null });
-    return addInbound(n, { from: "api", sid: c.id, userId: c.contact.userId || null, at: Date.parse(c.createdAt) || Date.now() });
+    return addInbound(n, { from: "api", sid: c.id, userId: c.contact.userId || null, headline: c.contact.headline || "", via: c.source || "request", at: Date.parse(c.createdAt) || Date.now() });
+  }
+  /* Solicitudes con usuarios reales según el servidor: las que enviaste quedan en A.requests (real) y las que
+     ya no existen (rechazadas, canceladas o borradas en otro dispositivo) se quitan, salvo si aún esperan en la cola */
+  function syncRealRequests(list) {
+    const queued = new Set(outbox().filter(o => o.t === "conn").map(o => o.id));
+    const pendOut = new Map(list.filter(c => c.status === "pending" && c.direction === "outgoing" && c.contact && c.contact.userId).map(c => [c.contact.name, c]));
+    const pendIn = new Set(list.filter(isIncoming).map(c => c.contact.name));
+    pendOut.forEach((c, n) => { if (!isConn(n) && !(reqOf(n) && reqOf(n).status === "pending"))
+      (A.requests ||= {})[n] = { status: "pending", at: Date.parse(c.createdAt) || Date.now(), real: true, userId: c.contact.userId, via: c.source === "qr" ? "qr" : "dir", headline: c.contact.headline || "" }; });
+    Object.entries(A.requests || {}).forEach(([n, r]) => { if (r.real && r.status === "pending" && !pendOut.has(n) && !queued.has(n) && !(connIndex && connIndex.get(n) && connIndex.get(n).status === "accepted")) delete A.requests[n]; });
+    Object.entries(A.inbound || {}).forEach(([n, r]) => { if (r.from === "api" && !pendIn.has(n) && !isConn(n)) delete A.inbound[n]; });
   }
   /* Sección «Solicitudes recibidas» (Mi red y el modal de conexiones) */
   function inboundHTML() {
@@ -1590,11 +1627,93 @@ export function bootKnetApp() {
       <ul class="inb-list">${list.map(n => { const c = connInfo(n), r = inboundOf(n);
         return `<li class="inb-row">
           <span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
-          <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.from === "api" ? "req.statusApi" : "req.status"))}</div></div>
+          <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.via === "qr" ? "req.statusQr" : r.from === "api" ? "req.statusApi" : "req.status"))}</div></div>
           <div class="inb-acts"><button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}<span>${esc(t("req.accept"))}</span></button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}" aria-label="${esc(t("req.declineAria").replace("{0}", n))}">${esc(t("req.decline"))}</button>${c.match ? `<button type="button" class="pill-btn" data-cprof="${esc(n)}">${esc(t("req.profile"))}</button>` : ""}</div>
         </li>`; }).join("")}</ul>
     </section>`;
   }
+  /* Solicitudes que enviaste a usuarios reales (directorio o QR): esperan a que la otra persona acepte */
+  function sentHTML() {
+    const list = Object.entries(A.requests || {}).filter(([n, r]) => r.real && r.status === "pending" && !isConn(n)).sort((a, b) => b[1].at - a[1].at);
+    if (!list.length) return "";
+    return `<section class="inb inb-sent" id="sentSec" aria-labelledby="sentTitle">
+      <h3 class="inb-h" id="sentTitle">${svg("clock")}${esc(t("req.sentTitle").replace("{0}", list.length))}</h3>
+      <ul class="inb-list">${list.map(([n, r]) => { const c = connInfo(n);
+        return `<li class="inb-row">
+          <span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
+          <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span></div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.via === "qr" ? "req.sentQr" : "req.sentDir"))}</div></div>
+          <div class="inb-acts"><button type="button" class="btn btn-ghost btn-sm" data-attcancel="${esc(n)}" aria-label="${esc(t("req.cancelAria").replace("{0}", n))}">${esc(t("req.cancel"))}</button></div>
+        </li>`; }).join("")}</ul>
+    </section>`;
+  }
+
+  /* ---- Directorio: asistentes del evento activo (GET /api/me/attendees) ----
+     Solo en memoria (son datos de otras personas). Sin el endpoint (backend anterior, 404) la sección no aparece.
+     «Conectar» envía una solicitud por peerUserId: sin XP hasta que la otra persona acepte. */
+  const att = { ev: null, list: null, at: 0, loading: false, err: null, missing: false };
+  const attReady = () => apiEnabled && A.connected && accountReady() && !!A.apiLinked && !isAdminMode();
+  const attEvent = () => (myEvIds().length ? getSel("main").ev : null);
+  async function loadAttendees(force) {
+    const ev = attEvent();
+    if (!attReady() || att.missing || !ev || att.loading) return;
+    if (!force && att.ev === ev && Date.now() - att.at < 60000) return;
+    att.loading = true; att.ev = ev;
+    try {
+      const r = await api.listAttendees(ev);
+      att.list = { ev, items: (Array.isArray(r.attendees) ? r.attendees : []).filter(a => a && typeof a.userId === "string" && typeof a.name === "string" && a.name.trim()).slice(0, 100) };
+      att.err = null;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) att.missing = true; // el backend aún no tiene el directorio
+      else att.err = isOffline(e) ? "offline" : e instanceof ApiError && e.code === "not_registered" ? "notReg" : e instanceof ApiError && e.status === 403 ? "network" : "error";
+    }
+    att.at = Date.now(); att.loading = false;
+    if (curTab === "red") renderTab(false);
+  }
+  function attCardHTML(a, mine) {
+    const n = a.name, ints = Array.isArray(a.interests) ? a.interests.map(x => apiTxt(x, 60)).filter(Boolean) : [];
+    const common = ints.filter(x => mine.has(intKey(x))), rest = ints.filter(x => !mine.has(intKey(x))).slice(0, Math.max(0, 3 - common.length));
+    const sc = a.connection || {};
+    const state = isConn(n) ? "conn" : isInbound(n) ? "in" : isPending(n) ? "out"
+      : sc.status === "accepted" ? "conn" : sc.status === "pending" ? (sc.direction === "incoming" ? "in" : "out") : "none";
+    const acts = state === "conn" ? `<span class="chip chip-emerald">${svg("check")}${esc(t("att.connected"))}</span>${isConn(n) ? act("chat", n, `${svg("msg")}${esc(t("att.chat"))}`, "btn btn-ghost btn-sm") : ""}`
+      : state === "in" ? `<button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}${esc(t("req.accept"))}</button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}">${esc(t("req.decline"))}</button>`
+      : state === "out" ? `<span class="chip chip-cyan"><span class="pend-dot"></span>${esc(t("att.pending"))}</span><button type="button" class="pill-btn" data-attcancel="${esc(n)}" aria-label="${esc(t("req.cancelAria").replace("{0}", n))}">${esc(t("req.cancel"))}</button>`
+      : `<button type="button" class="btn btn-primary btn-sm" data-attconn="${esc(a.userId)}" aria-label="${esc(t("att.connectAria").replace("{0}", n))}">${svg("handshake")}${esc(t("att.connect"))}</button>`;
+    return `<li class="att">
+      <div class="att-top"><span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(String(a.initials || initialsOf(n)).slice(0, 3))}</span>
+        <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span></div><div class="cc-role">${esc(apiTxt(a.headline, 160) || t("att.noHeadline"))}</div></div></div>
+      ${common.length || rest.length ? `<div class="att-ints">${common.map(x => `<span class="chip chip-accent">${svg("check")}${esc(intLabel(x))}</span>`).join("")}${rest.map(x => `<span class="chip">${esc(intLabel(x))}</span>`).join("")}</div>` : ""}
+      ${common.length ? `<div class="att-why">${esc(t(common.length === 1 ? "att.common1" : "att.commonN").replace("{0}", common.length))}</div>` : ""}
+      <div class="att-acts">${acts}</div>
+    </li>`;
+  }
+  function attendeesHTML() {
+    if (!attReady() || att.missing) return "";
+    const ev = attEvent(); if (!ev) return "";
+    if (!att.loading && (att.ev !== ev || Date.now() - att.at > 60000)) setTimeout(() => loadAttendees(), 0);
+    const evName = (evById(ev) || {}).name || "";
+    const items = att.list && att.list.ev === ev ? att.list.items : null;
+    const mine = new Set(((A.profile && A.profile.interests) || []).map(intKey));
+    const body = att.err && !items ? `<p class="att-empty">${esc(t("att.err." + att.err))}</p>`
+      : !items ? `<p class="att-empty" role="status">${esc(t("att.loading"))}</p>`
+      : !items.length ? `<p class="att-empty">${esc(t("att.empty"))}</p>`
+      : `<ul class="att-grid">${items.map(a => attCardHTML(a, mine)).join("")}</ul>`;
+    return `<section class="pcard att-card" id="attendeesCard" aria-labelledby="attTitle">
+      <header class="pcard-h"><div><span class="pcard-k">${esc(t("att.kicker"))}</span><h2 class="pcard-t" id="attTitle">${esc(t("att.title").replace("{0}", evName))}</h2><div class="text-mute text-[14px]">${esc(t("att.lede"))}</div></div>${items ? `<span class="chip tabular">${svg("users")}${items.length}</span>` : ""}</header>
+      ${body}
+    </section>`;
+  }
+  function connectAttendee(userId) {
+    const ev = att.list && att.list.ev, a = att.list && att.list.items.find(x => x.userId === userId); if (!a) return;
+    const n = a.name; if (isConn(n) || isPending(n) || isInbound(n)) return;
+    (A.requests ||= {})[n] = { status: "pending", at: Date.now(), real: true, userId, via: "dir", headline: apiTxt(a.headline, 160) };
+    save();
+    toast(`<b>${esc(t("att.sent").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("att.sentSub").replace("{0}", first(n)))}</div>`, "users");
+    refresh();
+    apiRun({ t: "conn", id: n, state: "pending", source: "request", peerUserId: userId, eventId: ev }); // offline: queda en A.outbox
+    setTimeout(() => { const b = document.querySelector(`#attendeesCard [data-attcancel="${CSS.escape(n)}"]`); if (b) b.focus(); }, 0);
+  }
+
   /* Clic en Aceptar / Rechazar dentro de `root`; tras responder, el foco pasa a la siguiente solicitud */
   function inboundClick(e, after) {
     const a = e.target.closest("[data-inacc]"), d = e.target.closest("[data-indec]"); if (!a && !d) return false;
@@ -2171,15 +2290,15 @@ export function bootKnetApp() {
   /* ---- Mis conexiones: lista y opción de remover ---- */
   let connAsk = null;
   function connInfo(n) {
-    const m = IND[A.ind].matches.find(x => x[1] === n), q = (A.qrConn || []).find(x => x.name === n);
+    const m = IND[A.ind].matches.find(x => x[1] === n), q = (A.qrConn || []).find(x => x.name === n), pend = (A.inbound || {})[n] || (A.requests || {})[n] || {};
     const initials = m ? m[0] : n.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
-    return { initials, role: m ? m[2] : q ? q.role : "Asistente del evento", aff: m ? m[3] : null, match: !!m,
+    return { initials, role: m ? m[2] : q ? q.role : pend.headline || "Asistente del evento", aff: m ? m[3] : null, match: !!m,
       via: q ? `QR · ${q.lugar}` : m ? "AI Concierge" : "Summit" };
   }
   function renderConns() {
     const list = A.connections.slice().reverse();
     $("#connsBody").innerHTML = `<div class="mh"><div><span class="chip chip-cyan">${svg("users")}Tu red en el Summit</span><h3 id="connsTitle" class="font-display font-bold text-xl" style="margin-top:10px">Mis conexiones <span class="text-mute tabular">(${list.length})</span></h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
-      ${inboundHTML()}
+      ${inboundHTML()}${sentHTML()}
       ${list.length ? `<div class="conn-list">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<div class="conn-row ${ask ? "ask" : ""}">
           <span class="conn-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
@@ -2195,7 +2314,7 @@ export function bootKnetApp() {
     const list = A.connections.slice().reverse();
     return `<article class="pcard" id="connsCard">
       <header class="pcard-h"><div><span class="pcard-k">Tu red en el Summit</span><h2 class="pcard-t" tabindex="-1">Mis conexiones <span class="text-mute tabular">(${list.length})</span></h2></div></header>
-      ${inboundHTML()}
+      ${inboundHTML()}${sentHTML()}
       ${list.length ? `<ul class="cc-grid">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<li class="cc ${ask ? "ask" : ""}">
           <div class="cc-top">
@@ -2223,11 +2342,20 @@ export function bootKnetApp() {
     const pf = t.closest("#connsCard [data-cprof]"); if (pf) { openPerson(pf.dataset.cprof); return; }
     if (t.closest("#connsCard [data-cgo]")) showTab("red", "matchesCard");
   });
-  panel.addEventListener("click", (e) => { inboundClick(e); }); // Solicitudes recibidas en Mi red y en las tarjetas de matches
+  panel.addEventListener("click", (e) => { // Solicitudes recibidas y enviadas, matches y directorio de asistentes
+    if (inboundClick(e)) return;
+    const c = e.target.closest("[data-attconn]"); if (c) { connectAttendee(c.dataset.attconn); return; }
+    const x = e.target.closest("[data-attcancel]");
+    if (x) { // tras cancelar, el foco vuelve a «Conectar» de esa persona en el directorio (o al título de Mis conexiones)
+      const n = x.dataset.attcancel, a = att.list && att.list.items.find(i => i.name === n); cancelRequest(n);
+      setTimeout(() => { const b = (a && document.querySelector(`#attendeesCard [data-attconn="${CSS.escape(a.userId)}"]`)) || $("#connsCard .pcard-t"); if (b) b.focus(); }, 0);
+    }
+  });
   function openConns() { connAsk = null; renderConns(); if ($("#m-conns").hidden) openModal("conns"); }
   $("#m-conns").addEventListener("click", (e) => {
     const t = e.target;
     if (inboundClick(e, renderConns)) return;
+    const cx = t.closest("[data-attcancel]"); if (cx) { cancelRequest(cx.dataset.attcancel); renderConns(); return; }
     const rm = t.closest("[data-crm]"); if (rm) { connAsk = rm.dataset.crm; renderConns(); const y = $("#connsBody [data-cyes]"); if (y) y.focus(); return; }
     if (t.closest("[data-cno]")) { connAsk = null; renderConns(); return; }
     const yes = t.closest("[data-cyes]"); if (yes) { const n = yes.dataset.cyes; connAsk = null;
@@ -3270,7 +3398,7 @@ export function bootKnetApp() {
       <div class="red-cred-n">${esc(p.name)}</div>
       <div class="red-cred-r">${esc(d.role)}${p.company ? " · " + esc(p.company) : ""}</div>
       <p class="red-cred-s">${live ? `Muéstrala para que te escaneen. Sirve una sola vez y se renueva en <b class="tabular" id="qrLeft">${left}</b> s.` : `Muéstrala para que te escaneen. Es firmada y se renueva en <b class="tabular" id="qrLeft">${left}</b> s.`}</p>
-      ${live ? `<p class="red-cred-s" id="qrErr" role="status" ${qrLiveErr ? "" : "hidden"}>${esc(qrLiveErr)}</p>` : ""}
+      ${live ? `<p class="red-cred-s red-cred-note">${esc(t("scan.credNote"))}</p><p class="red-cred-s" id="qrErr" role="status" ${qrLiveErr ? "" : "hidden"}>${esc(qrLiveErr)}</p>` : ""}
       <div class="red-cred-f"><span class="mono tabular">${n} por QR</span>${live ? act("qrcam", "", `${svg("qr")}Escanear QR`, "btn btn-ghost btn-sm") : act("qrscan", "", `${svg("qr")}Escanear QR`, "btn btn-ghost btn-sm")}</div>
     </article>`;
   }
@@ -3450,7 +3578,9 @@ export function bootKnetApp() {
     $("#qsBody").innerHTML = `${qsHead(`<span class="chip chip-accent"><span class="pend-dot"></span>QR detectado</span>`, "Conectando…")}<p class="text-mute">Validando el código con KNET.</p>`;
     try {
       const r = await api.scanQr(token, context), n = adoptScan(r);
-      if (run === scanRun && !$("#m-qrscan").hidden) scanDone(qrPerson(n) || { name: n, role: "", hora: "", fecha: "", lugar: "" }, r.xpAwarded || 0, true);
+      if (run !== scanRun || $("#m-qrscan").hidden) return;
+      if (r.connection.status === "accepted") scanDone(qrPerson(n) || { name: n, role: "", hora: "", fecha: "", lugar: "" }, r.xpAwarded || 0, true);
+      else scanSent(n, r.connection.contact.headline || "", r.created === false);
     } catch (e) {
       if (run !== scanRun) return;
       if (isOffline(e)) {
@@ -3471,7 +3601,11 @@ export function bootKnetApp() {
       toast("<b>El QR que escaneaste sin conexión caducó</b><div class='text-[13px] text-mute'>Pide a la otra persona que te lo muestre otra vez.</div>", "qr");
       return "ok";
     }
-    try { const r = await api.scanQr(op.token, op.context); const n = adoptScan(r); toast(`<b>Conexión por QR con ${esc(n)}</b>${r.xpAwarded ? xpLine(r.xpAwarded) : ""}`, "qr"); }
+    try {
+      const r = await api.scanQr(op.token, op.context), n = adoptScan(r);
+      if (r.connection.status === "accepted") toast(`<b>Conexión por QR con ${esc(n)}</b>${r.xpAwarded ? xpLine(r.xpAwarded) : ""}`, "qr");
+      else toast(`<b>${esc(t("scan.sentNotif").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("scan.sentSub"))}</div>`, "qr");
+    }
     catch (e) {
       if (!(e instanceof ApiError)) throw e;
       const [t, sub] = scanErrText(e); notify("conn", `Escaneo sin conexión: ${t}`, sub);
@@ -3479,21 +3613,38 @@ export function bootKnetApp() {
     return "ok";
   }
   /* Conexión entre usuarios reales: ficha en A.qrConn (para el chat, el Dossier y Mi red) */
-  function adoptRealPeer(c, announce) {
+  /* asked = la conexión nació de tu solicitud y la otra persona la aceptó */
+  function adoptRealPeer(c, announce, asked) {
     const n = c.contact.name, q = qrPerson(n), when = new Date(c.acceptedAt || c.createdAt || Date.now());
     if (q) { q.userId = c.contact.userId; return; }
-    (A.qrConn ||= []).push({ name: n, role: c.contact.headline || "Asistente de KNET", lugar: "En persona", userId: c.contact.userId, at: when.getTime(), interests: [],
-      hora: when.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }), fecha: when.toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" }) });
-    if (announce) notify("conn", `${n} se conectó contigo por QR`, "Nueva conexión · ya pueden chatear");
+    addPeerCard(n, c.contact.userId, c.contact.headline, c.source, when);
+    if (!announce) return;
+    if (asked) { notify("conn", t("req.theyAccepted").replace("{0}", n), t("req.theyAcceptedSub")); toast(`<b>${esc(t("req.theyAccepted").replace("{0}", n))}</b><div class="text-[13px] text-mute">${esc(t("req.theyAcceptedSub"))}</div>`, "users"); }
+    else notify("conn", c.source === "qr" ? `${n} se conectó contigo por QR` : t("req.accepted").replace("{0}", n), "Nueva conexión · ya pueden chatear");
   }
-  /* Respuesta de POST /api/me/connections/scan → estado local. La XP la suma el servidor (+100 una sola vez). */
+  /* Ficha local de un usuario real conectado (A.qrConn: chat, Dossier, grafo y Mi red) */
+  function addPeerCard(n, userId, headline, source, when = new Date()) {
+    if (qrPerson(n)) { qrPerson(n).userId = userId; return; }
+    (A.qrConn ||= []).push({ name: n, role: headline || "Asistente de KNET", lugar: source === "qr" ? "En persona" : t("att.place"), userId, at: when.getTime(), interests: [],
+      hora: when.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }), fecha: when.toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" }) });
+  }
+  /* Respuesta de POST /api/me/connections/scan → estado local.
+     Pendiente (el servidor actual): es una solicitud a la otra persona; la XP llega cuando la acepte.
+     Aceptada (servidor anterior, o ella ya te lo había pedido): conexión lista y la XP la puso el servidor. */
   function adoptScan(r) {
     const c = r.connection, n = c.contact.name, isNew = !isConn(n);
     (connIndex ||= new Map()).set(n, { id: c.id, status: c.status, userId: c.contact.userId || null });
+    if (typeof r.xp === "number") A.xp = r.xp + A.xpLocal;
+    if (c.status !== "accepted") {
+      if (!isConn(n)) (A.requests ||= {})[n] = { status: "pending", at: Date.now(), real: true, userId: c.contact.userId || null, via: "qr", headline: c.contact.headline || "" };
+      if (r.created !== false) notify("conn", t("scan.sentNotif").replace("{0}", n), t("scan.sentSub"));
+      save(); refresh(); return n;
+    }
     adoptRealPeer(c, false);
     if (isNew) A.connections.push(n);
+    if (A.requests) delete A.requests[n];
+    if (A.inbound) delete A.inbound[n];
     if (!synced("conn:" + n)) A.xpSynced.push("conn:" + n);
-    if (typeof r.xp === "number") A.xp = r.xp + A.xpLocal;
     if (isNew) notify("conn", `Conexión por QR con ${n}`, r.xpAwarded ? `Nueva conexión · +${r.xpAwarded} XP` : "Nueva conexión");
     save(); refresh(); return n;
   }
@@ -3560,6 +3711,7 @@ export function bootKnetApp() {
     on("message.new", onLiveMessage);
     ["coffee.updated", "connection.accepted"].forEach(t => on(t, liveSync));
     on("connection.request", onLiveRequest);
+    on("connection.removed", onLiveRemoved);
     src.onerror = () => {
       if (es !== src || src.readyState !== 2) return; // CONNECTING: el navegador reintenta solo
       // Cerrada (401 por token caducado, backend sin stream…): reintento con espera creciente; getMe refresca el token
@@ -3571,6 +3723,18 @@ export function bootKnetApp() {
   /* connection.request: si otra persona te la envía, entra en «Solicitudes recibidas» al instante; si es tuya
      (desde otra sesión), basta con sincronizar */
   function onLiveRequest(d) { if (isIncoming(d.connection)) adoptIncoming(d.connection); else liveSync(); }
+  /* connection.removed: la otra persona rechazó tu solicitud o canceló la suya. Se retira sin avisar (el rechazo
+     es silencioso: el botón vuelve a «Conectar»). Sin la conexión en el índice, basta con sincronizar. */
+  function onLiveRemoved(d) {
+    const n = d.connectionId ? connNameById(d.connectionId) : null;
+    if (!n) { liveSync(); return; }
+    if (connIndex) connIndex.delete(n);
+    if (reqOf(n) && reqOf(n).real && reqOf(n).status === "pending") delete A.requests[n];
+    if (inboundOf(n) && inboundOf(n).from === "api") delete A.inbound[n];
+    save(); refresh();
+    if (personOpenFor(n)) openPerson(n);
+    if (!$("#m-conns").hidden) renderConns();
+  }
   function onLiveMessage(d) {
     const n = d.connectionId ? connNameById(d.connectionId) : null;
     if (!n || !d.message || !isConn(n)) { liveSync(); return; }
@@ -3600,6 +3764,18 @@ export function bootKnetApp() {
     award(() => { (A.qrConn = A.qrConn || []).push(c); if (!A.connections.includes(c.name)) A.connections.push(c.name); }, CONN_XP, `Conexión por QR con ${c.name}`, "qr", "conn");
     apiRun({ t: "conn", id: c.name, state: "accepted", source: "qr", context: (c.interests || []).join(", ").slice(0, 280) });
     scanDone(c, CONN_XP, false);
+  }
+  /* QR escaneado con el servidor actual: la solicitud quedó enviada; la conexión y la XP llegan cuando la acepte */
+  function scanSent(n, headline, already) {
+    $("#qsBody").innerHTML = `
+      <div class="mh"><div><span class="chip chip-cyan"><span class="pend-dot"></span>${esc(t("scan.sentChip"))}</span><h3 id="qsTitle" class="font-display font-bold text-xl" style="margin-top:10px">${esc(t(already ? "scan.alreadyTitle" : "scan.sentTitle").replace("{0}", first(n)))}</h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
+      <div class="qs-done reveal-in">
+        <div class="qs-log">
+          <div><span>${esc(t("scan.with"))}</span><b>${esc(n)}${headline ? " · " + esc(headline) : ""}</b></div>
+          <div><span>${esc(t("scan.next"))}</span><b>${esc(t("scan.nextTxt").replace("{0}", first(n)))}</b></div>
+        </div>
+      </div>
+      <div class="av-foot"><button type="button" class="btn btn-ghost btn-sm" data-qs="cam">${svg("qr")}Escanear otro QR</button><button type="button" class="btn btn-primary btn-sm" data-close>${esc(t("scan.done"))}</button></div>`;
   }
   function scanDone(c, xp, live) {
     $("#qsBody").innerHTML = `
@@ -3635,7 +3811,7 @@ export function bootKnetApp() {
     miseventos: () => isAdminMode() ? adminEventsHTML() : `<div class="me-seg" role="tablist" aria-label="Vista de Mis eventos"><button type="button" role="tab" class="me-seg-b" data-meview="mine" aria-selected="${meView === "mine"}">${svg("calendar")}Mis inscripciones y meetups</button><button type="button" role="tab" class="me-seg-b" data-meview="venue" aria-selected="${meView === "venue"}">${svg("layers")}Recinto</button><button type="button" role="tab" class="me-seg-b" data-meview="explore" aria-selected="${meView === "explore"}">${svg("map")}Explorar próximos eventos</button>${invSegHTML()}${isOrganizer() ? `<button type="button" role="tab" class="me-seg-b" id="orgTab" data-meview="creator" aria-selected="${meView === "creator"}">${svg("pen")}${t("org.tab")}</button>` : ""}</div>${meView === "creator" && isOrganizer() ? `<div class="stack">${org.html()}</div>` : meView === "explore" ? tabEventos() : meView === "invites" ? `<div class="stack">${invitesHTML()}</div>` : meView === "venue" ? `${myEvIds().length ? evDayBar("main") : ""}${venueHTML()}` : tabMisEventos()}`,
     agenda: () => `<div class="stack">${agendaHTML()}</div>`,
     concierge: tabConcierge,
-    red: () => { const P = perfilParts(); return `<div class="stack red-view"><div class="red-grid"><div class="stack">${P.net}${redChipsHTML()}</div><div class="stack">${redCredHTML()}${connsInlineHTML()}</div></div>${redMatchesHTML()}</div>`; },
+    red: () => { const P = perfilParts(); return `<div class="stack red-view"><div class="red-grid"><div class="stack">${P.net}${redChipsHTML()}</div><div class="stack">${redCredHTML()}${connsInlineHTML()}</div></div>${redMatchesHTML()}${attendeesHTML()}</div>`; },
     recompensas: () => `<div class="stack">${rewardsHTML(true)}</div>`,
     resumen: tabDossier
   };

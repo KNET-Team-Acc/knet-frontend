@@ -121,8 +121,8 @@ async function fakeCamera(page) {
   });
 }
 
-test("escáner: un QR válido crea la conexión real con la XP del servidor; el propio muestra el error y no conecta", async ({ page }) => {
-  const api = await installMockApi(page);
+test("escáner (backend anterior): un QR válido crea la conexión real con la XP del servidor; el propio muestra el error y no conecta", async ({ page }) => {
+  const api = await installMockApi(page, { scanAccepts: true });
   await fakeCamera(page);
   await seedSession(page);
   await page.goto("/#red");
@@ -421,4 +421,174 @@ test("inglés: solicitudes recibidas y categorías de intereses con su clave", a
   await expect(page.locator('.int-cat[data-icat="ai"]')).toHaveText("AI & LLMs");
   await expect(page.locator('#pfeInts [data-eint="Agentes de IA"]')).toHaveText("AI agents");
   await expect(page.locator(".int-count")).toHaveText("1/5 selected");
+});
+
+/* ---- Solicitudes entre usuarios reales (knet-backend#24): QR pendiente y directorio del evento ---- */
+const ATT = [
+  { userId: "aaaaaaaa-0000-4000-8000-000000000001", name: "Sara Núñez", initials: "SN", headline: "Data Lead · Rappi", industry: "tech", interests: ["Datos", "MCP"] },
+  { userId: "aaaaaaaa-0000-4000-8000-000000000002", name: "Tomás Rey", initials: "TR", headline: "CTO · Nubia", industry: "tech", interests: [] },
+];
+const esReady = (page) => expect.poll(() => page.evaluate(() => !!window.__es)).toBe(true);
+
+test("escáner: el QR envía una solicitud pendiente sin XP; la conexión y los +100 llegan cuando la otra persona acepta", async ({ page }) => {
+  const api = await installMockApi(page);
+  await fakeCamera(page);
+  await fakeEventSource(page);
+  await seedSession(page);
+  await page.goto("/#red");
+  await waitSync(api);
+  await esReady(page);
+  await expect(page.locator("#qrCard")).toContainText("Quien te escanee te enviará una solicitud");
+  const before = await engineState(page);
+
+  await page.evaluate(() => { window.__qrValue = "knet1.Valentina Q.firma"; });
+  await page.locator('#qrCard [data-act="qrcam"]').click();
+  await expect(page.locator("#qsTitle")).toHaveText("Le pedimos a Valentina que confirme");
+  await expect(page.locator("#m-qrscan")).not.toContainText("XP SUMADOS");
+  let A = await engineState(page);
+  expect(A.connections).not.toContain("Valentina Q");
+  expect(A.requests["Valentina Q"]).toMatchObject({ status: "pending", real: true, via: "qr" });
+  expect(A.xpSynced).not.toContain("conn:Valentina Q");
+  expect(A.xp).toBe(before.xp);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#sentSec")).toContainText("Valentina Q");
+  await expect(page.locator("#sentSec")).toContainText("Le escaneaste el QR");
+
+  // Valentina acepta en su app: el servidor suma +100 a cada uno y avisa por SSE
+  const cn = api.connections.find((c) => c.contact.name === "Valentina Q");
+  Object.assign(cn, { status: "accepted", acceptedAt: new Date().toISOString() }); delete cn.direction; api.user.xp += 100;
+  await page.evaluate((c) => window.__es.emit("connection.accepted", { connection: c }), cn);
+  await expect.poll(async () => (await engineState(page)).connections).toContain("Valentina Q");
+  A = await engineState(page);
+  expect(A.requests["Valentina Q"]).toBeUndefined();
+  expect(A.xpSynced).toContain("conn:Valentina Q");
+  expect(A.xp).toBe(api.user.xp + A.xpLocal);
+  expect(A.xp).toBe(before.xp + 100);
+  expect(A.notifs.some((n) => n.title === "Valentina Q aceptó tu solicitud")).toBe(true);
+  await expect(page.locator("#sentSec")).toHaveCount(0);
+  await expect(page.locator('#connsCard [data-cmsg="Valentina Q"]')).toBeVisible();
+});
+
+test("directorio: lista a los asistentes del evento; conectar envía la solicitud por peerUserId sin XP y se puede cancelar", async ({ page }) => {
+  const api = await installMockApi(page, { attendees: ATT });
+  await seedSession(page);
+  await page.goto("/#red");
+  await waitSync(api);
+  const card = page.locator("#attendeesCard");
+  await expect(card).toContainText("Asistentes de");
+  await expect(card).toContainText("Sara Núñez");
+  await expect(card).toContainText("1 interés en común"); // Datos, como el perfil sembrado
+  await expect(card).toContainText("Tomás Rey");
+  const before = await engineState(page);
+
+  await card.locator(`[data-attconn="${ATT[0].userId}"]`).click();
+  await expect.poll(() => api.peerRequests.length).toBe(1);
+  expect(api.peerRequests[0]).toMatchObject({ peerUserId: ATT[0].userId, eventId: "and", source: "request" });
+  await expect(card.locator('[data-attcancel="Sara Núñez"]')).toBeFocused();
+  let A = await engineState(page);
+  expect(A.requests["Sara Núñez"]).toMatchObject({ status: "pending", real: true, via: "dir", userId: ATT[0].userId });
+  expect(A.connections).not.toContain("Sara Núñez");
+  expect(A.xp).toBe(before.xp);
+  await expect(page.locator("#sentSec")).toContainText("Desde el directorio del evento");
+  await page.waitForTimeout(9000); // a un usuario real no se le simula la respuesta
+  expect((await engineState(page)).requests["Sara Núñez"].status).toBe("pending");
+
+  const start = api.log.length;
+  await card.locator('[data-attcancel="Sara Núñez"]').click();
+  await expect.poll(() => connWrites(api, start)).toEqual(["DELETE /api/me/connections/301"]);
+  await expect(card.locator(`[data-attconn="${ATT[0].userId}"]`)).toBeFocused();
+  A = await engineState(page);
+  expect(A.requests["Sara Núñez"]).toBeUndefined();
+  await expect(page.locator("#sentSec")).toHaveCount(0);
+});
+
+test("directorio sin conexión: la solicitud se encola con peerUserId y se envía al volver la red", async ({ page }) => {
+  const api = await installMockApi(page, { attendees: ATT });
+  await seedSession(page);
+  await page.goto("/#red");
+  await waitSync(api);
+  await expect(page.locator("#attendeesCard")).toContainText("Tomás Rey");
+
+  api.offline = true;
+  await page.locator(`#attendeesCard [data-attconn="${ATT[1].userId}"]`).click();
+  await expect.poll(async () => (await engineState(page)).outbox.map((o) => [o.t, o.id, o.state, o.peerUserId])).toEqual([["conn", "Tomás Rey", "pending", ATT[1].userId]]);
+  await goOnline(page, api);
+  await expect.poll(async () => (await engineState(page)).outbox.length).toBe(0);
+  expect(api.peerRequests).toEqual([expect.objectContaining({ peerUserId: ATT[1].userId })]);
+  expect((await engineState(page)).requests["Tomás Rey"]).toMatchObject({ status: "pending", real: true });
+});
+
+test("solicitudes reales por SSE: aceptar desde el directorio hace PATCH y suma +100 una vez; connection.removed retira la otra", async ({ page }) => {
+  const api = await installMockApi(page, { attendees: ATT });
+  await fakeEventSource(page);
+  await seedSession(page);
+  await page.goto("/#red");
+  await waitSync(api);
+  await esReady(page);
+  await expect(page.locator("#attendeesCard")).toContainText("Tomás Rey");
+
+  const tomas = peerConnection(41, "Tomás Rey", ATT[1].userId, { status: "pending", direction: "incoming", source: "request", headline: "CTO · Nubia" });
+  api.connections.push(tomas);
+  await page.evaluate((c) => window.__es.emit("connection.request", { connection: c }), tomas);
+  await expect(page.locator("#inboundSec")).toContainText("Tomás Rey");
+  const start = api.log.length;
+  await page.locator('#attendeesCard [data-inacc="Tomás Rey"]').click();
+  await expect.poll(() => api.connXp).toBe(1);
+  expect(connWrites(api, start)).toEqual(["PATCH /api/me/connections/41"]);
+  await expect.poll(async () => (await engineState(page)).xpSynced).toContain("conn:Tomás Rey");
+  const A = await engineState(page);
+  expect(A.connections).toContain("Tomás Rey");
+  expect(A.qrConn.find((q) => q.name === "Tomás Rey")).toMatchObject({ userId: ATT[1].userId, role: "CTO · Nubia" });
+  expect(A.xp).toBe(api.user.xp + A.xpLocal);
+  await expect(page.locator('#attendeesCard [data-act="chat"][data-v="Tomás Rey"]')).toBeVisible();
+
+  // Sara te escanea en persona y luego cancela: la solicitud desaparece sin recargar
+  const sara = peerConnection(42, "Sara Núñez", ATT[0].userId, { status: "pending", direction: "incoming", source: "qr" });
+  api.connections.push(sara);
+  await page.evaluate((c) => window.__es.emit("connection.request", { connection: c }), sara);
+  await expect(page.locator("#inboundSec")).toContainText("Te escaneó en persona");
+  api.connections.splice(api.connections.indexOf(sara), 1);
+  await page.evaluate((u) => window.__es.emit("connection.removed", { connectionId: 42, peerUserId: u, reason: "cancelled" }), ATT[0].userId);
+  await expect(page.locator("#inboundSec")).toHaveCount(0);
+  expect((await engineState(page)).inbound["Sara Núñez"]).toBeUndefined();
+});
+
+test("solicitud enviada rechazada: connection.removed la retira en silencio y vuelve «Conectar»", async ({ page }) => {
+  const api = await installMockApi(page, { attendees: ATT });
+  await fakeEventSource(page);
+  await seedSession(page);
+  await page.goto("/#red");
+  await waitSync(api);
+  await esReady(page);
+  await page.locator(`#attendeesCard [data-attconn="${ATT[0].userId}"]`).click();
+  await expect.poll(() => api.peerRequests.length).toBe(1);
+  await expect.poll(async () => (await engineState(page)).outbox.length).toBe(0);
+  const notifs = (await engineState(page)).notifs.length;
+
+  api.connections.splice(0, api.connections.length);
+  await page.evaluate((u) => window.__es.emit("connection.removed", { connectionId: 301, peerUserId: u, reason: "declined" }), ATT[0].userId);
+  await expect(page.locator(`#attendeesCard [data-attconn="${ATT[0].userId}"]`)).toBeVisible();
+  await expect(page.locator("#sentSec")).toHaveCount(0);
+  const A = await engineState(page);
+  expect(A.requests["Sara Núñez"]).toBeUndefined();
+  expect(A.notifs.length).toBe(notifs); // sin aviso de rechazo
+});
+
+test("directorio: no aparece si el backend no tiene el endpoint", async ({ page }) => {
+  const api = await installMockApi(page);
+  await seedSession(page);
+  await page.goto("/#red");
+  await waitSync(api);
+  await expect.poll(() => api.log.some((r) => r.path === "/api/me/attendees")).toBe(true);
+  await expect(page.locator("#connsCard")).toBeVisible();
+  await expect(page.locator("#attendeesCard")).toHaveCount(0);
+});
+
+test("directorio: sin inscripción en el servidor lo explica en vez de mostrar la lista", async ({ page }) => {
+  const api = await installMockApi(page, { attendees: ATT });
+  api.attendeesError = [403, "not_registered"];
+  await seedSession(page);
+  await page.goto("/#red");
+  await waitSync(api);
+  await expect(page.locator("#attendeesCard")).toContainText("Tu inscripción a este evento aún no está en el servidor");
 });
