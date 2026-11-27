@@ -19,10 +19,10 @@ export function seedUser(over = {}) {
   };
 }
 
-/** Evento del panel de creador tal como lo publica GET /api/events (hosted: creado en KNET) */
+/** Evento del panel de creador tal como lo publica GET /api/events (hosted: creado en KNET; curated: evento real del catálogo) */
 function publicEvent(e) {
   return { id: e.id, name: e.name, kind: "real", city: e.city, venueName: e.venueName, dateLabel: e.dateLabel, days: e.days, lat: e.lat, lon: e.lon, tags: e.tags,
-    industries: e.industries, minLevel: 1, organizer: e.organizer, sourceUrl: e.sourceUrl, description: e.description, hosted: true };
+    industries: e.industries, minLevel: 1, organizer: e.organizer, sourceUrl: e.sourceUrl, description: e.description, hosted: !e.curated };
 }
 
 export async function installMockApi(page, opts = {}) {
@@ -53,7 +53,7 @@ export async function installMockApi(page, opts = {}) {
 
   /* ---- /api/admin/* (forma de knet-backend/src/routes/admin/events.js) ---- */
   const ownerOf = (e) => e.owner || { id: USER_ID, name: state.user.name, email: state.user.email };
-  const adminView = (e) => ({ ...publicEvent(e), status: e.status, ownerId: ownerOf(e).id, owner: ownerOf(e), catalog: false, info: e.info, venue: e.venue, speakers: e.speakers, sessions: e.sessions, missions: e.missions,
+  const adminView = (e) => ({ ...publicEvent(e), status: e.status, ownerId: ownerOf(e).id, owner: ownerOf(e), catalog: false, curated: !!e.curated, info: e.info, venue: e.venue, speakers: e.speakers, sessions: e.sessions, missions: e.missions,
     counts: { sessions: e.sessions.length, speakers: e.speakers.length, missions: e.missions.length, registrations: 0 } });
   const invalid = (path, message) => [400, { error: "validation_error", message: "Datos inválidos", issues: [{ path, message }] }];
   // Un evento del catálogo sembrado tal como lo lista GET /api/admin/events?all=1 (solo lectura)
@@ -61,6 +61,10 @@ export async function installMockApi(page, opts = {}) {
     ownerId: null, owner: null, catalog: true, hosted: false, counts: { sessions: 0, speakers: 0, missions: 0, registrations: 0 } };
   function adminRoute(method, path, body, query) {
     const b = body || {};
+    // Asistente de IA del panel: opts.assist(body) → { reply, proposals }; sin opts.assist, sin IA (503)
+    if (path === "/api/admin/ai/assist" && method === "POST") {
+      return opts.assist ? [200, opts.assist(b)] : [503, { error: "ai_unavailable", message: "Sin IA en las pruebas" }];
+    }
     if (path === "/api/admin/events" && method === "GET") {
       const all = state.user.accountRole === "admin" && query.get("all") === "1";
       const evs = [...state.admin.values()].filter((e) => all || ownerOf(e).id === USER_ID).map(adminView);
@@ -68,9 +72,10 @@ export async function installMockApi(page, opts = {}) {
     }
     if (path === "/api/admin/events" && method === "POST") {
       if (!b.name || b.name.trim().length < 3) return invalid("name", "El nombre debe tener al menos 3 caracteres");
+      if (b.curated && state.user.accountRole !== "admin") return [403, { error: "forbidden_role", message: "Solo un admin puede añadir eventos al catálogo" }];
       const id = `o${String(++state.adminSeq).padStart(9, "0")}`;
       state.admin.set(id, { id, name: b.name, city: b.city, venueName: b.venueName || "", dateLabel: "", lat: b.lat ?? null, lon: b.lon ?? null, tags: b.tags || [], industries: b.industries || [],
-        description: b.description || "", sourceUrl: b.sourceUrl || null, organizer: "Acme", status: "draft", info: null, venue: null, days: [], speakers: [], sessions: [], missions: [] });
+        description: b.description || "", sourceUrl: b.sourceUrl || null, organizer: "Acme", status: "draft", info: null, venue: null, days: [], speakers: [], sessions: [], missions: [], curated: !!b.curated });
       return [201, { event: adminView(state.admin.get(id)) }];
     }
     const m = /^\/api\/admin\/events\/([a-z0-9]+)(?:\/([a-z]+))?(?:\/([a-z0-9-]+))?$/.exec(path);
@@ -87,7 +92,7 @@ export async function installMockApi(page, opts = {}) {
     if (sub === "info") { e.info = b.info; return [200, { event: adminView(e) }]; }
     if (sub === "venue") { e.venue = b.venue; return [200, { event: adminView(e) }]; }
     if (sub === "publish") {
-      const missing = [!e.days.length && "al menos un día", !e.sessions.length && "al menos una charla", !e.info && "la ficha del evento", !e.description && "una descripción"].filter(Boolean);
+      const missing = [!e.days.length && "al menos un día", e.curated ? !e.sourceUrl && "la web oficial del evento (fuente)" : !e.sessions.length && "al menos una charla", !e.info && "la ficha del evento", !e.description && "una descripción"].filter(Boolean);
       if (missing.length) return [400, { error: "incomplete_event", message: `Para publicar falta: ${missing.join(", ")}`, missing }];
       e.status = "published"; return [200, { event: adminView(e) }];
     }
@@ -155,7 +160,7 @@ export async function installMockApi(page, opts = {}) {
     const evDetail = /^\/api\/events\/([a-z0-9]+)$/.exec(path);
     if (evDetail && method === "GET") {
       const a = state.admin.get(evDetail[1]);
-      if (a && a.status === "published") return json(200, { event: { ...publicEvent(a), info: a.info, venue: a.venue, speakers: a.speakers, sessions: a.sessions, missions: a.missions } });
+      if (a && a.status === "published") return json(200, { event: { ...publicEvent(a), info: a.info, venue: a.venue, speakers: a.speakers, ...(a.curated ? {} : { sessions: a.sessions, missions: a.missions }) } });
       const d = (opts.eventDetails || {})[evDetail[1]];
       return d ? json(200, { event: d }) : json(404, { error: "not_found", message: `No existe el evento ${evDetail[1]}` });
     }

@@ -252,6 +252,8 @@ export const api = {
   admin: {
     // all: solo admin → eventos de todos los organizadores y los del catálogo (catalog: true, solo lectura)
     listEvents: ({ all = false } = {}) => request("GET", `/api/admin/events${all ? "?all=1" : ""}`),
+    // Asistente de IA del panel: { message, history?, eventId?, focus?: "venue", lang? } → { reply, proposals } (no guarda nada)
+    assist: (body) => request("POST", "/api/admin/ai/assist", body, { timeout: AI_TIMEOUT_MS }),
     createEvent: (body) => request("POST", "/api/admin/events", body),
     getEvent: (id) => request("GET", `/api/admin/events/${enc(id)}`),
     updateEvent: (id, patch) => request("PATCH", `/api/admin/events/${enc(id)}`, patch),

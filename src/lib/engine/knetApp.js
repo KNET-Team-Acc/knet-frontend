@@ -2702,7 +2702,7 @@ export function bootKnetApp() {
     if (/taller|lab/.test(k) || /lab|taller|maker/.test(r)) return "labs"; if (/keynote|panel/.test(k) || /auditorio|principal/.test(r)) return "stage"; if (/demo/.test(k) || /stand|expo|pabell/.test(r)) return "booths"; if (/terraza|lounge|foyer|caf/.test(r)) return "lounge"; return "stage"; };
   let VZ = [];
   let VV = null;
-  function vnBuildZones(evId) { VV = VENUES[evId] || VENUES[MAIN_EV]; VZ = VV.z.map(([name, type, c, desc, r, door, node, extra], i) => ({ id: "ABCD"[i], name, type, col: VC[c][0], hex: VC[c][1], desc, x0: r[0], x1: r[1], z0: r[2], z1: r[3], door, node, ...(extra || {}) })); return VZ; }
+  function vnBuildZones(evId) { VV = VENUES[evId] || VENUES[MAIN_EV]; VZ = VV.z.map(([name, type, c, desc, r, door, node, extra], i) => ({ id: "ABCDEFGHIJKL"[i], name, type, col: VC[c][0], hex: VC[c][1], desc, x0: r[0], x1: r[1], z0: r[2], z1: r[3], door, node, ...(extra || {}) })); return VZ; }
   const vnFloorC = () => [(VV.floor[0] + VV.floor[1]) / 2, (VV.floor[2] + VV.floor[3]) / 2];
   const vnEnt = () => VV.nodes[VV.ent].slice();
   const vnClamp = (o) => { o.x = Math.max(VV.floor[0] + .5, Math.min(VV.floor[1] - .5, o.x)); o.z = Math.max(VV.floor[2] + .5, Math.min(VV.floor[3] - .5, o.z)); };
@@ -3500,6 +3500,7 @@ export function bootKnetApp() {
   const org = createOrganizer({
     api, ApiError, isOffline, t, tf, esc, svg, toast, avatarSVG, initialsOf, dayTxt,
     isAdmin: () => A.accountRole === "admin",
+    lang: () => LANG,
     myId: () => sessionUserId() || getUserId(),
     industries: () => IND,
     cities: () => CO_CITIES.map(c => c[0]),
