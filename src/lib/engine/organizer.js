@@ -4,6 +4,9 @@
  *   1 Detalles · 2 Días y agenda · 3 Charlas · 4 Speakers · 5 Misiones · 6 Recinto 3D · 7 Vista previa y publicar.
  * Un admin elige entre «Mis eventos» y «Todos los eventos» (st.scope): ve y edita los de cualquier organizador; los del
  * catálogo sembrado (catalog: true) salen en solo lectura porque db:seed los reescribe en cada despliegue.
+ * Un admin también añade eventos reales externos al catálogo (curated: web oficial obligatoria, sin charlas ni
+ * misiones: CAT_STEPS), genera recintos (venueGen.js: zonas → plano 3D, también desde una descripción) y tiene un
+ * asistente de IA (POST /api/admin/ai/assist) que propone contenido; cada propuesta se aplica a mano.
  * Cada paso guarda en el servidor (borrador). Publicar lo hace visible en GET /api/events: el motor lo integra
  * como evento hosted (mergeEvents) con su agenda, misiones y recinto.
  *
@@ -11,7 +14,12 @@
  * #appPanel que tengan data-org. Todos los textos van por ctx.t / ctx.tf (claves org.* de I18N en navigation.js).
  */
 
+import { MAX_ZONES, VENUE_GROUNDS, ZONE_SIZES, ZONE_TYPES, cleanZone, generateVenue, parseVenueBrief, venuePlanSVG, zonesFromVenue } from "./venueGen.js";
+
 export const ORG_STEPS = ["details", "days", "sessions", "speakers", "missions", "venue", "preview"];
+// Evento real externo del catálogo (curated): su agenda la arma el motor, como la de los eventos sembrados
+export const CAT_STEPS = ["details", "days", "speakers", "venue", "preview"];
+const AI_HISTORY = 10;
 const KINDS = ["Keynote", "Panel", "Taller", "Charla", "Networking"];
 const MISSION_TYPES = ["presencial", "networking", "contenido", "quiz"];
 const FORMATS = ["Presencial", "Híbrido", "Virtual"];
@@ -43,7 +51,9 @@ export function createOrganizer(ctx) {
   const { api, ApiError, isOffline, t, tf, esc, svg, toast } = ctx;
   // Plural: «org.x.one» para 1 (p. ej. «1 charla»), «org.x» para el resto
   const tn = (k, n) => tf(n === 1 ? `${k}.one` : k, n);
-  const st = { list: null, loading: false, cur: null, step: 0, busy: false, msg: null, ask: null, days: null, agenda: null, sDay: 0, dirty: false, scope: "mine" };
+  const st = { list: null, loading: false, cur: null, step: 0, busy: false, msg: null, ask: null, days: null, agenda: null, sDay: 0, dirty: false, scope: "mine", vz: null, vground: null, ai: { msgs: [], busy: false, draft: "" } };
+  const steps = () => (st.cur && st.cur.curated ? CAT_STEPS : ORG_STEPS);
+  const stepIx = (k) => steps().indexOf(k);
   const allScope = () => st.scope === "all" && ctx.isAdmin();
   const notMine = (e) => !!(e && e.owner && e.owner.id && e.owner.id !== ctx.myId());
   // Repinta el panel (lo escrito y no guardado se descarta: dirty evita que un refresh() del motor lo borre antes)
@@ -82,14 +92,14 @@ export function createOrganizer(ctx) {
   async function run(fn, okText) {
     if (st.busy) return false;
     st.busy = true; setMsg(null); lock(true);
-    try { await fn(); setMsg(okText ? "ok" : null, okText); st.busy = false; rr(); return true; }
+    try { await fn(); const ok = typeof okText === "function" ? okText() : okText; setMsg(ok ? "ok" : null, ok); st.busy = false; rr(); return true; }
     catch (e) {
       st.busy = false; lock(false); setMsg("err", errText(e)); paintMsg();
       if (e instanceof ApiError && e.status === 403 && (e.body || {}).error === "forbidden_role") ctx.onRoleLost();
       return false;
     }
   }
-  const adopt = (r) => { st.cur = r.event; st.days = null; st.agenda = null; };
+  const adopt = (r) => { st.cur = r.event; st.days = null; st.agenda = null; st.vz = null; st.vground = null; };
 
   /* ---------- Carga ---------- */
   async function loadList() {
@@ -99,7 +109,7 @@ export function createOrganizer(ctx) {
     finally { st.loading = false; rr(); }
   }
   function open() { if (st.list === null && !st.cur) loadList(); }
-  function startNew() { st.cur = { id: null, name: "", city: "", tags: [], industries: [], description: "", info: null, days: [], sessions: [], speakers: [], missions: [] }; st.step = 0; setMsg(null); }
+  function startNew(curated = false) { st.cur = { id: null, name: "", city: "", tags: [], industries: [], description: "", info: null, days: [], sessions: [], speakers: [], missions: [], curated: !!curated && ctx.isAdmin() }; st.step = 0; st.vz = null; st.vground = null; setMsg(null); }
   async function edit(id) {
     await run(async () => { adopt(await api.admin.getEvent(id)); st.step = 0; });
   }
@@ -114,14 +124,14 @@ export function createOrganizer(ctx) {
 
   function itemActions(e) {
     if (e.catalog) return `<span class="chip" title="${esc(t("org.catalogHint"))}">${svg("lock")}${t("org.catalog")}</span>`;
-    return `${statusChip(e.status)}<button type="button" class="btn btn-ghost btn-sm" data-org="edit" data-v="${esc(e.id)}" ${busyAttr()}>${svg("pen")}${t("org.edit")}</button>
+    return `${e.curated ? `<span class="chip chip-cyan" title="${esc(t("org.cat.hint"))}">${svg("globe")}${t("org.cat.chip")}</span>` : ""}${statusChip(e.status)}<button type="button" class="btn btn-ghost btn-sm" data-org="edit" data-v="${esc(e.id)}" ${busyAttr()}>${svg("pen")}${t("org.edit")}</button>
               <button type="button" class="pill-btn ${st.ask === "del:" + e.id ? "danger" : ""}" data-org="del" data-v="${esc(e.id)}" ${busyAttr()}>${st.ask === "del:" + e.id ? t("org.delSure") : t("org.del")}</button>`;
   }
   function listHTML() {
     const evs = st.list || [], all = allScope();
     return `<article class="pcard" id="orgCard">
       <header class="pcard-h"><div><span class="pcard-k">${t(ctx.isAdmin() ? "org.kickerAdmin" : "org.kicker")}</span><h2 class="pcard-t">${t(all ? "org.titleAll" : "org.title")}</h2><p class="text-mute text-[14px]" style="margin-top:4px">${t(all ? "org.ledeAll" : "org.lede")}</p></div>
-        <button type="button" class="btn btn-primary btn-sm" data-org="new" ${busyAttr()}>${svg("spark")}${t("org.create")}</button></header>
+        <div class="org-head-a">${ctx.isAdmin() ? `<button type="button" class="btn btn-ghost btn-sm" data-org="newCat" ${busyAttr()}>${svg("globe")}${t("org.cat.add")}</button>` : ""}<button type="button" class="btn btn-primary btn-sm" data-org="new" ${busyAttr()}>${svg("spark")}${t("org.create")}</button></div></header>
       ${ctx.isAdmin() ? `<div class="me-seg org-scope" role="tablist" aria-label="${t("org.scopeLbl")}">${["mine", "all"].map((k) => `<button type="button" role="tab" class="me-seg-b" data-org="scope" data-v="${k}" aria-selected="${st.scope === k}" ${busyAttr()}>${svg(k === "mine" ? "pen" : "globe")}${t("org.scope." + k)}</button>`).join("")}</div>` : ""}
       ${msgHTML()}
       ${st.list === null || st.loading && !evs.length ? `<div class="dempty">${svg("clock")} ${t("org.loading")}</div>`
@@ -137,7 +147,7 @@ export function createOrganizer(ctx) {
 
   function stepperHTML() {
     const saved = !!st.cur.id;
-    return `<ol class="org-steps" aria-label="${t("org.stepsLbl")}">${ORG_STEPS.map((k, i) => `<li><button type="button" class="org-step ${i === st.step ? "is-cur" : ""} ${done(k) ? "is-done" : ""}" data-org="step" data-v="${i}" ${saved || i === 0 ? "" : "disabled"} ${i === st.step ? 'aria-current="step"' : ""}><span class="org-step-n tabular">${i + 1}</span><span class="org-step-l">${t("org.step." + k)}</span></button></li>`).join("")}</ol>`;
+    return `<ol class="org-steps" aria-label="${t("org.stepsLbl")}">${steps().map((k, i) => `<li><button type="button" class="org-step ${i === st.step ? "is-cur" : ""} ${done(k) ? "is-done" : ""}" data-org="step" data-v="${i}" ${saved || i === 0 ? "" : "disabled"} ${i === st.step ? 'aria-current="step"' : ""}><span class="org-step-n tabular">${i + 1}</span><span class="org-step-l">${t("org.step." + k)}</span></button></li>`).join("")}</ol>`;
   }
   function done(k) {
     const c = st.cur; if (!c || !c.id) return false;
@@ -152,7 +162,8 @@ export function createOrganizer(ctx) {
       ${field(t("org.f.city"), `<select class="input" name="city">${cities.map((n) => `<option ${n === c.city ? "selected" : ""}>${esc(n)}</option>`).join("")}${c.city && !cities.includes(c.city) ? `<option selected>${esc(c.city)}</option>` : ""}</select>`)}
       ${field(t("org.f.venue"), `<input class="input" name="venueName" maxlength="160" value="${esc(c.venueName || "")}" placeholder="${t("org.f.venuePh")}">`)}
       ${field(t("org.f.format"), `<select class="input" name="format">${FORMATS.map((f) => `<option value="${f}" ${i.formato[0] === f ? "selected" : ""}>${t("org.fmt." + f)}</option>`).join("")}</select>`)}
-      ${field(`${t("org.f.url")} <span class="text-mute">(${t("org.optional")})</span>`, `<input class="input" name="sourceUrl" type="url" maxlength="500" value="${esc(c.sourceUrl || "")}" placeholder="https://">`)}
+      ${field(c.curated ? t("org.cat.url") : `${t("org.f.url")} <span class="text-mute">(${t("org.optional")})</span>`, `<input class="input" name="sourceUrl" type="url" maxlength="500" value="${esc(c.sourceUrl || "")}" placeholder="https://" ${c.curated ? "required" : ""}>`)}
+      ${c.curated ? `<p class="gf-wide org-msg is-cat" role="note">${svg("globe")}<span>${t("org.cat.note")}</span></p>` : ""}
       ${field(t("org.f.desc"), `<textarea class="input" name="description" rows="3" maxlength="600" placeholder="${t("org.f.descPh")}">${esc(c.description || "")}</textarea>`, true)}
       ${field(t("org.f.para"), `<input class="input" name="para" maxlength="300" value="${esc(i.para)}" placeholder="${t("org.f.paraPh")}">`, true)}
       ${field(`${t("org.f.tags")} <span class="text-mute">(${t("org.f.tagsHint")})</span>`, `<input class="input" name="tags" maxlength="400" value="${esc((c.tags || []).join(", "))}" placeholder="Datos, IA, Cloud">`, true)}
@@ -243,16 +254,54 @@ export function createOrganizer(ctx) {
       </form>`;
   }
 
+  /* Generador: zonas editables (st.vz) → plano 3D. Se inicia con las del recinto guardado o con un recinto base */
+  const vzOf = () => {
+    if (!st.vz) st.vz = st.cur.venue ? zonesFromVenue(st.cur.venue) : [cleanZone({ type: "stage", size: "l" }), cleanZone({ type: "booths", size: "m" }), cleanZone({ type: "lounge", size: "m" })];
+    if (!st.vground) st.vground = (st.cur.venue && VENUE_GROUNDS.includes(st.cur.venue.ground)) ? st.cur.venue.ground : "conv";
+    return st.vz;
+  };
+  function readVgen(f) {
+    if (!f) return;
+    const ty = [...f.querySelectorAll("[name=vzType]")], nm = [...f.querySelectorAll("[name=vzName]")], sz = [...f.querySelectorAll("[name=vzSize]")];
+    st.vz = ty.map((x, i) => cleanZone({ type: x.value, name: nm[i].value, size: sz[i].value, description: (st.vz && st.vz[i] && st.vz[i].type === x.value) ? st.vz[i].description : "" }));
+    if (f.vground) st.vground = f.vground.value;
+  }
+  function vgenHTML() {
+    const zs = vzOf(), c = st.cur;
+    return `<section class="org-vgen" aria-labelledby="orgVgT">
+        <div class="av-lbl" id="orgVgT">${t("org.vg.title")}</div>
+        <p class="text-mute text-[13px]">${t("org.vg.hint")}</p>
+        <form class="org-form org-vbrief" data-org-form="vbrief" novalidate>
+          <textarea class="input" name="brief" rows="2" maxlength="600" placeholder="${t("org.vg.briefPh")}" aria-label="${t("org.vg.brief")}"></textarea>
+          <button type="submit" class="btn btn-ghost btn-sm" ${busyAttr()}>${svg("bot")}${t("org.vg.propose")}</button>
+        </form>
+        <form class="org-form" data-org-form="vgen" novalidate>
+          <div class="org-rows">${zs.map((z, i) => `<div class="org-row org-row-z">
+            <select class="input" name="vzType" aria-label="${tf("org.vg.typeN", i + 1)}">${ZONE_TYPES.map((k) => `<option value="${k}" ${z.type === k ? "selected" : ""}>${t("org.vg.type." + k)}</option>`).join("")}</select>
+            <input class="input" name="vzName" maxlength="60" value="${esc(z.name)}" aria-label="${tf("org.vg.nameN", i + 1)}">
+            <select class="input" name="vzSize" aria-label="${tf("org.vg.sizeN", i + 1)}">${ZONE_SIZES.map((k) => `<option value="${k}" ${z.size === k ? "selected" : ""}>${t("org.vg.size." + k)}</option>`).join("")}</select>
+            <button type="button" class="btn btn-ghost btn-sm" data-org="vzDel" data-v="${i}" aria-label="${tf("org.vg.del", z.name)}" ${zs.length <= 1 ? "disabled" : ""}>${svg("x")}</button></div>`).join("")}</div>
+          <div class="org-vgen-foot">
+            <button type="button" class="pill-btn" data-org="vzAdd" ${zs.length >= MAX_ZONES ? "disabled" : ""}>${svg("layers")}${t("org.vg.add")}</button>
+            <label class="org-vground"><span>${t("org.vg.ground")}</span><select class="input" name="vground">${VENUE_GROUNDS.map((k) => `<option value="${k}" ${st.vground === k ? "selected" : ""}>${t("org.vg.g." + k)}</option>`).join("")}</select></label>
+            <button type="submit" class="btn btn-primary btn-sm" ${busyAttr()}>${svg("spark")}${c.venue ? t("org.vg.regen") : t("org.vg.gen")}</button>
+          </div>
+        </form>
+      </section>`;
+  }
   function venueHTML() {
     const c = st.cur, tpls = ctx.venueTemplates(), curKey = c.venue ? tpls.find(([, , v]) => canon(v) === canon(c.venue)) : null;
-    return `<p class="text-mute text-[13px]">${t("org.ven.hint")}</p>
+    return `${c.venue ? `<figure class="org-vprev">${venuePlanSVG(c.venue, esc, t("org.vg.planLbl"))}<figcaption class="text-[12.5px] text-mute">${curKey ? tf("org.vg.planTpl", curKey[1]) : t("org.vg.planGen")} · ${tn("org.ven.zones", c.venue.z.length)}</figcaption></figure>` : ""}
+      ${vgenHTML()}
+      <div class="av-lbl" style="margin-top:18px">${t("org.vg.tpls")}</div>
+      <p class="text-mute text-[13px]">${t("org.ven.hint")}</p>
       <div class="org-venues" role="radiogroup" aria-label="${t("org.step.venue")}">
         ${tpls.map(([k, label, v]) => `<button type="button" role="radio" class="org-venue ${curKey && curKey[0] === k ? "is-on" : ""}" aria-checked="${!!(curKey && curKey[0] === k)}" data-org="venue" data-v="${esc(k)}" ${busyAttr()}>
           <span class="org-venue-k">${svg("layers")}${esc(label)}</span><span class="text-[12.5px] text-mute">${tn("org.ven.zones", v.z.length)}</span>
           <span class="org-venue-z">${v.z.map((z) => `<span class="chip">${esc(z[0])}</span>`).join("")}</span></button>`).join("")}
         <button type="button" role="radio" class="org-venue ${!c.venue ? "is-on" : ""}" aria-checked="${!c.venue}" data-org="venue" data-v="" ${busyAttr()}><span class="org-venue-k">${svg("x")}${t("org.ven.none")}</span><span class="text-[12.5px] text-mute">${t("org.ven.noneHint")}</span></button>
       </div>
-      ${c.venue && !curKey ? `<p class="text-[13px] text-mute">${t("org.ven.custom")}</p>` : ""}`;
+`;
   }
 
   function missing() {
@@ -260,7 +309,8 @@ export function createOrganizer(ctx) {
     if (!c.description) m.push(t("org.miss.desc"));
     if (!c.info) m.push(t("org.miss.info"));
     if (!c.days.length) m.push(t("org.miss.days"));
-    if (!c.sessions.length) m.push(t("org.miss.sessions"));
+    if (c.curated) { if (!c.sourceUrl) m.push(t("org.miss.url")); }
+    else if (!c.sessions.length) m.push(t("org.miss.sessions"));
     return m;
   }
   function previewHTML() {
@@ -273,27 +323,63 @@ export function createOrganizer(ctx) {
         <div class="org-prev-tags">${(c.tags || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("")}</div>
       </div>
       <ul class="org-check">
-        ${row(!!c.description && !!c.info, t("org.chk.details"), 0)}${row(c.days.length > 0, tn("org.chk.days", c.days.length), 1)}${row(c.sessions.length > 0, tn("org.chk.sessions", c.sessions.length), 2)}
-        ${row(c.speakers.length > 0, tn("org.chk.speakers", c.speakers.length), 3)}${row(c.missions.length > 0, tn("org.chk.missions", c.missions.length), 4)}${row(!!c.venue, c.venue ? t("org.chk.venue") : t("org.chk.noVenue"), 5)}
+        ${row(!!c.description && !!c.info, t("org.chk.details"), stepIx("details"))}${c.curated ? row(!!c.sourceUrl, t("org.chk.url"), stepIx("details")) : ""}${row(c.days.length > 0, tn("org.chk.days", c.days.length), stepIx("days"))}${c.curated ? "" : row(c.sessions.length > 0, tn("org.chk.sessions", c.sessions.length), stepIx("sessions"))}
+        ${row(c.speakers.length > 0, tn("org.chk.speakers", c.speakers.length), stepIx("speakers"))}${c.curated ? "" : row(c.missions.length > 0, tn("org.chk.missions", c.missions.length), stepIx("missions"))}${row(!!c.venue, c.venue ? t("org.chk.venue") : t("org.chk.noVenue"), stepIx("venue"))}
       </ul>
       ${miss.length && !pub ? `<p class="org-msg is-err" role="status">${svg("info")}<span>${tf("org.missing", miss.join(", "))}</span></p>` : ""}
       <div class="gf-form-foot">${pub ? `<button type="button" class="btn btn-ghost" data-org="unpublish" ${busyAttr()}>${t("org.unpublish")}</button><button type="button" class="btn btn-primary" data-org="explore">${svg("map")}${t("org.seeExplore")}</button>`
         : `<button type="button" class="btn btn-primary" data-org="publish" ${miss.length || st.busy ? "disabled" : ""}>${svg("check")}${t("org.publish")}</button>`}</div>`;
   }
 
+  /* ---------- Asistente de IA ---------- */
+  const aiSuggestions = () => {
+    const k = st.cur ? steps()[st.step] : null;
+    if (!st.cur) return ["org.ai.s.idea", "org.ai.s.catalog", "org.ai.s.venue"];
+    return ({ details: ["org.ai.s.desc", "org.ai.s.tags"], days: ["org.ai.s.agenda"], sessions: ["org.ai.s.sessions"], speakers: ["org.ai.s.speakers"], missions: ["org.ai.s.missions"], venue: ["org.ai.s.venue"], preview: ["org.ai.s.review"] })[k] || [];
+  };
+  function propHTML(m, mi) {
+    const p = m.prop || {}, c = st.cur, cat = c && c.curated, done = (k) => m.applied && m.applied[k];
+    const btn = (k, label, ic = "check") => `<button type="button" class="pill-btn ${done(k) ? "is-done" : ""}" data-org="aiApply" data-v="${mi}:${k}" ${done(k) || st.busy ? "disabled" : ""}>${svg(done(k) ? "check" : ic)}${done(k) ? t("org.ai.applied") : label}</button>`;
+    const group = (title, items, all) => items ? `<div class="org-ai-p"><div class="org-ai-pt">${title}</div>${items}${all || ""}</div>` : "";
+    const out = [];
+    if (p.details) out.push(group(t("org.ai.p.details"), `<p>${esc(p.details.description)}</p>${p.details.tags.length ? `<div class="org-venue-z">${p.details.tags.map((x) => `<span class="chip">${esc(x)}</span>`).join("")}</div>` : ""}`, btn("details", c ? t("org.ai.useDetails") : t("org.ai.startWith"), "pen")));
+    if (p.agenda && p.agenda.length) out.push(group(t("org.ai.p.agenda"), `<ul>${p.agenda.map((r) => `<li><b class="tabular">${esc(r[0])}</b> ${esc(r[1])}${r[2] ? ` · <span class="text-mute">${esc(r[2])}</span>` : ""}</li>`).join("")}</ul>`, btn("agenda", t("org.ai.useAgenda"), "clock")));
+    if (!cat && p.sessions && p.sessions.length) out.push(group(t("org.ai.p.sessions"), `<ul>${p.sessions.map((s, j) => `<li><span><b class="tabular">${esc(tf("org.dayN", s.day + 1))} · ${esc(s.time)}</b> ${esc(s.title)} <span class="text-mute">(${esc(t("org.kind." + s.kind))})</span></span>${btn("sessions." + j, t("org.ai.add"), "spark")}</li>`).join("")}</ul>`, p.sessions.length > 1 ? btn("sessions.*", t("org.ai.addAll"), "spark") : ""));
+    if (p.speakers && p.speakers.length) out.push(group(t("org.ai.p.speakers"), `<ul>${p.speakers.map((s, j) => `<li><span><b>${esc(s.name)}</b> <span class="text-mute">${esc([s.role, s.org].filter(Boolean).join(" · "))}</span></span>${btn("speakers." + j, t("org.ai.add"), "spark")}</li>`).join("")}</ul>`, p.speakers.length > 1 ? btn("speakers.*", t("org.ai.addAll"), "spark") : ""));
+    if (!cat && p.missions && p.missions.length) out.push(group(t("org.ai.p.missions"), `<ul>${p.missions.map((x, j) => `<li><span><b>${esc(x.title)}</b> <span class="text-mute">${esc(t("org.mtype." + x.type))} · +${x.xp} XP</span></span>${btn("missions." + j, t("org.ai.add"), "spark")}</li>`).join("")}</ul>`, p.missions.length > 1 ? btn("missions.*", t("org.ai.addAll"), "spark") : ""));
+    if (p.venue && p.venue.zones.length) out.push(group(t("org.ai.p.venue"), `<div class="org-venue-z">${p.venue.zones.map((z) => `<span class="chip">${esc(z.name)} · ${esc(t("org.vg.size." + z.size))}</span>`).join("")}</div>`, btn("venue", t("org.ai.useVenue"), "layers")));
+    return out.join("");
+  }
+  function aiHTML() {
+    const a = st.ai, sug = aiSuggestions();
+    return `<article class="pcard org-ai" id="orgAi">
+      <header class="pcard-h"><div><span class="pcard-k">${t("org.ai.kicker")}</span><h2 class="pcard-t">${t("org.ai.title")}</h2><p class="text-mute text-[14px]" style="margin-top:4px">${st.cur && st.cur.name ? esc(tf("org.ai.ledeEv", st.cur.name)) : t("org.ai.lede")}</p></div><span class="chip chip-accent">${svg("bot")}${t("org.ai.chip")}</span></header>
+      <div class="org-ai-log" id="orgAiLog" aria-live="polite">${a.msgs.map((m, i) => `<div class="org-ai-m ${m.role === "user" ? "is-me" : ""} ${m.err ? "is-err" : ""}"><p>${esc(m.content)}</p>${m.prop ? propHTML(m, i) : ""}</div>`).join("")}${a.busy ? `<div class="org-ai-m is-wait"><p>${svg("clock")}${t("org.ai.thinking")}</p></div>` : ""}</div>
+      ${!a.msgs.length && sug.length ? `<div class="org-ai-sug">${sug.map((k) => `<button type="button" class="pill-btn" data-org="aiSug" data-v="${k}">${esc(t(k))}</button>`).join("")}</div>` : ""}
+      <form class="org-ai-f" data-org-form="ai" novalidate><textarea class="input" name="q" rows="2" maxlength="1500" placeholder="${t("org.ai.ph")}" aria-label="${t("org.ai.ph")}" ${a.busy ? "disabled" : ""}>${esc(a.draft)}</textarea><button type="submit" class="btn btn-primary btn-sm" ${a.busy ? "disabled" : ""}>${svg("arrow")}${t("org.ai.send")}</button></form>
+    </article>`;
+  }
+  /* Repinta solo el asistente: no se pierde lo escrito en el paso abierto */
+  function paintAi(focus) {
+    const el = document.getElementById("orgAi"); if (!el) { rr(); return; }
+    el.outerHTML = aiHTML();
+    const log = document.getElementById("orgAiLog"); if (log) log.scrollTop = log.scrollHeight;
+    if (focus) { const q = document.querySelector("#orgAi [name=q]"); if (q) q.focus({ preventScroll: true }); }
+  }
+
   function wizardHTML() {
-    const k = ORG_STEPS[st.step], body = { details: detailsHTML, days: daysHTML, sessions: sessionsHTML, speakers: speakersHTML, missions: missionsHTML, venue: venueHTML, preview: previewHTML }[k]();
+    const k = steps()[st.step], body = { details: detailsHTML, days: daysHTML, sessions: sessionsHTML, speakers: speakersHTML, missions: missionsHTML, venue: venueHTML, preview: previewHTML }[k]();
     return `<article class="pcard" id="orgCard">
-      <header class="pcard-h"><div><span class="pcard-k">${st.cur.id ? t("org.editing") : t("org.newEv")}</span><h2 class="pcard-t">${esc(st.cur.name || t("org.untitled"))}</h2></div>
+      <header class="pcard-h"><div><span class="pcard-k">${st.cur.curated ? t(st.cur.id ? "org.cat.editing" : "org.cat.new") : st.cur.id ? t("org.editing") : t("org.newEv")}</span><h2 class="pcard-t">${esc(st.cur.name || t("org.untitled"))}</h2></div>
         <div class="flex items-center gap-2">${st.cur.id ? statusChip(st.cur.status) : ""}<button type="button" class="btn btn-ghost btn-sm" data-org="back">${svg("chevl")}${t("org.back")}</button></div></header>
       ${notMine(st.cur) ? `<p class="org-msg is-admin" role="note">${svg("shield")}<span>${esc(tf("org.adminEditing", st.cur.owner.name || st.cur.owner.email || "?"))}</span></p>` : ""}
       ${stepperHTML()}
-      <section class="org-body" aria-labelledby="orgStepT"><h3 class="org-step-t" id="orgStepT">${tf("org.stepOf", st.step + 1, ORG_STEPS.length)} · ${t("org.step." + k)}</h3>${msgHTML()}${body}</section>
-      ${st.cur.id ? `<div class="org-nav">${st.step > 0 ? `<button type="button" class="btn btn-ghost btn-sm" data-org="step" data-v="${st.step - 1}">${svg("chevl")}${t("org.prev")}</button>` : "<span></span>"}${st.step < ORG_STEPS.length - 1 ? `<button type="button" class="btn btn-ghost btn-sm" data-org="step" data-v="${st.step + 1}">${t("org.next")}${svg("chev")}</button>` : ""}</div>` : ""}
+      <section class="org-body" aria-labelledby="orgStepT"><h3 class="org-step-t" id="orgStepT">${tf("org.stepOf", st.step + 1, steps().length)} · ${t("org.step." + k)}</h3>${msgHTML()}${body}</section>
+      ${st.cur.id ? `<div class="org-nav">${st.step > 0 ? `<button type="button" class="btn btn-ghost btn-sm" data-org="step" data-v="${st.step - 1}">${svg("chevl")}${t("org.prev")}</button>` : "<span></span>"}${st.step < steps().length - 1 ? `<button type="button" class="btn btn-ghost btn-sm" data-org="step" data-v="${st.step + 1}">${t("org.next")}${svg("chev")}</button>` : ""}</div>` : ""}
     </article>`;
   }
 
-  const html = () => (st.cur ? wizardHTML() : listHTML());
+  const html = () => `${st.cur ? wizardHTML() : listHTML()}${aiHTML()}`;
 
   /* ---------- Acciones ---------- */
   async function saveDetails(f) {
@@ -302,7 +388,7 @@ export function createOrganizer(ctx) {
       tags: list(f.tags.value, 12, 60), industries: [...f.querySelectorAll("[name=ind]:checked")].map((x) => x.value),
     };
     const bad = d.name.length < 3 ? t("org.v.name") : !d.city ? t("org.v.city") : d.description.length < 20 ? t("org.v.desc")
-      : d.sourceUrl && !URL_RE.test(d.sourceUrl) ? t("org.v.url") : !d.industries.length ? t("org.v.inds") : !d.tags.length ? t("org.v.tags") : "";
+      : c.curated && !d.sourceUrl ? t("org.v.urlReq") : d.sourceUrl && !URL_RE.test(d.sourceUrl) ? t("org.v.url") : !d.industries.length ? t("org.v.inds") : !d.tags.length ? t("org.v.tags") : "";
     if (bad) { fail(bad); return; }
     const pos = ctx.cityPos(d.city), body = { ...d, sourceUrl: d.sourceUrl || null, ...(pos ? { lat: pos[0], lon: pos[1] } : {}) };
     const i = info(), tone = [f.tone0.value, f.tone1.value].map((x, k) => (HEX_RE.test(x) ? x : DEFAULT_INFO.tone[k]));
@@ -310,10 +396,10 @@ export function createOrganizer(ctx) {
     const nextInfo = { ...i, tone, accent: HEX_RE.test(f.accent.value) ? f.accent.value : DEFAULT_INFO.accent, lema: d.description.slice(0, 300), para: f.para.value.trim().slice(0, 300),
       formato: [f.format.value, ...(days ? [daysTxt(days)] : [])], llevas: lines(f.llevas.value, 8, 160) };
     await run(async () => {
-      let r = c.id ? await api.admin.updateEvent(c.id, body) : await api.admin.createEvent(body);
+      let r = c.id ? await api.admin.updateEvent(c.id, body) : await api.admin.createEvent(c.curated ? { ...body, curated: true } : body);
       r = await api.admin.setInfo(r.event.id, nextInfo);
       const isNew = !c.id; adopt(r); st.step = 1;
-      if (isNew) toast(`<b>${esc(t("org.t.draft"))}</b><div class="text-[13px] text-mute">${esc(r.event.name)}</div>`, "pen");
+      if (isNew) toast(`<b>${esc(t(c.curated ? "org.cat.t.draft" : "org.t.draft"))}</b><div class="text-[13px] text-mute">${esc(r.event.name)}</div>`, "pen");
     }, t("org.ok.saved"));
   }
   async function saveDays(f) {
@@ -355,6 +441,71 @@ export function createOrganizer(ctx) {
     const tpl = ctx.venueTemplates().find(([k]) => k === key);
     await run(async () => { adopt(await api.admin.setVenue(st.cur.id, tpl ? clone(tpl[2]) : null)); }, tpl ? tf("org.ok.venue", tpl[1]) : t("org.ok.noVenue"));
   }
+  async function saveVenueGen(f) {
+    readVgen(f);
+    if (!st.vz.length) { fail(t("org.vg.v.none")); return; }
+    if (st.vz.some((z) => !z.name.trim())) { fail(t("org.vg.v.name")); return; }
+    const v = generateVenue({ zones: st.vz, ground: st.vground });
+    await run(async () => { adopt(await api.admin.setVenue(st.cur.id, v)); }, tn("org.vg.saved", v.z.length));
+  }
+  /* Descripción → zonas: con la IA si está disponible; si no, con el traductor local de palabras clave */
+  async function proposeZones(f) {
+    readVgen(f.closest("#orgCard").querySelector("[data-org-form=vgen]"));
+    const brief = f.brief.value.trim();
+    if (brief.length < 8) { fail(t("org.vg.v.brief")); return; }
+    let how = "ai";
+    await run(async () => {
+      try {
+        const r = await api.admin.assist({ message: brief, eventId: st.cur.id || undefined, focus: "venue", lang: ctx.lang() });
+        const zs = r.proposals && r.proposals.venue && r.proposals.venue.zones;
+        if (!zs || !zs.length) throw Object.assign(new Error("sin zonas"), { local: true });
+        st.vz = zs.map(cleanZone);
+      } catch (e) {
+        if (!(e.local || isOffline(e))) throw e;
+        how = "local"; st.vz = parseVenueBrief(brief);
+      }
+    }, () => tn(how === "ai" ? "org.vg.aiOk" : "org.vg.localOk", st.vz.length));
+  }
+  async function sendAi(text) {
+    const a = st.ai, q = String(text || "").trim().slice(0, 1500);
+    if (!q || a.busy) return;
+    const history = a.msgs.filter((m) => !m.err).slice(-AI_HISTORY).map((m) => ({ role: m.role, content: m.content.slice(0, 3000) }));
+    a.msgs.push({ role: "user", content: q }); a.busy = true; a.draft = ""; paintAi();
+    try {
+      const r = await api.admin.assist({ message: q, history, eventId: (st.cur && st.cur.id) || undefined, lang: ctx.lang() });
+      a.msgs.push({ role: "assistant", content: r.reply || t("org.ai.empty"), prop: r.proposals || null, applied: {}, ev: st.cur && st.cur.id });
+    } catch (e) {
+      a.msgs.push({ role: "assistant", content: isOffline(e) ? t("org.ai.off") : e instanceof ApiError && e.status === 429 ? t("org.ai.limit") : errText(e), err: true });
+    } finally { a.busy = false; paintAi(true); }
+  }
+  /* Aplica una propuesta. Lo que va a un formulario (detalles, agenda, recinto) se rellena para revisarlo y
+     guardarlo; charlas, speakers y misiones se añaden con los endpoints de siempre */
+  async function applyAi(v) {
+    const [mi, key] = v.split(":"), m = st.ai.msgs[+mi]; if (!m || !m.prop) return;
+    const p = m.prop, [kind, idx] = key.split("."), mark = (k) => { m.applied[k] = true; };
+    if (kind === "details") {
+      const d = p.details; if (!d) return;
+      if (!st.cur) { startNew(false); if (d.name) st.cur.name = d.name; if (d.city && ctx.cities().includes(d.city)) st.cur.city = d.city; }
+      Object.assign(st.cur, { description: d.description || st.cur.description, tags: d.tags.length ? d.tags : st.cur.tags });
+      if (d.para) st.cur.info = { ...info(), para: d.para };
+      st.step = stepIx("details"); mark(key); setMsg("ok", t("org.ai.reviewDetails")); rr(); return;
+    }
+    if (!st.cur || !st.cur.id) { setMsg("err", t("org.ai.needEvent")); if (st.cur) paintMsg(); else rr(); return; }
+    if (m.ev && m.ev !== st.cur.id) { setMsg("err", t("org.ai.otherEv")); paintMsg(); return; }
+    if (kind === "agenda") { st.agenda = p.agenda.map((r) => r.slice()); st.days = null; st.step = stepIx("days"); mark(key); setMsg("ok", t("org.ai.reviewAgenda")); rr(); return; }
+    if (kind === "venue") { st.vz = p.venue.zones.map(cleanZone); st.step = stepIx("venue"); mark(key); setMsg("ok", t("org.ai.reviewVenue")); rr(); return; }
+    const all = idx === "*", list = p[kind] || [], picks = all ? list.map((_, j) => j).filter((j) => !m.applied[`${kind}.${j}`]) : [+idx];
+    const add = { sessions: (b) => api.admin.addSession(st.cur.id, { ...b, tag: null }), speakers: (b) => api.admin.addSpeaker(st.cur.id, { ...b, avatar: null }), missions: (b) => api.admin.addMission(st.cur.id, b) }[kind];
+    if (!add || !picks.length) return;
+    if (kind === "sessions" && !st.cur.days.length) { setMsg("err", t("org.ses.noDays")); paintMsg(); return; }
+    let n = 0;
+    await run(async () => {
+      for (const j of picks) { const b = list[j]; if (!b || (kind === "sessions" && b.day >= st.cur.days.length)) continue; await add(b); mark(`${kind}.${j}`); n++; }
+      if (all) mark(key);
+      adopt(await api.admin.getEvent(st.cur.id));
+      const target = stepIx(kind); if (target >= 0) st.step = target;
+    }, () => tn("org.ai.added", n));
+  }
   async function publish(on) {
     const ok = await run(async () => { adopt(on ? await api.admin.publish(st.cur.id) : await api.admin.unpublish(st.cur.id)); }, on ? t("org.ok.published") : t("org.ok.unpublished"));
     if (ok) { st.list = null; ctx.afterPublish(); if (on) toast(`<b>${esc(t("org.t.published"))}</b><div class="text-[13px] text-mute">${esc(st.cur.name)}</div>`, "check"); }
@@ -371,11 +522,20 @@ export function createOrganizer(ctx) {
     const b = e.target.closest("[data-org]"); if (!b || b.disabled) return false;
     const k = b.dataset.org, v = b.dataset.v;
     if (k === "new") { startNew(); rr(); }
+    else if (k === "newCat") { startNew(true); rr(); }
+    else if (k === "vzAdd" || k === "vzDel") {
+      readVgen(b.closest("form"));
+      if (k === "vzAdd" && st.vz.length < MAX_ZONES) st.vz.push(cleanZone({ type: "labs", size: "m" }));
+      if (k === "vzDel" && st.vz.length > 1) st.vz.splice(+v, 1);
+      rr();
+    }
+    else if (k === "aiSug") sendAi(t(v));
+    else if (k === "aiApply") applyAi(v);
     else if (k === "edit") edit(v);
     else if (k === "scope") { if (st.scope !== v) { st.scope = v === "all" ? "all" : "mine"; st.list = null; st.ask = null; setMsg(null); rr(); loadList(); } }
     else if (k === "del") del(v);
     else if (k === "back") backToList();
-    else if (k === "step") { if (ORG_STEPS[st.step] === "days") readDaysForm(b.closest("#orgCard").querySelector("[data-org-form=days]")); st.step = Math.max(0, Math.min(ORG_STEPS.length - 1, +v)); setMsg(null); st.ask = null; rr(); }
+    else if (k === "step") { const card = b.closest("#orgCard"); if (steps()[st.step] === "days" && card) readDaysForm(card.querySelector("[data-org-form=days]")); if (steps()[st.step] === "venue" && card) readVgen(card.querySelector("[data-org-form=vgen]")); st.step = Math.max(0, Math.min(steps().length - 1, +v)); setMsg(null); st.ask = null; rr(); }
     else if (k === "dayAdd" || k === "dayDel" || k === "agAdd" || k === "agDel") {
       readDaysForm(b.closest("form"));
       if (k === "dayAdd") { const last = st.days[st.days.length - 1]; const n = last ? new Date(`${last}T12:00:00`) : new Date(); n.setDate(n.getDate() + (last ? 1 : 30)); st.days.push(n.toISOString().slice(0, 10)); }
@@ -404,10 +564,14 @@ export function createOrganizer(ctx) {
     else if (k === "session") addSession(f);
     else if (k === "speaker") addSpeaker(f);
     else if (k === "mission") addMission(f);
+    else if (k === "vgen") saveVenueGen(f);
+    else if (k === "vbrief") proposeZones(f);
+    else if (k === "ai") sendAi(f.q.value);
     return true;
   }
   /* Vista previa de la portada mientras se eligen los colores */
   function onInput(e) {
+    if (e.target.closest("[data-org-form=ai]")) { st.ai.draft = e.target.value; st.dirty = true; return true; }
     if (e.target.closest("[data-org-form]")) st.dirty = true;
     const f = e.target.closest("[data-org-form=details]"); if (!f) return false;
     const p = f.querySelector("#orgCoverPrev");
@@ -418,7 +582,7 @@ export function createOrganizer(ctx) {
     return true;
   }
   /* Nueva sesión de otra cuenta o rol retirado: olvidar lo cargado */
-  function reset() { Object.assign(st, { list: null, loading: false, cur: null, step: 0, busy: false, msg: null, ask: null, days: null, agenda: null, sDay: 0, dirty: false, scope: "mine" }); }
+  function reset() { Object.assign(st, { list: null, loading: false, cur: null, step: 0, busy: false, msg: null, ask: null, days: null, agenda: null, sDay: 0, dirty: false, scope: "mine", vz: null, vground: null, ai: { msgs: [], busy: false, draft: "" } }); }
 
   return { html, open, startNew, onClick, onSubmit, onInput, reset, get editing() { return !!st.cur; }, get dirty() { return st.dirty; } };
 }
