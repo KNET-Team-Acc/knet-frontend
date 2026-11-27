@@ -5,7 +5,7 @@ import { TEAM } from "@/data/team.js";
 import { P } from "@/data/icons.js";
 import { IND, OBJ, IND_INTERESTS, SENIORITY } from "@/data/industries.js";
 import { LEVELS, LVL_META, BADGES, XPS, ACTIONS, COMMON_M, FRAMES, GROUP_M, EXPS } from "@/data/gamification.js";
-import { AI_ANS, INSIGHTS, STEP_C, SRC_INFO, G_ROLES, G_SING, G_SUGGEST, G_WHY, HX_TYPE, TAG_IDEA, SUM_INFO } from "@/data/insights.js";
+import { AI_ANS, INSIGHTS, STEP_C, SRC_INFO, G_ROLES, G_ROLE_API, G_ROLE_UI, G_SHAPE, G_SING, G_SUGGEST, G_WHY, HX_TYPE, TAG_IDEA, SUM_INFO } from "@/data/insights.js";
 import { SCENES, VENUES, GROUND } from "@/data/venues.js";
 import { EVENTS, EV_DAYS, MAIN_EV, EV_ALIAS, COL_OUTLINE, CO_CITIES, EV_INFO, NE_TYPES, NE_CITIES } from "@/data/events.js";
 
@@ -20,7 +20,7 @@ const SPEAKERS = {};
 import { TABS, TAB_DESC, PILLS, I18N, DM_PILLS, TOUR, NOTIF_T } from "@/data/navigation.js";
 import { INTEREST_CATS, INTEREST_EN, INTEREST_MAX, INTEREST_CUSTOM_LEN } from "@/data/interests.js";
 import { P_FIELDS, evtTypeLbl, LI_FIELDS, LI_AUTH_TXT, PERM_SCOPES } from "@/data/privacy.js";
-import { COFFEE_SLOTS, QR_PLACES } from "@/data/networking.js";
+import { COFFEE_SLOTS, QR_PLACES, SUMMIT_POOL } from "@/data/networking.js";
 import { AV_SKIN, AV_HAIRC, AV_OUT, AV_HAIR, AV_ACC, AV_XHAIR, AV_XACC, AV_GENDER } from "@/data/avatar.js";
 import { SV_ASPECTS, SV_BEST, SV_FACES } from "@/data/survey.js";
 import { PDF_MAP, PDF_FONTS } from "@/data/pdf-fonts.js";
@@ -449,7 +449,7 @@ export function bootKnetApp() {
 
   /* ---- Estado ---- */
   const esc = (x) => String(x).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const fresh = (ind = "tech") => ({ connected: false, ind, xp: 0, done: [], connections: [], attended: [], actions: {}, scopes: { profile: true, industry: true, interests: true, network: true }, dossierAt: null, extra: [], chat: [], graph: false, events: [MAIN_EV], mv1: true, mv2: true, sel: {}, avatar: null, profile: null, requests: {}, coffees: {}, dms: {}, qrConn: [], frames: [], frame: null, items: [], gf: null, exp: null, notifs: [], notifDue: [], soonSeeded: false });
+  const fresh = (ind = "tech") => ({ connected: false, ind, xp: 0, done: [], connections: [], attended: [], actions: {}, scopes: { profile: true, industry: true, interests: true, network: true }, dossierAt: null, extra: [], chat: [], graph: false, events: [MAIN_EV], mv1: true, mv2: true, sel: {}, avatar: null, profile: null, requests: {}, coffees: {}, dms: {}, qrConn: [], frames: [], frame: null, items: [], gf: null, exp: null, notifs: [], notifDue: [], soonSeeded: false, graphRole: null, graphSee: null, graphSecond: false });
   let A = fresh();
   try { const raw = localStorage.getItem(KEY); if (raw) { const o = JSON.parse(raw); if (o && IND[o.ind]) A = Object.assign(fresh(o.ind), o); } } catch (e) {}
   if (A.connected && PERSONAS[A.ind] === undefined) A = fresh();
@@ -583,13 +583,16 @@ export function bootKnetApp() {
       if (pr.src && API_SRC.includes(pr.src[f])) src[f] = pr.src[f];
     });
     if (Object.keys(src).length) body.fieldSources = src;
+    // Rol «Soy» del grafo (users.graph_role): solo si el usuario lo eligió; sin elegir, el servidor lo deja en NULL
+    if ((!fields || fields.includes("graphRole")) && G_ROLE_API[A.graphRole]) body.graphRole = G_ROLE_API[A.graphRole];
     return Object.keys(body).length ? body : null;
   }
   /* Cambia de industria conservando perfil, avatar, XP, inscripciones, check-ins y el estado de sincronización
      (el servidor los guarda igual; los matches, la red y las misiones sí se rehacen para la nueva industria) */
   function switchIndustry(ni) {
     const keep = { profile: { ...A.profile, src: { ...A.profile.src } }, avatar: A.avatar, scopes: A.scopes, xp: A.xp, xpLocal: A.xpLocal, events: A.events,
-      attended: A.attended, outbox: A.outbox, apiLinked: A.apiLinked, xpSynced: A.xpSynced, regLocal: A.regLocal, accountId: A.accountId, accountEmail: A.accountEmail };
+      attended: A.attended, outbox: A.outbox, apiLinked: A.apiLinked, xpSynced: A.xpSynced, regLocal: A.regLocal, accountId: A.accountId, accountEmail: A.accountEmail,
+      graphRole: A.graphRole, graphSee: A.graphSee, graphSecond: A.graphSecond };
     A = Object.assign(fresh(ni), { connected: true }, keep); selEvent = null; graphIntro = true; editField = null;
   }
   function applyServerUser(u) {
@@ -600,6 +603,9 @@ export function bootKnetApp() {
     ["name", "role", "company", "seniority", "location"].forEach(f => { if (typeof u[f] === "string" && u[f]) pr[f] = u[f]; });
     if (Array.isArray(u.interests) && u.interests.length) pr.interests = u.interests.slice();
     if (u.fieldSources) pr.src = { ...pr.src, ...u.fieldSources };
+    // Rol «Soy» guardado en el servidor; si cambia, la vista «Quiero ver» vuelve a la recomendada para ese rol
+    const gr = G_ROLE_UI[u.graphRole];
+    if (gr && gr !== A.graphRole) { A.graphRole = gr; A.graphSee = G_SUGGEST[gr].slice(); }
   }
   /* Eventos que publica la API y no están en el catálogo local (src/data/events.js). Solo se aceptan reales con
      fuente oficial http(s); se guardan en A.apiEvents (con su ficha y recinto de GET /api/events/:id) para que sigan
@@ -964,6 +970,7 @@ export function bootKnetApp() {
           if (!A.dossierAt && lastDossier) A.dossierAt = lastDossier;
           A.xp = me.user.xp + A.xpLocal;
           lb.at = {}; // la XP de los demás pudo cambiar: el ranking se vuelve a pedir al pintarse
+          net.at = 0; // y el grafo de la red (GET /api/me/network) también
         }
         save(); refresh();
         if (!$("#m-dm").hidden && dmFor && !dmBusy) renderDm();
@@ -1168,7 +1175,7 @@ export function bootKnetApp() {
     else net = `<article class="pcard" id="networkCard"><header class="pcard-h"><div><span class="pcard-k">Red de contactos</span><h2 class="pcard-t">Tu red dentro del Summit</h2></div><span class="chip chip-emerald" id="graphStats">${svg("users")}Grafo listo</span></header>
         ${graphRolesHTML()}
         <div class="graph-wrap"><canvas id="netGraph" role="img" aria-label="Grafo de contactos: tú en el centro y alrededor tus matches y conexiones reales"></canvas><div class="graph-tip" id="graphTip" hidden></div></div>
-        <div class="graph-legend"><span><i style="background:#A100FF"></i>Tú</span><span><i style="background:#10B981"></i>Conectado</span><span><i style="background:#3D6BFF"></i>Match sugerido</span><span class="gr-leg-sep">Borde = rol:</span>${G_ROLES.map(([, l, , c]) => `<span><i style="background:transparent;box-shadow:inset 0 0 0 2.5px rgb(${c})"></i>${l}</span>`).join("")}</div>
+        ${graphLegendHTML()}
         <div class="graph-info" id="graphInfo" aria-live="polite">Toca o pasa el cursor sobre un nodo para ver cómo llegas a esa persona.</div></article>`;
     return {
       data: `<article class="pcard">
@@ -1202,90 +1209,236 @@ export function bootKnetApp() {
   const defaultMyRole = () => ({ banca: "cliente", tech: "experto", consultoria: "partner", energia: "cliente" })[A.ind] || "cliente";
   const myRole = () => A.graphRole || defaultMyRole();
   const seeRoles = () => A.graphSee || G_SUGGEST[myRole()].slice();
+  /* ---- Grafo de la red (knet-frontend#41) ----
+     Color y forma por rol «Soy» (G_ROLE[rol][3], G_SHAPE), aristas del color del rol de destino (resaltadas si ese rol
+     está en G_SUGGEST[tu rol]) y 2.º grado opcional (A.graphSecond) en un anillo exterior con nodos más pequeños.
+     Con cuenta sincronizada, la red sale de GET /api/me/network (knet-backend#30): 1.er y 2.º grado reales, con `via`,
+     y todas las aristas entre ellos (1.º–1.º y 2.º–2.º). Sin cuenta, el 2.º grado se genera desde SUMMIT_POOL. */
+  const GRAPH_MAX = 60;
+  const net = { data: null, at: 0, loading: false, err: null, missing: false, key: "" }; // caché en memoria (60 s)
+  const graphApiMode = () => A.connected && accountReady() && !!A.apiLinked;
+  const netLive = () => graphApiMode() && !net.missing && A.accountRole !== "admin";
+  function cleanNetwork(r) {
+    const nodes = (Array.isArray(r && r.nodes) ? r.nodes : [])
+      .filter(n => n && typeof n.id === "string" && typeof n.name === "string" && n.name.trim() && (n.degree === 1 || n.degree === 2)).slice(0, 150)
+      .map(n => ({ id: n.id, user: n.kind === "user", name: apiTxt(n.name, 80), sub: apiTxt(n.headline, 160), role: G_ROLE_UI[n.graphRole] || null, deg: n.degree,
+        via: Array.isArray(n.via) ? n.via.filter(v => typeof v === "string").slice(0, 10) : [] }));
+    const edges = (Array.isArray(r && r.edges) ? r.edges : []).filter(e => e && typeof e.a === "string" && typeof e.b === "string").slice(0, 3000).map(e => [e.a, e.b]);
+    return { me: r && r.me && typeof r.me.id === "string" ? r.me.id : null, nodes, edges };
+  }
+  async function loadNetwork(force) {
+    if (!netLive() || net.loading) return;
+    const key = A.accountId || "dev";
+    if (!force && net.key === key && Date.now() - net.at < 60000) return;
+    net.loading = true;
+    try { net.data = cleanNetwork(await api.network({ depth: 2, limit: GRAPH_MAX })); net.err = null; }
+    catch (e) {
+      if (e instanceof ApiError && e.status === 404) net.missing = true; // backend sin el endpoint: solo el 1.er grado local
+      else if (e instanceof ApiError && e.status === 403) { net.err = "network"; net.data = null; } // network_off en el servidor
+      else net.err = isOffline(e) ? "offline" : "error";
+    } finally { net.loading = false; net.at = Date.now(); net.key = key; }
+    if (net.missing && !A.graphSecond) return; // backend sin el endpoint: el grafo local no cambia
+    // Repinta solo la tarjeta del grafo (un refresh() completo podría rehacer un formulario a medio llenar)
+    const card = $("#networkCard"); if (!card || !$("#netGraph")) return;
+    const had = document.activeElement && card.contains(document.activeElement) && document.activeElement.id;
+    card.outerHTML = perfilParts().net; startGraph();
+    if (had) { const el = document.getElementById(had); if (el) el.focus({ preventScroll: true }); }
+  }
+  const secondOff = () => netLive() && net.err === "network";
+  const shapeSVG = (role, c) => {
+    const s = G_SHAPE[role];
+    const p = s === "diamond" ? `<path d="M7 1.2 12.8 7 7 12.8 1.2 7Z"/>` : s === "triangle" ? `<path d="M7 1.4 12.9 12.3H1.1Z"/>` : s === "square" ? `<rect x="2" y="2" width="10" height="10" rx="1.5"/>` : `<circle cx="7" cy="7" r="5.6"/>`;
+    return `<svg class="gr-shape" viewBox="0 0 14 14" width="14" height="14" aria-hidden="true" focusable="false" style="--c:${c}">${p}</svg>`;
+  };
+  function graphLegendHTML() {
+    const sug = G_SUGGEST[myRole()];
+    return `<div class="graph-legend" id="graphLegend" role="group" aria-label="${esc(t("gr.legend"))}">
+      <span class="gr-leg-sep">${esc(t("gr.legendRoles"))}</span><ul class="gr-leg-roles">${G_ROLES.map(([id, , , c]) => `<li data-legrole="${id}" data-shape="${G_SHAPE[id]}"${sug.includes(id) ? ' class="is-sug"' : ""}>${shapeSVG(id, c)}<span>${G_SING[id]}</span></li>`).join("")}</ul>
+      <span class="gr-leg-line"><i class="ln" aria-hidden="true"></i>${esc(t("gr.lineSolid"))}</span><span class="gr-leg-line"><i class="ln dash" aria-hidden="true"></i>${esc(t("gr.lineDash"))}</span><span class="gr-leg-line"><i class="ln hi" aria-hidden="true"></i>${esc(t("gr.lineHi"))}</span>
+    </div>`;
+  }
   function graphRolesHTML() {
     const me = myRole(), see = seeRoles(), { nodes } = graphData(), cnt = (r) => nodes.filter((n, i) => i && n.role === r).length;
     const sug = G_SUGGEST[me], isSug = sug.length === see.length && sug.every(r => see.includes(r));
+    const off = secondOff(), on2 = !!A.graphSecond && !off;
     return `<div class="gr-ctl">
       <div><div class="gr-k">Soy</div><div class="gr-seg" role="radiogroup" aria-label="Tu rol en el Summit">${G_ROLES.map(([id, l, ic, c]) => `<button type="button" class="gr-btn ${me === id ? "on" : ""}" role="radio" aria-checked="${me === id}" data-grme="${id}" style="--c:${c}">${svg(ic)}${G_SING[id]}</button>`).join("")}</div></div>
       <div><div class="gr-k">Quiero ver</div><div class="gr-seg" role="group" aria-label="Roles que quieres ver en el grafo">${G_ROLES.map(([id, l, ic, c]) => `<button type="button" class="gr-btn chk ${see.includes(id) ? "on" : ""}" aria-pressed="${see.includes(id)}" data-grsee="${id}" style="--c:${c}"><i class="gr-dot"></i>${l} <span class="gr-n tabular">${cnt(id)}</span></button>`).join("")}<button type="button" class="gr-btn ghost" data-grall>${see.length === G_ROLES.length ? "Ninguno" : "Todos"}</button></div></div>
+      <div class="gr-second${off ? " is-off" : ""}"><button type="button" class="gr-switch" role="switch" id="grSecond" data-grsecond aria-checked="${on2}" aria-describedby="grSecondHint"${off ? " disabled" : ""}><span class="gr-switch-knob" aria-hidden="true"></span>${esc(t("gr.second"))}</button><span class="gr-second-hint" id="grSecondHint">${esc(t(off ? "gr.secondOff" : "gr.secondHint"))}</span></div>
       <div class="gr-sug">${svg("spark")}<span>${G_WHY[me]}</span>${isSug ? `<span class="chip chip-emerald">${svg("check")}Vista recomendada</span>` : `<button type="button" class="pill-btn" data-grsug>Aplicar recomendación</button>`}</div>
     </div>`;
   }
   panel.addEventListener("click", (e) => {
-    const m = e.target.closest("[data-grme]"); if (m) { A.graphRole = m.dataset.grme; A.graphSee = G_SUGGEST[A.graphRole].slice(); save(); toast(`<b>Tu rol: ${G_ROLE[A.graphRole][1]}</b><div class="text-[13px] text-mute">Ajustamos el grafo a lo que te conviene ver.</div>`, "users"); refresh(); return; }
+    const m = e.target.closest("[data-grme]"); if (m) { if (m.dataset.grme === A.graphRole) return; A.graphRole = m.dataset.grme; A.graphSee = G_SUGGEST[A.graphRole].slice(); save(); apiPatchProfile(["graphRole"]); toast(`<b>Tu rol: ${G_ROLE[A.graphRole][1]}</b><div class="text-[13px] text-mute">Ajustamos el grafo a lo que te conviene ver.</div>`, "users"); refresh(); return; }
     const v = e.target.closest("[data-grsee]"); if (v) { const r = v.dataset.grsee, cur = seeRoles(); A.graphSee = cur.includes(r) ? cur.filter(x => x !== r) : cur.concat(r); save(); refresh(); return; }
     if (e.target.closest("[data-grall]")) { A.graphSee = seeRoles().length === G_ROLES.length ? [] : G_ROLES.map(r => r[0]); save(); refresh(); return; }
     if (e.target.closest("[data-grsug]")) { A.graphSee = G_SUGGEST[myRole()].slice(); save(); refresh(); return; }
+    const s2 = e.target.closest("[data-grsecond]"); if (s2) { if (secondOff()) return; A.graphSecond = !A.graphSecond; save(); refresh(); const b = $("#grSecond"); if (b) b.focus(); return; }
+    const ask = e.target.closest("[data-grask]"); if (ask) { graphAsk(ask.dataset.grask); return; }
+    const gc = e.target.closest("[data-grconn]"); if (gc) { graphConnect(gc.dataset.grconn); return; }
   });
   function graphData() {
     const d = IND[A.ind], p = PERSONAS[A.ind];
-    const rnd = seeded([...A.ind].reduce((a, c) => a + c.charCodeAt(0), 0) * 97 + 11);
-    const nodes = [{ label: p.name ? first(p.name) + " (tú)" : "Tú", sub: [d.role, p.company].filter(Boolean).join(" · "), type: "me", role: myRole() }];
-    d.matches.forEach(m => nodes.push({ label: m[1], sub: m[2], type: A.connections.includes(m[1]) ? "conn" : "match", role: roleOf(m[1], m[2]) }));
-    (A.qrConn || []).filter(q => A.connections.includes(q.name) && !d.matches.some(m => m[1] === q.name)).forEach(q => nodes.push({ label: q.name, sub: q.role || "Conectado por QR", type: "conn", role: roleOf(q.name, q.role || "") }));
-    const edges = nodes.slice(1).map((_, i) => [0, i + 1]);
+    const seed = [...A.ind].reduce((a, c) => a + c.charCodeAt(0), 0) * 97 + 11, rnd = seeded(seed), rnd2 = seeded(seed + 7919);
+    const nodes = [{ label: p.name ? first(p.name) + " (tú)" : "Tú", sub: [d.role, p.company].filter(Boolean).join(" · "), type: "me", role: myRole(), deg: 0, via: [], idx: 0 }];
+    const byName = new Map();
+    const add = (n) => { if (byName.has(n.label)) return byName.get(n.label); if (nodes.length >= GRAPH_MAX) return null; n.idx = nodes.length; nodes.push(n); byName.set(n.label, n); return n; };
+    const apiMode = graphApiMode(), live = netLive() && net.data, pool = new Map(SUMMIT_POOL), ids = new Map(); // id de la API → nodo
+    // 1.er grado: matches del catálogo (conectados o sugeridos), conexiones por QR, el resto de tus conexiones y, con cuenta, las de la API
+    d.matches.forEach(m => add({ label: m[1], sub: m[2], type: A.connections.includes(m[1]) ? "conn" : "match", role: roleOf(m[1], m[2]), deg: 1, via: [] }));
+    (A.qrConn || []).filter(q => A.connections.includes(q.name)).forEach(q => add({ label: q.name, sub: q.role || "Conectado por QR", type: "conn", role: roleOf(q.name, q.role || ""), deg: 1, via: [], uid: q.userId || null }));
+    if (live) live.nodes.filter(n => n.deg === 1).forEach(n => {
+      const x = add({ label: n.name, sub: n.sub, type: "conn", role: n.role || roleOf(n.name, n.sub), deg: 1, via: [], uid: n.user ? n.id : null }); if (!x) return;
+      x.type = "conn"; if (n.role) x.role = n.role; if (n.user) x.uid = n.id; if (!x.sub) x.sub = n.sub; ids.set(n.id, x);
+    });
+    A.connections.forEach(n => add({ label: n, sub: pool.get(n) || "", type: "conn", role: roleOf(n, pool.get(n) || ""), deg: 1, via: [] }));
+    // 2.º grado: contactos de tus contactos, con quién te conecta (via = índices de nodos de 1.er grado)
+    if (A.graphSecond) {
+      if (live) live.nodes.filter(n => n.deg === 2).forEach(n => {
+        const via = n.via.map(v => ids.get(v)).filter(Boolean); if (!via.length || byName.has(n.name)) return;
+        const x = add({ label: n.name, sub: n.sub, type: "second", role: n.role || roleOf(n.name, n.sub), deg: 2, via: via.map(v => v.idx), uid: n.user ? n.id : null }); if (x) ids.set(n.id, x);
+      });
+      else if (!apiMode) {
+        const hubs = nodes.filter(n => n.type === "conn");
+        if (hubs.length) SUMMIT_POOL.forEach(([name, sub]) => {
+          const a = rnd2(), b = rnd2(), c = rnd2(); if (byName.has(name)) return;
+          const via = [hubs[Math.floor(a * hubs.length)].idx]; if (b < .3 && hubs.length > 1) { const h = hubs[Math.floor(c * hubs.length)].idx; if (!via.includes(h)) via.push(h); }
+          add({ label: name, sub, type: "second", role: roleOf(name, sub), deg: 2, via });
+        });
+      }
+    }
+    const edges = [], seen = new Set();
+    const link = (a, b, kind) => { if (a == null || b == null || a === b) return; const k = a < b ? a + ":" + b : b + ":" + a; if (seen.has(k)) return; seen.add(k); edges.push([a, b, kind]); };
+    nodes.forEach((n, i) => { if (n.deg === 1) link(0, i, n.type === "conn" ? "conn" : "match"); });
+    nodes.forEach((n, i) => { if (n.deg === 2) n.via.forEach(v => link(v, i, "second")); });
+    // Aristas cruzadas (1.º–1.º y 2.º–2.º): las reales de la API; en modo local, unas pocas simuladas al ver el 2.º grado
+    if (live) live.edges.forEach(([a, b]) => { const x = a === live.me ? nodes[0] : ids.get(a), y = b === live.me ? nodes[0] : ids.get(b); if (x && y) link(x.idx, y.idx, "cross"); });
+    else if (!apiMode && A.graphSecond) {
+      const conn = nodes.filter(n => n.type === "conn"), sec = nodes.filter(n => n.deg === 2);
+      conn.forEach((a, i) => conn.slice(i + 1).forEach(b => { if (rnd2() < .2) link(a.idx, b.idx, "cross"); }));
+      sec.forEach((a, i) => sec.slice(i + 1).forEach(b => { if (rnd2() < .3 && a.via.some(v => b.via.includes(v))) link(a.idx, b.idx, "cross"); }));
+    }
     nodes.forEach(n => { n.ph = rnd() * 6.283; n.j = rnd(); });
     return { nodes, edges };
+  }
+  let meRgb = null; // color mostrado del nodo central: se acerca al del rol «Soy» actual (transición suave)
+  let graphNodes = [], graphSel = null; // graphSel = nombre del nodo elegido: se conserva al repintar // nodos del último startGraph (los botones de #graphInfo los buscan por nombre: el orden cambia con cada sync)
+  const viaText = (n, nodes = graphNodes) => t("gr.via").replace("{0}", n.via.map(v => nodes[v] && nodes[v].label).filter(Boolean).join(", "));
+  function drawShape(ctx, shape, x, y, r) {
+    ctx.beginPath();
+    if (shape === "diamond") { const q = r * 1.25; ctx.moveTo(x, y - q); ctx.lineTo(x + q, y); ctx.lineTo(x, y + q); ctx.lineTo(x - q, y); ctx.closePath(); }
+    else if (shape === "triangle") { const q = r * 1.3; ctx.moveTo(x, y - q); ctx.lineTo(x + q * .92, y + q * .66); ctx.lineTo(x - q * .92, y + q * .66); ctx.closePath(); }
+    else if (shape === "square") { const q = r * .9; ctx.rect(x - q, y - q, q * 2, q * 2); }
+    else ctx.arc(x, y, r, 0, 6.283);
+  }
+  /* «Pedir presentación»: abre el chat con quien te conecta y deja escrito el mensaje (lo envías tú) */
+  function graphAsk(label) {
+    const n = graphNodes.find(x => x.label === label), via = n && n.deg === 2 && graphNodes[n.via[0]]; if (!via) return;
+    openChat(via.label); if (!isConn(via.label)) return;
+    setTimeout(() => { const inp = $("#dmIn"); if (inp && !inp.value) { inp.value = t("gr.askMsg").replace("{0}", first(via.label)).replace("{1}", n.label).slice(0, 300); inp.focus({ preventScroll: true }); } }, 90);
+  }
+  /* «Conectar» con alguien de 2.º grado: usuario real = solicitud por peerUserId (la responde esa persona); local = simulada */
+  function graphConnect(label) {
+    const n = graphNodes.find(x => x.label === label); if (!n || n.deg !== 2) return; const name = n.label;
+    if (isConn(name) || isPending(name) || isInbound(name)) return;
+    const at = Date.now();
+    (A.requests ||= {})[name] = n.uid ? { status: "pending", at, real: true, userId: n.uid, via: "graph", headline: n.sub } : { status: "pending", at, due: at + rnd(4500, 8000) };
+    save();
+    toast(`<b>${esc(t("att.sent").replace("{0}", name))}</b><div class="text-[13px] text-mute">${esc(t("att.sentSub").replace("{0}", first(name)))}</div>`, "users");
+    refresh();
+    if (n.uid) apiRun({ t: "conn", id: name, state: "pending", source: "request", peerUserId: n.uid }); else scheduleResponses();
   }
   function startGraph() {
     cancelAnimationFrame(graphRaf); if (graphRO) graphRO.disconnect();
     const cv = $("#netGraph"); if (!cv) return;
+    loadNetwork();
     const ctx = cv.getContext("2d"), { nodes, edges } = graphData(), tip = $("#graphTip"), info = $("#graphInfo");
-    const see = seeRoles(), sel0 = (i) => i === 0 || see.includes(nodes[i].role), vis = sel0;
-    const nb = (i) => edges.filter(e => (e[0] === i || e[1] === i) && vis(e[0]) && vis(e[1])).map(e => e[0] === i ? e[1] : e[0]);
-    const COL = { me: "139,92,246", conn: "16,185,129", match: "6,182,212", summit: "139,134,168" };
-    const R = { me: 15, conn: 10, match: 10, summit: 6 };
-    let W = 0, H = 0, hover = -1, sel = -1, t0 = performance.now();
+    graphNodes = nodes;
+    const see = seeRoles(), sug = G_SUGGEST[myRole()];
+    const vis = (i) => i === 0 || see.includes(nodes[i].role);
+    const adj = nodes.map(() => []); edges.forEach(([a, b]) => { adj[a].push(b); adj[b].push(a); });
+    const nb = (i) => adj[i].filter(vis);
+    const R = { me: 15, conn: 10, match: 10, second: 6 };
+    const target = (a, b) => nodes[a].deg > nodes[b].deg ? a : b; // destino de la arista: el más lejano de ti
+    const meT = G_ROLE[myRole()][3].split(",").map(Number);
+    if (!meRgb || reduce) meRgb = meT.slice();
+    const rgbOf = (i) => i === 0 ? meRgb.map(Math.round).join(",") : G_ROLE[nodes[i].role][3];
+    const has2 = nodes.some(n => n.deg === 2);
+    let W = 0, H = 0, hover = -1, sel = -1, t0 = performance.now(), last = t0;
     const intro = graphIntro && !reduce; graphIntro = false;
+    // Instantánea para depurar y para las pruebas E2E (el canvas no se puede inspeccionar)
+    const G = window.__knetGraph = {
+      me: { role: myRole(), rgb: rgbOf(0), target: meT.join(","), shape: G_SHAPE[myRole()] },
+      nodes: nodes.map((n, i) => ({ label: n.label, type: n.type, role: n.role, degree: n.deg, via: n.via.map(v => nodes[v].label), rgb: i ? G_ROLE[n.role][3] : meT.join(","), shape: G_SHAPE[n.role], visible: vis(i), r: R[n.type] })),
+      edges: edges.map(([a, b, kind]) => { const tg = target(a, b); return { a: nodes[a].label, b: nodes[b].label, kind, role: nodes[tg].role, rgb: G_ROLE[nodes[tg].role][3], highlighted: sug.includes(nodes[tg].role), dashed: kind === "second" || kind === "match" }; }),
+      second: { on: !!A.graphSecond, disabled: secondOff(), live: !!(netLive() && net.data) },
+    };
     const size = () => { const r = cv.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2); W = r.width; H = r.height; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); layout(); };
     const layout = () => { const cx = W / 2, cy = H / 2, m = Math.min(W, H), sx = Math.min(1.6, W / H);
-      nodes.forEach((n, i) => {
-        if (n.type === "me") { n.bx = cx; n.by = cy; return; }
-        const k = Math.max(1, nodes.length - 1), a = -Math.PI / 2 + (i - 1) * 2 * Math.PI / k, rr = m * (k > 6 ? .34 : .26);
-        n.bx = Math.max(18, Math.min(W - 18, cx + Math.cos(a) * rr * sx)); n.by = Math.max(18, Math.min(H - 18, cy + Math.sin(a) * rr));
-      }); };
+      const d1 = nodes.filter(n => n.deg === 1), k = Math.max(1, d1.length), rr = m * (has2 ? .24 : k > 6 ? .34 : .26), rr2 = m * .43;
+      const place = (n, a, r) => { n.ang = a; n.bx = Math.max(14, Math.min(W - 14, cx + Math.cos(a) * r * sx)); n.by = Math.max(14, Math.min(H - 14, cy + Math.sin(a) * r)); };
+      nodes[0].bx = cx; nodes[0].by = cy; nodes[0].ang = 0;
+      d1.forEach((n, j) => place(n, -Math.PI / 2 + j * 2 * Math.PI / k, rr));
+      // 2.º grado: anillo exterior, cerca del ángulo medio de quienes te conectan, con una separación mínima
+      const d2 = nodes.filter(n => n.deg === 2).map(n => { const v = n.via.map(i => nodes[i]); return [n, Math.atan2(v.reduce((s, x) => s + Math.sin(x.ang), 0), v.reduce((s, x) => s + Math.cos(x.ang), 0))]; }).sort((a, b) => a[1] - b[1]);
+      const gap = d2.length ? Math.min(2 * Math.PI / d2.length, .42) : 0; let prev = -Infinity;
+      d2.forEach(([n, a]) => { const aa = Math.max(a, prev + gap); prev = aa; place(n, aa, rr2 * (.94 + n.j * .12)); });
+    };
     const pos = (n, t) => reduce ? [n.bx, n.by] : [n.bx + Math.sin(t * .0007 + n.ph) * 3, n.by + Math.cos(t * .0009 + n.ph) * 3];
     const draw = (now) => {
       if (!cv.isConnected) { if (graphRO) graphRO.disconnect(); return; }
-      const t = now - t0, k = intro ? Math.min(1, t / 1100) : 1, ease = 1 - Math.pow(1 - k, 3);
+      const t = now - t0, k = intro ? Math.min(1, t / 1100) : 1, ease = 1 - Math.pow(1 - k, 3), dt = Math.min(64, now - last); last = now;
+      if (meRgb.some((c, j) => Math.abs(c - meT[j]) > .5)) { const f = Math.min(1, dt / 120); for (let j = 0; j < 3; j++) meRgb[j] += (meT[j] - meRgb[j]) * f; G.me.rgb = rgbOf(0); }
+      else if (G.me.rgb !== G.me.target) { meRgb = meT.slice(); G.me.rgb = G.me.target; }
+      const LT = document.documentElement.classList.contains("theme-light");
       ctx.clearRect(0, 0, W, H);
       const focus = sel >= 0 ? sel : hover, near = focus >= 0 ? new Set([focus, ...nb(focus)]) : null;
       const P = nodes.map(n => pos(n, now));
-      edges.forEach(([a, b]) => {
-        if (!vis(a) || !vis(b)) return;
-        const direct = a === 0 || b === 0, on = (!near || (near.has(a) && near.has(b))) && (sel0(a) || sel0(b));
-        const conn = direct && nodes[b].type === "conn";
-        const LT = document.documentElement.classList.contains("theme-light");
-        ctx.strokeStyle = direct ? `rgba(${conn ? (LT ? "4,120,87" : "16,185,129") : (LT ? "117,0,192" : "167,139,250")},${(on ? (LT ? .85 : .75) : .12) * ease})` : (LT ? `rgba(60,50,80,${(on ? .4 : .08) * ease})` : `rgba(160,170,200,${(on ? .32 : .06) * ease})`);
-        ctx.lineWidth = direct ? 1.8 : 1; ctx.setLineDash(direct && !conn ? [4, 4] : []);
+      for (const [a, b, kind] of edges) {
+        if (!vis(a) || !vis(b)) continue;
+        const tg = target(a, b), hi = sug.includes(nodes[tg].role), on = !near || (near.has(a) && near.has(b)), far = nodes[a].deg === 2 || nodes[b].deg === 2;
+        ctx.strokeStyle = `rgba(${rgbOf(tg)},${(on ? (hi ? .85 : .25) : .07) * (far ? .75 : 1) * ease})`;
+        ctx.lineWidth = hi ? (kind === "cross" || far ? 1.6 : 2.2) : 1;
+        ctx.setLineDash(kind === "second" ? [3, 4] : kind === "match" ? [4, 4] : []);
         ctx.beginPath(); ctx.moveTo(P[a][0], P[a][1]); ctx.lineTo(P[b][0], P[b][1]); ctx.stroke();
-      });
+      }
       ctx.setLineDash([]);
       nodes.forEach((n, i) => {
         if (!vis(i)) return;
-        const [x, y] = P[i], on = (!near || near.has(i)) && sel0(i), c = COL[n.type], r = R[n.type] * (intro ? Math.min(1, Math.max(0, (k * 1.6) - (i / nodes.length) * .6)) : 1);
+        const [x, y] = P[i], on = !near || near.has(i), c = rgbOf(i), r = R[n.type] * (intro ? Math.min(1, Math.max(0, (k * 1.6) - (i / nodes.length) * .6)) : 1);
         if (r <= 0) return;
-        if (n.type !== "summit" || i === focus) { const g = ctx.createRadialGradient(x, y, 0, x, y, r * 3); g.addColorStop(0, `rgba(${c},${on ? .35 : .08})`); g.addColorStop(1, `rgba(${c},0)`); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 3, 0, 6.283); ctx.fill(); }
-        ctx.fillStyle = `rgba(${c},${on ? 1 : .25})`; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
-        ctx.strokeStyle = `rgba(${G_ROLE[n.role][3]},${on ? .95 : .25})`; ctx.lineWidth = n.type === "summit" ? 2 : 2.6; ctx.beginPath(); ctx.arc(x, y, r + 2.2, 0, 6.283); ctx.stroke();
-        if (i === focus) { ctx.strokeStyle = document.documentElement.classList.contains("theme-light") ? "#0A0710" : "#fff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5.5, 0, 6.283); ctx.stroke(); }
-        if ((n.type !== "summit" || i === focus) && on && ease > .6) { ctx.font = `${n.type === "me" ? 700 : 600} 12px Inter, system-ui, sans-serif`; ctx.textAlign = "center"; const lbl = window.KNET_I18N && window.KNET_I18N.lang === "en" ? String(n.label).replace("(tú)", "(you)") : n.label; if (document.documentElement.classList.contains("theme-light")) { ctx.lineWidth = 3.5; ctx.lineJoin = "round"; ctx.strokeStyle = "rgba(251,249,244,.95)"; ctx.strokeText(lbl, x, y + r + 15); ctx.fillStyle = "rgba(10,7,16,.92)"; } else ctx.fillStyle = "rgba(245,241,250,.92)"; ctx.fillText(lbl, x, y + r + 15); }
+        const a0 = n.type === "second" ? .55 : n.type === "match" ? .62 : 1;
+        if (n.type !== "second" || i === focus) { const g = ctx.createRadialGradient(x, y, 0, x, y, r * 3); g.addColorStop(0, `rgba(${c},${on ? .32 : .07})`); g.addColorStop(1, `rgba(${c},0)`); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 3, 0, 6.283); ctx.fill(); }
+        ctx.fillStyle = `rgba(${c},${(on ? 1 : .25) * a0})`; drawShape(ctx, G_SHAPE[n.role], x, y, r); ctx.fill();
+        ctx.strokeStyle = LT ? `rgba(10,7,16,${on ? .6 : .2})` : `rgba(255,255,255,${on ? (n.type === "me" ? .9 : .4) : .12})`; ctx.lineWidth = n.type === "me" ? 2.4 : 1.2; ctx.stroke();
+        if (i === focus) { ctx.strokeStyle = LT ? "#0A0710" : "#fff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 6.5, 0, 6.283); ctx.stroke(); }
+        if ((n.type !== "second" || i === focus) && on && ease > .6) { ctx.font = `${n.type === "me" ? 700 : 600} 12px Inter, system-ui, sans-serif`; ctx.textAlign = "center"; const lbl = window.KNET_I18N && window.KNET_I18N.lang === "en" ? String(n.label).replace("(tú)", "(you)") : n.label; if (LT) { ctx.lineWidth = 3.5; ctx.lineJoin = "round"; ctx.strokeStyle = "rgba(251,249,244,.95)"; ctx.strokeText(lbl, x, y + r + 15); ctx.fillStyle = "rgba(10,7,16,.92)"; } else ctx.fillStyle = "rgba(245,241,250,.92)"; ctx.fillText(lbl, x, y + r + 15); }
       });
       graphRaf = requestAnimationFrame(draw);
     };
     const pick = (ev) => { const r = cv.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top, now = performance.now(); let best = -1, bd = 1e9;
       nodes.forEach((n, i) => { if (!vis(i)) return; const [x, y] = pos(n, now), dd = Math.hypot(x - mx, y - my); if (dd < R[n.type] + 10 && dd < bd) { bd = dd; best = i; } }); return [best, mx, my]; };
-    const direct = nb(0).filter(sel0).length;
-    const describe = (i) => { const n = nodes[i]; if (n.type === "me") return `<b>${n.label}</b> · ${n.sub} · <b>${G_SING[n.role]}</b>. Ves ${direct} contactos directos con los roles elegidos.`;
+    const direct = nb(0).filter(i => nodes[i].deg === 1).length, second = nodes.filter((n, i) => n.deg === 2 && vis(i)).length;
+    const describe = (i) => { const n = nodes[i]; if (n.type === "me") return `<b>${esc(n.label)}</b> · ${esc(n.sub)} · <b>${G_SING[n.role]}</b>. Ves ${direct} contactos directos con los roles elegidos.`;
       const rl = `<span class="gr-tag" style="--c:${G_ROLE[n.role][3]}">${G_ROLE[n.role][1]}</span>`;
-      return `${rl} <b>${esc(n.label)}</b> · ${esc(n.sub)}. ${n.type === "conn" ? "Conexión directa confirmada." : "Match sugerido: aún no conectan."}`; };
-    cv.addEventListener("mousemove", (ev) => { const [i, mx, my] = pick(ev); hover = i; cv.style.cursor = i >= 0 ? "pointer" : "default";
-      if (i >= 0) { tip.hidden = false; tip.innerHTML = `<b>${nodes[i].label}</b><span>${nodes[i].sub}</span><span style="color:rgb(${G_ROLE[nodes[i].role][3]})">${i === 0 ? "Tú · " : ""}${G_ROLE[nodes[i].role][1]}</span>`; tip.style.left = Math.min(mx + 12, W - 180) + "px"; tip.style.top = (my + 12) + "px"; } else tip.hidden = true; });
+      if (n.type !== "second") return `${rl} <b>${esc(n.label)}</b> · ${esc(n.sub)}. ${n.type === "conn" ? "Conexión directa confirmada." : "Match sugerido: aún no conectan."}`;
+      const via = nodes[n.via[0]], sent = isPending(n.label) || isConn(n.label);
+      return `${rl} <b>${esc(n.label)}</b> · ${esc(n.sub)}. ${esc(t("gr.secondDesc"))} <b class="gr-via-t">${esc(viaText(n, nodes))}</b>.
+        <div class="gr-acts"><button type="button" class="pill-btn" data-grask="${esc(n.label)}" aria-label="${esc(t("gr.askAria").replace("{0}", via.label).replace("{1}", n.label))}">${svg("msg")}${esc(t("gr.ask"))}</button>
+        <button type="button" class="pill-btn gr-act-main" data-grconn="${esc(n.label)}" aria-label="${esc(t("gr.connectAria").replace("{0}", n.label))}"${sent ? " disabled" : ""}>${svg(sent ? "check" : "users")}${esc(t(sent ? "gr.pending" : "gr.connect"))}</button></div>`; };
+    const showTip = (i, mx, my) => { const n = nodes[i];
+      tip.hidden = false; tip.innerHTML = `<b>${esc(n.label)}</b><span>${esc(n.sub)}</span><span style="color:rgb(${rgbOf(i)})">${i === 0 ? "Tú · " : ""}${G_ROLE[n.role][1]}</span>${n.deg === 2 ? `<span class="gr-via">${esc(viaText(n, nodes))}</span>` : ""}`;
+      tip.style.left = Math.min(mx + 12, W - 180) + "px"; tip.style.top = (my + 12) + "px"; };
+    cv.addEventListener("mousemove", (ev) => { const [i, mx, my] = pick(ev); hover = i; cv.style.cursor = i >= 0 ? "pointer" : "default"; if (i >= 0) showTip(i, mx, my); else tip.hidden = true; });
     cv.addEventListener("mouseleave", () => { hover = -1; tip.hidden = true; });
-    cv.addEventListener("click", (ev) => { const [i] = pick(ev); sel = i === sel ? -1 : i; info.innerHTML = sel >= 0 ? describe(sel) : "Toca o pasa el cursor sobre un nodo para ver cómo llegas a esa persona."; });
-    $("#graphStats").innerHTML = `${svg("users")}${direct} directos`;
+    cv.addEventListener("click", (ev) => { const [i] = pick(ev); sel = i === sel ? -1 : i; graphSel = sel >= 0 ? nodes[sel].label : null; info.innerHTML = sel >= 0 ? describe(sel) : "Toca o pasa el cursor sobre un nodo para ver cómo llegas a esa persona."; });
+    // Teclado y pruebas: elegir un nodo por nombre (window.__knetGraph.select("Nombre"))
+    G.select = (label) => { const i = nodes.findIndex(n => n.label === label); if (i < 0 || !vis(i)) return false; sel = i; graphSel = label; info.innerHTML = describe(i); const p = pos(nodes[i], performance.now()); showTip(i, p[0], p[1]); return true; };
+    $("#graphStats").innerHTML = `${svg("users")}${has2 ? esc(t("gr.stats2").replace("{0}", direct).replace("{1}", second)) : `${direct} directos`}`;
     if (nodes.length === 1) info.innerHTML = "Tu grafo crece con cada conexión real: escanea credenciales QR o conecta con tus matches cuando aparezcan en tu evento.";
     else if (!see.length) info.innerHTML = "Elige al menos un rol en <b>Quiero ver</b> para mostrar personas en el grafo.";
+    else if (A.graphSecond && !has2 && !secondOff() && !(netLive() && net.loading)) info.textContent = t("gr.secondEmpty");
+    if (graphSel) { const i = nodes.findIndex(n => n.label === graphSel); if (i > 0 && vis(i)) { sel = i; info.innerHTML = describe(i); } else graphSel = null; }
     size(); graphRO = new ResizeObserver(() => size()); graphRO.observe(cv);
     graphRaf = requestAnimationFrame(draw);
   }

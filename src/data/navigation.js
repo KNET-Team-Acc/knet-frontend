@@ -271,6 +271,16 @@ const NET_ES = {
   "ai.you": "Tú", "ai.bot": "Concierge", "ai.typing": "El Concierge está escribiendo…", "ai.log": "Conversación con el Concierge", "ai.sugAria": "Sugerencias",
   "ai.cited": "Sesiones citadas", "ai.toAgenda": "ver en la agenda",
   "ai.sug.next": "¿Cuándo es «{0}», mi próxima sesión?", "ai.sug.intro": "¿Cómo me presento con {0}?", "ai.sug.summary": "Resume el keynote", "ai.sug.mission": "¿Qué misión me conviene?", "ai.sug.event": "¿Qué evento me conviene?",
+  /* Grafo de red (knet-frontend#41): colores por rol «Soy», leyenda y 2.º grado */
+  "gr.legend": "Leyenda del grafo: color y forma por rol", "gr.legendRoles": "Rol:", "gr.lineSolid": "Conexión", "gr.lineDash": "Match o 2.º grado",
+  "gr.lineHi": "Resaltadas: los roles que te conviene ver",
+  "gr.second": "Mostrar 2.º grado", "gr.secondHint": "Los contactos de tus contactos, en el anillo exterior",
+  "gr.secondOff": "Tu red no se comparte: activa «Red de contactos» en Permisos MCP para ver tu 2.º grado.",
+  "gr.secondEmpty": "Aún no hay 2.º grado: conecta con alguien para ver a quién conoce.",
+  "gr.via": "Te conecta {0}", "gr.secondDesc": "Contacto de 2.º grado: aún no se conocen.",
+  "gr.ask": "Pedir presentación", "gr.askAria": "Pedir a {0} que te presente a {1}", "gr.askMsg": "¡Hola {0}! ¿Me presentas a {1}? Me gustaría conectar en el Summit.",
+  "gr.connect": "Conectar", "gr.connectAria": "Enviar solicitud de conexión a {0}", "gr.pending": "Solicitud enviada",
+  "gr.stats2": "{0} directos · {1} de 2.º grado", "gr.you": "Tú",
 };
 const NET_EN = {
   "req.title": "Received requests ({0})", "req.accept": "Accept · +100 XP", "req.decline": "Decline", "req.declineAria": "Decline {0}’s request",
@@ -290,6 +300,15 @@ const NET_EN = {
   "ai.you": "You", "ai.bot": "Concierge", "ai.typing": "The Concierge is typing…", "ai.log": "Conversation with the Concierge", "ai.sugAria": "Suggestions",
   "ai.cited": "Sessions cited", "ai.toAgenda": "see in the agenda",
   "ai.sug.next": "When is “{0}”, my next session?", "ai.sug.intro": "How should I introduce myself to {0}?", "ai.sug.summary": "Summarize the keynote", "ai.sug.mission": "Which mission should I do?", "ai.sug.event": "Which event suits me?",
+  "gr.legend": "Graph legend: color and shape by role", "gr.legendRoles": "Role:", "gr.lineSolid": "Connection", "gr.lineDash": "Match or 2nd degree",
+  "gr.lineHi": "Highlighted: the roles worth seeing for you",
+  "gr.second": "Show 2nd degree", "gr.secondHint": "Your contacts’ contacts, on the outer ring",
+  "gr.secondOff": "Your network isn’t shared: turn on “Contact network” in MCP permissions to see your 2nd degree.",
+  "gr.secondEmpty": "No 2nd degree yet: connect with someone to see who they know.",
+  "gr.via": "Connected through {0}", "gr.secondDesc": "2nd-degree contact: you haven’t met yet.",
+  "gr.ask": "Ask for an intro", "gr.askAria": "Ask {0} to introduce you to {1}", "gr.askMsg": "Hi {0}! Could you introduce me to {1}? I’d like to connect at the Summit.",
+  "gr.connect": "Connect", "gr.connectAria": "Send a connection request to {0}", "gr.pending": "Request sent",
+  "gr.stats2": "{0} direct · {1} 2nd degree", "gr.you": "You",
 };
 Object.assign(I18N.es, NET_ES);
 Object.assign(I18N.en, NET_EN);

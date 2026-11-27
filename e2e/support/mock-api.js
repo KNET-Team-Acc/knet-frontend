@@ -15,7 +15,7 @@ export function seedUser(over = {}) {
     id: USER_ID, email: "e2e@knet.test", name: "Paola Prueba", initials: "PP", role: "Gerente de Producto", company: "Acme",
     industry: "tech", seniority: "Gerencia", location: "Bogotá", interests: ["Datos"], avatar: null, fieldSources: {},
     linkedinConnected: false, photoUrl: null, emailVerified: false, hasPassword: true, legalVersion: "1.2", isDemo: false,
-    xp: 0, level: 1, levelName: "Explorador", scopes: { profile: true, industry: true, interests: true, network: true }, ...over,
+    xp: 0, level: 1, levelName: "Explorador", scopes: { profile: true, industry: true, interests: true, network: true }, graphRole: null, ...over,
   };
 }
 
@@ -39,6 +39,8 @@ export async function installMockApi(page, opts = {}) {
     connXp: 0,               // veces que el servidor sumó los +100 XP de una conexión
     scanAccepts: !!opts.scanAccepts, // true = /scan como el backend anterior (conexión aceptada al instante)
     attendeesError: null,    // [status, error] para GET /api/me/attendees
+    networkError: null,      // [status, error] para GET /api/me/network (p. ej. [403, "network_off"])
+    networkCalls: 0,
     peerRequests: [],        // cuerpos de POST /api/me/connections con peerUserId
     connSeq: 0,
     profilePatches: [],      // cuerpos de PATCH /api/me
@@ -178,7 +180,7 @@ export async function installMockApi(page, opts = {}) {
     if (path === "/api/me" && method === "GET") return json(200, me());
     if (path === "/api/me" && method === "PATCH") {
       state.profilePatches.push(body);
-      for (const k of ["name", "role", "company", "industry", "seniority", "location", "interests"]) if (body[k] !== undefined) state.user[k] = body[k];
+      for (const k of ["name", "role", "company", "industry", "seniority", "location", "interests", "graphRole"]) if (body[k] !== undefined) state.user[k] = body[k];
       return json(200, { user: state.user });
     }
     if (path === "/api/me" && method === "DELETE") {
@@ -317,6 +319,14 @@ export async function installMockApi(page, opts = {}) {
       if (state.attendeesError) return json(state.attendeesError[0], { error: state.attendeesError[1], message: state.attendeesError[1] });
       const conn = (a) => { const c = state.connections.find((x) => x.contact.userId === a.userId); return c ? { id: c.id, status: c.status, direction: c.direction || null } : null; };
       return json(200, { eventId: url.searchParams.get("eventId"), attendees: opts.attendees.map((a) => ({ ...a, connection: conn(a) })), total: opts.attendees.length });
+    }
+    // Grafo de la red (knet-backend#30): opts.network = { nodes, edges } (sin la opción, 404 como un backend sin el endpoint)
+    if (path === "/api/me/network" && opts.network) {
+      state.networkCalls++;
+      if (state.networkError) return json(state.networkError[0], { error: state.networkError[1], message: state.networkError[1] });
+      const depth = Number(url.searchParams.get("depth") || 2);
+      const nodes = opts.network.nodes.filter((n) => depth >= 2 || n.degree === 1);
+      return json(200, { me: { id: USER_ID, graphRole: state.user.graphRole ?? null }, nodes, edges: opts.network.edges });
     }
     if (path === "/api/me/stream") return json(404, { error: "not_found" });
     if (path === "/api/me/dossiers" && method === "GET") return json(200, { dossiers: [] });

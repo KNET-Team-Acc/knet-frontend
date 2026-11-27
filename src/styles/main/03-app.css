@@ -195,6 +195,29 @@ body.is-app .motto { margin-top: 16px; }
 .graph-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; color: var(--muted); }
 .graph-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .graph-legend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+/* Grafo de red (knet-frontend#41): leyenda por rol (color + forma), conmutador de 2.º grado y acciones de 2.º grado */
+.graph-legend { color: var(--t-soft); align-items: center; }
+.gr-leg-roles { display: flex; flex-wrap: wrap; gap: 6px 14px; list-style: none; margin: 0; padding: 0; }
+.gr-leg-roles li { display: inline-flex; align-items: center; gap: 6px; color: var(--fg); font-weight: 600; }
+.gr-leg-roles li.is-sug span { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.gr-shape { flex: none; fill: rgb(var(--c)); stroke: rgba(255,255,255,.6); stroke-width: 1; }
+.graph-legend i.ln { width: 20px; height: 0; border-radius: 0; background: none; border-top: 2px solid currentColor; opacity: .8; }
+.graph-legend i.ln.dash { border-top-style: dashed; }
+.graph-legend i.ln.hi { border-top-width: 3.5px; opacity: 1; color: var(--fg); }
+.gr-second { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.gr-switch { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px 5px 6px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--fg); background: rgba(var(--w-rgb),.04); border: 1px solid var(--line-strong); cursor: pointer; }
+.gr-switch:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.gr-switch:disabled { opacity: .55; cursor: not-allowed; }
+.gr-switch-knob { position: relative; width: 32px; height: 18px; border-radius: 999px; background: rgba(var(--w-rgb),.22); transition: background .2s; flex: none; }
+.gr-switch-knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .2s; }
+.gr-switch[aria-checked="true"] .gr-switch-knob { background: var(--accent); }
+.gr-switch[aria-checked="true"] .gr-switch-knob::after { transform: translateX(14px); }
+.gr-second-hint { font-size: 12.5px; color: var(--t-soft); }
+.gr-second.is-off .gr-second-hint { color: var(--fg); }
+.graph-tip .gr-via { color: var(--fg); font-style: italic; }
+.gr-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.gr-acts .pill-btn:disabled { opacity: .6; cursor: default; }
+@media (prefers-reduced-motion: reduce) { .gr-switch-knob, .gr-switch-knob::after { transition: none; } }
 .graph-info { font-size: 13.5px; color: var(--t-soft); padding: 12px; border-radius: 12px; background: rgba(var(--w-rgb),.035); border: 1px solid var(--line); }
 
 .level-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; padding: 8px 4px 4px; }

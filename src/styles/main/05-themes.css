@@ -154,6 +154,9 @@ html.theme-light .gr-sug { color: #3D3547; background: rgba(161,0,255,.06); bord
 /* ---- Grafo en modo claro ---- */
 html.theme-light .graph-wrap { background: radial-gradient(circle at 50% 50%, rgba(161,0,255,.09), transparent 60%), linear-gradient(rgba(10,7,16,.035) 1px, transparent 1px) 0 0 / 28px 28px, linear-gradient(90deg, rgba(10,7,16,.035) 1px, transparent 1px) 0 0 / 28px 28px, #FFFDF9; border-color: rgba(10,7,16,.35); }
 html.theme-light .graph-tip { background: #FFFDF9; border-color: var(--accent); box-shadow: 3px 3px 0 rgba(161,0,255,.4); color: #0A0710; }
+html.theme-light .gr-shape { stroke: rgba(10,7,16,.75); }
+html.theme-light .gr-switch { background: #FFFDF9; border-color: rgba(10,7,16,.3); }
+html.theme-light .gr-switch-knob { background: rgba(10,7,16,.25); }
 html.theme-light .graph-info { background: #FBF9F4; border-color: rgba(10,7,16,.2); color: #3D3547; }
 
 /* ---- Dossier (Evento / Insight / Conexión / Acción) en modo claro: mismo estilo, más contraste ---- */
