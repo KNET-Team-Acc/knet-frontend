@@ -218,6 +218,8 @@ export const api = {
   createConnection: (body) => request("POST", "/api/me/connections", body),
   acceptConnection: (id) => request("PATCH", `/api/me/connections/${enc(id)}`, { status: "accepted" }),
   deleteConnection: (id) => request("DELETE", `/api/me/connections/${enc(id)}`),
+  // Asistentes inscritos al evento que comparten su red (tarjeta pública + estado de la conexión)
+  listAttendees: (eventId, { limit = 50, offset = 0 } = {}) => request("GET", `/api/me/attendees?eventId=${enc(eventId)}&limit=${enc(limit)}&offset=${enc(offset)}`),
 
   // IA (Claude en el servidor). Timeout largo; 503 ai_unavailable llega como ApiOffline → el motor usa su respuesta local.
   aiChat: (body) => request("POST", "/api/ai/chat", body, { timeout: AI_TIMEOUT_MS }),

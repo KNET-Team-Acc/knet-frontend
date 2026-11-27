@@ -37,6 +37,9 @@ export async function installMockApi(page, opts = {}) {
     registrations: new Set(opts.registrations || ["and"]),
     connections: opts.connections || [],
     connXp: 0,               // veces que el servidor sumó los +100 XP de una conexión
+    scanAccepts: !!opts.scanAccepts, // true = /scan como el backend anterior (conexión aceptada al instante)
+    attendeesError: null,    // [status, error] para GET /api/me/attendees
+    peerRequests: [],        // cuerpos de POST /api/me/connections con peerUserId
     connSeq: 0,
     profilePatches: [],      // cuerpos de PATCH /api/me
     coffees: [],
@@ -216,6 +219,18 @@ export async function installMockApi(page, opts = {}) {
     if (path === "/api/contacts" && opts.contacts) return json(200, { contacts: opts.contacts });
     if (path === "/api/me/connections" && method === "GET") return json(200, { connections: state.connections });
     // Solicitud a un contacto del catálogo (queda pendiente; source qr = aceptada con +100 XP)
+    if (path === "/api/me/connections" && method === "POST" && body.peerUserId) {
+      // Solicitud a otro usuario real (knet-backend#24): pendiente, sin XP; si la otra persona ya te lo pidió, se aceptan
+      const a = (opts.attendees || []).find((x) => x.userId === body.peerUserId);
+      if (!a) return json(404, { error: "not_found", message: "No existe el usuario" });
+      const cur = state.connections.find((c) => c.contact.userId === body.peerUserId);
+      if (cur && cur.status === "accepted") return json(409, { error: "already_connected" });
+      if (cur && cur.direction === "outgoing") return json(409, { error: "request_pending" });
+      if (cur && cur.direction === "incoming") { cur.status = "accepted"; delete cur.direction; state.user.xp += 100; state.connXp++; return json(200, { connection: cur, xpAwarded: 100, xp: state.user.xp }); }
+      const connection = peerConnection(300 + ++state.connSeq, a.name, a.userId, { status: "pending", direction: "outgoing", source: "request", headline: a.headline });
+      state.connections.push(connection); state.peerRequests.push(body);
+      return json(201, { connection, xpAwarded: 0, xp: state.user.xp });
+    }
     if (path === "/api/me/connections" && method === "POST") {
       if (state.connections.some((c) => c.contact.name === body.name)) return json(409, { error: "conflict", message: `Ya tienes una conexión con ${body.name}` });
       const accepted = body.source === "qr";
@@ -230,6 +245,7 @@ export async function installMockApi(page, opts = {}) {
       if (i < 0) return json(404, { error: "not_found", message: `No existe la conexión ${m[1]}` });
       if (method === "DELETE") { state.connections.splice(i, 1); return json(204); }
       const cn = state.connections[i];
+      if (cn.status === "pending" && cn.direction === "outgoing") return json(403, { error: "not_recipient", message: "Solo puede aceptarla quien la recibió" });
       if (cn.status === "pending") { cn.status = "accepted"; cn.acceptedAt = new Date().toISOString(); delete cn.direction; state.user.xp += 100; state.connXp++; }
       return json(200, { connection: cn, xpAwarded: 100, xp: state.user.xp });
     }
@@ -274,9 +290,23 @@ export async function installMockApi(page, opts = {}) {
     if (path === "/api/me/connections/scan" && method === "POST") {
       const codes = { "knet1.own": [400, "own_qr"], "knet1.expired": [400, "qr_expired"], "knet1.used": [409, "qr_used"] };
       if (codes[body.token]) return json(codes[body.token][0], { error: codes[body.token][1], message: codes[body.token][1] });
-      const connection = peerConnection(100 + state.connections.length, body.token.split(".")[1] || "Asistente Real");
-      state.connections.push(connection); state.user.xp += 100;
-      return json(201, { connection, created: true, xpAwarded: 100, xp: state.user.xp });
+      const name = body.token.split(".")[1] || "Asistente Real";
+      if (state.scanAccepts) { // backend anterior a knet-backend#24: el escaneo crea la conexión aceptada con +100 XP
+        const connection = peerConnection(100 + state.connections.length, name);
+        state.connections.push(connection); state.user.xp += 100;
+        return json(201, { connection, created: true, xpAwarded: 100, xp: state.user.xp });
+      }
+      const prev = state.connections.find((c) => c.contact.name === name);
+      if (prev) return json(200, { connection: prev, created: false, xpAwarded: 0, xp: state.user.xp });
+      const connection = peerConnection(100 + state.connections.length, name, undefined, { status: "pending", direction: "outgoing" });
+      state.connections.push(connection);
+      return json(201, { connection, created: true, xpAwarded: 0, xp: state.user.xp });
+    }
+    // Directorio de asistentes del evento: opts.attendees (sin la opción, 404 como un backend sin el endpoint)
+    if (path === "/api/me/attendees" && opts.attendees) {
+      if (state.attendeesError) return json(state.attendeesError[0], { error: state.attendeesError[1], message: state.attendeesError[1] });
+      const conn = (a) => { const c = state.connections.find((x) => x.contact.userId === a.userId); return c ? { id: c.id, status: c.status, direction: c.direction || null } : null; };
+      return json(200, { eventId: url.searchParams.get("eventId"), attendees: opts.attendees.map((a) => ({ ...a, connection: conn(a) })), total: opts.attendees.length });
     }
     if (path === "/api/me/stream") return json(404, { error: "not_found" });
     if (path === "/api/me/dossiers" && method === "GET") return json(200, { dossiers: [] });
@@ -307,9 +337,10 @@ export async function seedSession(page, { xp = 100, xpLocal = 100, extra = {} } 
 }
 
 /** Conexión aceptada con otro usuario real (como la crea POST /api/me/connections/scan) */
-export function peerConnection(id, name, userId = `99999999-0000-4000-8000-${String(id).padStart(12, "0")}`) {
-  return { id, status: "accepted", source: "qr", context: "", eventId: null, createdAt: new Date(Date.now() - 864e5).toISOString(), acceptedAt: new Date(Date.now() - 864e5).toISOString(),
-    contact: { id: null, userId, name, initials: name.slice(0, 2).toUpperCase(), headline: "CTO · Logística", industry: "tech", affinity: null, matchReason: "", interests: [], likes: [], goal: "" } };
+export function peerConnection(id, name, userId = `99999999-0000-4000-8000-${String(id).padStart(12, "0")}`, { status = "accepted", direction, source = "qr", headline = "CTO · Logística" } = {}) {
+  const at = new Date(Date.now() - (status === "accepted" ? 864e5 : 0)).toISOString();
+  return { id, status, source, context: "", eventId: null, createdAt: at, acceptedAt: status === "accepted" ? at : null, ...(direction ? { direction } : {}),
+    contact: { id: null, userId, name, initials: name.slice(0, 2).toUpperCase(), headline, industry: "tech", affinity: null, matchReason: "", interests: [], likes: [], goal: "" } };
 }
 
 /** Conexión con un contacto del catálogo (sin cuenta en KNET), pendiente o aceptada */

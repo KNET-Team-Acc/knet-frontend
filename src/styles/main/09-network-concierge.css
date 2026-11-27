@@ -13,6 +13,22 @@
 /* Según el ancho de la tarjeta (Mi red la pone en una columna estrecha), no del viewport */
 @container (min-width: 560px) { .inb-row { grid-template-columns: auto minmax(0, 1fr) auto; } .inb-acts { grid-column: auto; justify-content: flex-end; } .inb-acts .btn-emerald { flex: none; } }
 
+/* Solicitudes enviadas a usuarios reales (esperan respuesta) */
+.inb-sent { border-color: rgba(6,182,212,.35); background: rgba(6,182,212,.06); }
+.inb-sent .inb-h { color: #67E8F9; }
+
+/* ---- Directorio de asistentes del evento ---- */
+.att-grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
+.att { display: grid; gap: 10px; align-content: start; padding: 14px; border-radius: 16px; border: 1px solid var(--line); background: rgba(var(--w-rgb), .03); }
+.att-top { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: center; }
+.att-ints { display: flex; flex-wrap: wrap; gap: 6px; }
+.att-ints .chip { font-size: 11.5px; }
+.att-why { font-size: 12px; color: var(--accent-soft); }
+.att-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: auto; }
+.att-acts .btn { min-height: 40px; }
+.att-empty { margin: 0; font-size: 14px; color: var(--muted); }
+.red-cred-note { font-size: 12px; opacity: .85; }
+
 /* ---- Chat 1:1: el nombre abre el perfil ---- */
 .dm-who { all: unset; cursor: pointer; border-radius: 6px; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; transition: text-decoration-color .2s; }
 .dm-who:hover { text-decoration-color: currentColor; }
