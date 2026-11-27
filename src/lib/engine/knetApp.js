@@ -1688,7 +1688,7 @@ export function bootKnetApp() {
       <h3 class="inb-h" id="inboundTitle" tabindex="-1">${svg("users")}${esc(t("req.title").replace("{0}", list.length))}</h3>
       <ul class="inb-list">${list.map(n => { const c = connInfo(n), r = inboundOf(n);
         return `<li class="inb-row">
-          <span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
+          ${avProf(n, "conn-av cc-av", `--h:${hashStr(n) % 360}`, esc(c.initials), c.match)}
           <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div><div class="inb-when">${esc(t(r.via === "qr" ? "req.statusQr" : r.from === "api" ? "req.statusApi" : "req.status"))}</div></div>
           <div class="inb-acts"><button type="button" class="btn btn-emerald btn-sm" data-inacc="${esc(n)}">${svg("check")}<span>${esc(t("req.accept"))}</span></button><button type="button" class="btn btn-ghost btn-sm" data-indec="${esc(n)}" aria-label="${esc(t("req.declineAria").replace("{0}", n))}">${esc(t("req.decline"))}</button>${c.match ? `<button type="button" class="pill-btn" data-cprof="${esc(n)}">${esc(t("req.profile"))}</button>` : ""}</div>
         </li>`; }).join("")}</ul>
@@ -1924,11 +1924,21 @@ export function bootKnetApp() {
         <button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar chat">${svg("x")}</button></div>
       <div class="chat-log dm-log" id="dmLog" aria-live="polite">${msgs.length ? "" : `<div class="dm-empty">${svg("msg")}<span>Ya están conectados. Rompe el hielo con un mensaje.</span></div>`}${msgs.map(x => `<div class="bubble ${x.who === "me" ? "me" : "ai"}">${esc(x.text)}<span class="dm-time">${new Date(x.at).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</span></div>`).join("")}</div>
       ${real ? dmCoffeeHTML(n) : ""}
-      <div class="flex flex-wrap gap-2">${DM_PILLS.map(q => `<button type="button" class="pill-btn" data-dmq="${esc(q)}">${esc(q)}</button>`).join("")}</div>
+      <div class="flex flex-wrap gap-2 dm-pills">${DM_PILLS.map(q => `<button type="button" class="pill-btn" data-dmq="${esc(q)}">${esc(q)}</button>`).join("")}</div>
       <form id="dmForm" class="chat-form" autocomplete="off"><label for="dmIn" class="sr-only">Mensaje para ${esc(n)}</label><input id="dmIn" class="select" maxlength="300" placeholder="Escribe un mensaje…"><button class="btn btn-primary btn-sm" type="submit">${svg("arrow")}<span>Enviar</span></button></form>
-      <p class="text-[12px] text-mute">${real ? "Tus mensajes se guardan en KNET y le llegan a la otra persona. No compartas datos sensibles." : "Este contacto aún no usa la app de KNET: sus respuestas son automáticas. No compartas datos sensibles."}</p>`;
-    const log = $("#dmLog"); log.scrollTop = log.scrollHeight;
+      <p class="text-[12px] text-mute dm-note">${real ? "Tus mensajes se guardan en KNET y le llegan a la otra persona. No compartas datos sensibles." : "Este contacto aún no usa la app de KNET: sus respuestas son automáticas. No compartas datos sensibles."}</p>`;
+    dmToEnd();
   }
+  /* Último mensaje a la vista: solo se desplaza la lista (nunca la página) */
+  function dmToEnd() { const log = $("#dmLog"); if (log) log.scrollTop = log.scrollHeight; }
+  /* Móvil: el chat ocupa el viewport visible (teclado virtual incluido) vía visualViewport */
+  function fitDm() {
+    const m = $("#m-dm"), vv = window.visualViewport; if (!m || m.hidden || !vv) return;
+    m.style.setProperty("--dm-vh", `${Math.round(vv.height)}px`); m.style.setProperty("--dm-top", `${Math.round(vv.offsetTop)}px`);
+    m.classList.toggle("dm-kb", vv.height < window.innerHeight * 0.75);
+    dmToEnd();
+  }
+  if (window.visualViewport) { window.visualViewport.addEventListener("resize", fitDm); window.visualViewport.addEventListener("scroll", fitDm); }
   /* Café dentro del chat con un usuario real (con contactos del catálogo se propone desde su perfil) */
   function dmCoffeeHTML(n) {
     const c = coffeeOf(n);
@@ -1949,7 +1959,9 @@ export function bootKnetApp() {
   }
   function openChat(n) {
     if (!isConn(n)) { toast("<b>Aún no están conectados</b><div class='text-[13px] text-mute'>El chat se habilita cuando acepte tu solicitud.</div>", "info"); return; }
-    dmFor = n; A.dms = A.dms || {}; renderDm(); if ($("#m-dm").hidden) openModal("dm"); setTimeout(() => { const i = $("#dmIn"); if (i) i.focus(); }, 60);
+    dmFor = n; A.dms = A.dms || {}; renderDm(); if ($("#m-dm").hidden) openModal("dm");
+    fitDm(); requestAnimationFrame(dmToEnd); // con el modal ya visible scrollHeight es real
+    setTimeout(() => { const i = $("#dmIn"); if (i) i.focus({ preventScroll: true }); dmToEnd(); }, 60);
     loadThread(n);
   }
   async function sendDm(text) {
@@ -2357,13 +2369,20 @@ export function bootKnetApp() {
     return { initials, role: m ? m[2] : q ? q.role : pend.headline || "Asistente del evento", aff: m ? m[3] : null, match: !!m,
       via: q ? `QR · ${q.lugar}` : m ? "AI Concierge" : "Summit" };
   }
+  /* Avatar que abre el perfil (issue #39): botón accesible con nombre; sin ficha de la API queda decorativo */
+  function avProf(n, cls, style, inner, on) {
+    return on ? `<button type="button" class="${cls} av-prof" data-avprof="${esc(n)}" aria-label="${esc(t("dm.profile").replace("{0}", n))}" title="${esc(t("dm.profile").replace("{0}", n))}" style="${style}">${inner}</button>`
+      : `<span class="${cls}" style="${style}">${inner}</span>`;
+  }
+  document.addEventListener("click", (e) => { const b = e.target.closest("[data-avprof]"); if (!b) return;
+    const m = b.closest(".modal"); if (m && m.id !== "m-person") closeModal(m); openPerson(b.dataset.avprof); });
   function renderConns() {
     const list = A.connections.slice().reverse();
     $("#connsBody").innerHTML = `<div class="mh"><div><span class="chip chip-cyan">${svg("users")}Tu red en el Summit</span><h3 id="connsTitle" class="font-display font-bold text-xl" style="margin-top:10px">Mis conexiones <span class="text-mute tabular">(${list.length})</span></h3></div><button class="btn btn-ghost btn-sm" style="padding:8px;min-width:40px" data-close aria-label="Cerrar">${svg("x")}</button></div>
       ${inboundHTML()}${sentHTML()}
       ${list.length ? `<div class="conn-list">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<div class="conn-row ${ask ? "ask" : ""}">
-          <span class="conn-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
+          ${avProf(n, "conn-av", `--h:${hashStr(n) % 360}`, esc(c.initials), c.match)}
           <div class="min-w-0"><div class="conn-name">${esc(n)}${c.aff ? ` <span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="text-[12.5px] text-mute">${esc(c.role)}</div><div class="conn-via">${svg(c.via.startsWith("QR") ? "qr" : "link")}${esc(c.via)}</div></div>
           <div class="conn-actions">${ask ? `<span class="conn-q">¿Remover a ${esc(first(n))}?</span><button type="button" class="btn btn-ghost btn-sm" data-cno>Cancelar</button><button type="button" class="btn btn-sm conn-del" data-cyes="${esc(n)}">Sí, remover</button>`
             : `<button type="button" class="btn btn-ghost btn-sm" data-cmsg="${esc(n)}">${svg("msg")}Mensaje</button>${c.match ? `<button type="button" class="btn btn-ghost btn-sm" data-cprof="${esc(n)}">Ver perfil</button>` : ""}<button type="button" class="btn btn-ghost btn-sm conn-rm" data-crm="${esc(n)}" aria-label="Remover a ${esc(n)}">${svg("x")}Remover</button>`}</div>
@@ -2380,7 +2399,7 @@ export function bootKnetApp() {
       ${list.length ? `<ul class="cc-grid">${list.map(n => { const c = connInfo(n), ask = connAsk === n;
         return `<li class="cc ${ask ? "ask" : ""}">
           <div class="cc-top">
-            <span class="conn-av cc-av" style="--h:${hashStr(n) % 360}">${esc(c.initials)}</span>
+            ${avProf(n, "conn-av cc-av", `--h:${hashStr(n) % 360}`, esc(c.initials), c.match)}
             <div class="min-w-0"><div class="cc-name"><span>${esc(n)}</span>${c.aff ? `<span class="gf-aff">${c.aff}%</span>` : ""}</div><div class="cc-role">${esc(c.role)}</div></div>
             ${ask ? "" : `<button type="button" class="cc-x" data-crm="${esc(n)}" aria-label="Remover a ${esc(n)}" title="Remover conexión">${svg("x")}</button>`}
           </div>
@@ -3480,7 +3499,7 @@ export function bootKnetApp() {
     return `<section class="red-sec" id="matchesCard" aria-labelledby="redMatchT">
       <div class="red-sec-h"><h2 id="redMatchT" class="red-k">Matches sugeridos</h2><span class="red-link" style="border:0">Calculados con tu rol, industria, intereses y agenda</span></div>
       ${!d.matches.length ? `<div class="conn-empty">${svg("users")}<div><b>Aún no hay matches en tu evento</b><p class="text-mute text-[14px]">KNET solo te sugiere asistentes reales. Cuando más personas se inscriban en tus eventos, verás aquí a quién te conviene conocer y por qué. Mientras tanto, escanea la credencial QR de quien conozcas en persona.</p><div class="flex flex-wrap gap-2" style="margin-top:10px">${act("goto", "eventos", `${svg("map")}Explorar eventos`)}</div></div></div>` : pend.length ? `<div class="red-mgrid">${pend.map(([ini, n, r, sc, why]) => { const i = d.matches.findIndex(m => m[1] === n); return `<article class="rm">
-        <div class="rm-top"><div class="avatar rm-av" style="background:${avatarBg(i)}">${ini}</div><div class="min-w-0 flex-1"><div class="rm-name">${n}</div><div class="rm-role">${r}</div></div><div class="rm-aff"><b class="tabular">${sc}%</b><span>Afinidad</span></div></div>
+        <div class="rm-top">${avProf(n, "avatar rm-av", `background:${avatarBg(i)}`, ini, true)}<div class="min-w-0 flex-1"><div class="rm-name">${n}</div><div class="rm-role">${r}</div></div><div class="rm-aff"><b class="tabular">${sc}%</b><span>Afinidad</span></div></div>
         <p class="rm-why">${why}</p>
         <div class="mcard-actions">${matchActions(n)}${act("person", n, "Detalle", "btn btn-ghost btn-sm")}</div>
       </article>`; }).join("")}</div>` : `<div class="conn-empty">${svg("check")}<div><b>Ya conectaste con todos tus matches sugeridos</b><p class="text-mute text-[14px]">Te avisaremos cuando la IA encuentre a alguien nuevo con alta afinidad. Mientras tanto, puedes escanear credenciales para sumar contactos.</p></div></div>`}
