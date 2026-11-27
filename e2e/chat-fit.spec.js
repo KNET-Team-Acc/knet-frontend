@@ -42,6 +42,8 @@ for (const [w, h] of [[360, 640], [768, 1024], [1280, 720]]) {
     await btn.click();
     await expect(page.locator("#m-dm")).toBeVisible();
 
+    // tras la animación de entrada de la tarjeta (toastIn)
+    await page.locator("#m-dm .dm-card").evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
     const head = await page.locator("#m-dm .dm-head").boundingBox();
     const card = await page.locator("#m-dm .dm-card").boundingBox();
     expect(head.y).toBeGreaterThanOrEqual(0);
