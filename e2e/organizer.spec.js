@@ -225,6 +225,44 @@ test("admin: ve los eventos de todos los organizadores, edita el de otro y el ca
   await expect(card(page).locator(`[data-org-ev="${OTHER.id}"]`)).toBeVisible();
 });
 
+test("admin: cuenta de gestión sin funciones de asistente (solo Mi cuenta y Panel de eventos)", async ({ page }) => {
+  const api = await installMockApi(page, { user: { accountRole: "admin" } });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await seedSession(page);
+  await page.goto("/#red");
+  await waitSync(api);
+  await expect.poll(async () => (await engineState(page)).accountRole).toBe("admin");
+
+  // Solo dos pestañas; una de asistente lleva al panel de eventos
+  const tabs = page.locator("#appTabs .app-tab");
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs.nth(0)).toContainText("Mi cuenta");
+  await expect(tabs.nth(1)).toContainText("Panel de eventos");
+  await expect(card(page)).toBeVisible();
+  await expect(page.locator("#appPanel .th")).not.toContainText("XP");
+  await expect(page.locator("#tourBtn")).toBeHidden();
+  await expect(page.locator("[data-meview]")).toHaveText(["Panel de eventos", "Recintos", "Catálogo publicado"]);
+
+  // Catálogo publicado: se ven los eventos y su ficha, sin «Inscribirse»
+  await page.locator('[data-meview="explore"]').click();
+  await expect(page.locator('#appPanel [data-act="evinfo"]').first()).toBeVisible();
+  await expect(page.locator('#appPanel [data-act="evsave"]')).toHaveCount(0);
+  await page.locator('#appPanel [data-act="evinfo"]').first().click();
+  await expect(page.locator("#m-event")).toBeVisible();
+  await expect(page.locator('#m-event [data-eact="save"]')).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // Mi cuenta: datos mínimos y privacidad, sin permisos MCP ni grafo
+  await tabs.nth(0).click();
+  await expect(page.locator("#adminCard")).toContainText("Admin de KNET");
+  await expect(page.locator("#appPanel [data-scope]")).toHaveCount(0);
+  await expect(page.locator("#appPanel")).toContainText("Revocar y borrar mis datos");
+  await expect(page.locator("#networkCard")).toHaveCount(0);
+
+  expect(errors).toEqual([]);
+});
+
 test("un organizador no ve el selector de admin", async ({ page }) => {
   const api = await installMockApi(page, { user: { accountRole: "organizer" } });
   await seedSession(page);

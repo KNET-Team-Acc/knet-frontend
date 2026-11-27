@@ -102,6 +102,13 @@ export const NOTIF_T = {
 
 /* Panel de creador de eventos (src/lib/engine/organizer.js) y agenda oficial de los eventos creados en KNET (claves org.*) */
 const ORG_ES = {
+  "adm.badge": "Admin de KNET", "adm.role": "Cuenta de gestión", "adm.tab": "Panel de eventos", "adm.perfil": "Mi cuenta",
+  "adm.tabDesc": "Crea, edita y publica los eventos de KNET, revisa sus recintos y el catálogo publicado.",
+  "adm.perfilDesc": "Tus datos de acceso, la privacidad de la cuenta y la sesión.",
+  "adm.seg.panel": "Panel de eventos", "adm.seg.venue": "Recintos", "adm.seg.explore": "Catálogo publicado",
+  "adm.kicker": "Cuenta admin", "adm.account": "Datos de la cuenta", "adm.name": "Nombre", "adm.email": "Correo", "adm.roleLbl": "Rol",
+  "adm.note": "La cuenta admin es de gestión: no se inscribe a eventos ni participa en la red, las misiones o las recompensas. Para asistir a un evento usa una cuenta personal.",
+  "adm.go": "Ir al panel de eventos", "adm.privacy": "Privacidad y datos", "adm.noAttendee": "Las cuentas admin no participan como asistentes",
   "org.tab": "Mis eventos creados", "org.kicker": "Panel de organizador", "org.title": "Mis eventos creados",
   "org.lede": "Crea y configura tus eventos: detalles, agenda, charlas, speakers, misiones y recinto 3D. Guarda borradores y publícalos cuando estén listos.",
   "org.create": "Crear evento", "org.loading": "Cargando tus eventos…", "org.empty": "Aún no has creado eventos. Empieza con los detalles y guárdalo como borrador.",
@@ -168,6 +175,13 @@ const ORG_ES = {
   "org.countTalks.one": "1 charla", "org.countRegs.one": "1 inscrito", "org.chk.days.one": "1 día", "org.chk.sessions.one": "1 charla", "org.chk.speakers.one": "1 speaker", "org.chk.missions.one": "1 misión", "org.ven.zones.one": "1 zona",
 };
 const ORG_EN = {
+  "adm.badge": "KNET admin", "adm.role": "Management account", "adm.tab": "Events dashboard", "adm.perfil": "My account",
+  "adm.tabDesc": "Create, edit and publish KNET events, review their venues and the published catalog.",
+  "adm.perfilDesc": "Your sign-in details, account privacy and session.",
+  "adm.seg.panel": "Events dashboard", "adm.seg.venue": "Venues", "adm.seg.explore": "Published catalog",
+  "adm.kicker": "Admin account", "adm.account": "Account details", "adm.name": "Name", "adm.email": "Email", "adm.roleLbl": "Role",
+  "adm.note": "The admin account is for management: it doesn’t register for events or take part in the network, missions or rewards. To attend an event, use a personal account.",
+  "adm.go": "Go to the events dashboard", "adm.privacy": "Privacy and data", "adm.noAttendee": "Admin accounts don’t take part as attendees",
   "org.tab": "My created events", "org.kicker": "Organizer dashboard", "org.title": "My created events",
   "org.lede": "Create and set up your events: details, agenda, talks, speakers, missions and 3D venue. Save drafts and publish them when they’re ready.",
   "org.create": "Create event", "org.loading": "Loading your events…", "org.empty": "You haven’t created any events yet. Start with the details and save it as a draft.",

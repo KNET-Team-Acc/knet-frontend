@@ -1004,7 +1004,10 @@ export function bootKnetApp() {
   };
   const badgeNames = () => badges().filter(b => b.ok).map(b => b.n);
   const xpLine = (n) => `<div class="mono text-[13px]" style="color:var(--t-emerald)">+${n} XP</div>`;
-  const act = (a, v, label, cls = "pill-btn") => `<button type="button" class="${cls}" data-act="${a}" data-v="${esc(v)}">${label}</button>`;
+  // Acciones de asistente (inscribirse, check-in, misiones, conectar, escanear): la cuenta admin no las tiene
+  const ADMIN_NO_ACTS = ["evsave", "attend", "nfcattend", "complete", "connect", "expjoin", "qrscan", "qrcam"];
+  const ADMIN_TABS = ["perfil", "miseventos"], ADMIN_VIEWS = ["creator", "venue", "explore"]; // ver isAdminMode()
+  const act = (a, v, label, cls = "pill-btn") => ADMIN_NO_ACTS.includes(a) && isAdminMode() ? "" : `<button type="button" class="${cls}" data-act="${a}" data-v="${esc(v)}">${label}</button>`;
   const avatarBg = (i) => ["linear-gradient(135deg,#A100FF,#7500C0)", "linear-gradient(135deg,#2F55E0,#7500C0)", "linear-gradient(135deg,#10B981,#2F55E0)"][i % 3];
 
   const landingView = $("#top"), appView = $("#appView"), panel = $("#appPanel");
@@ -1041,16 +1044,22 @@ export function bootKnetApp() {
     requestAnimationFrame(() => typeof fitNav === "function" && fitNav());
     $$(".cta-connect-lbl").forEach(e => e.textContent = A.connected ? t("mine.l") : saved ? `Continuar como ${first(A.profile.name)}` : t("connect.l"));
     if (A.connected) { const p = PERSONAS[A.ind];
-      chip.innerHTML = `${A.avatar ? `<span class="chip-av${frameCls()}">${avatarSVG(A.avatar, 32)}</span>` : `<span class="avatar" style="width:32px;height:32px;font-size:12px;background:linear-gradient(135deg,#A100FF,#7500C0)">${p.initials}</span>`}<span class="uc-txt"><b>${first(p.name)}</b><span class="mono tabular">Nv ${lvl()} · ${fmt(A.xp)} XP</span></span>`; }
+      chip.innerHTML = `${A.avatar ? `<span class="chip-av${frameCls()}">${avatarSVG(A.avatar, 32)}</span>` : `<span class="avatar" style="width:32px;height:32px;font-size:12px;background:linear-gradient(135deg,#A100FF,#7500C0)">${p.initials}</span>`}<span class="uc-txt"><b>${first(p.name)}</b><span class="mono tabular">${isAdminMode() ? esc(t("adm.badge")) : `Nv ${lvl()} · ${fmt(A.xp)} XP`}</span></span>`; }
+    { const tb = $("#tourBtn"); if (tb) tb.hidden = isAdminMode(); }
   }
   /* Tarjeta compacta del asistente (barra lateral) y cabecera de cada pestaña */
   const meAvatar = (size) => { const p = PERSONAS[A.ind]; return `<span class="me-av${frameCls()}">${A.avatar ? avatarSVG(A.avatar, size) : `<span class="team-avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * .32)}px">${p.initials}</span>`}</span>`; };
   function renderBanner() {
     const p = PERSONAS[A.ind], into = A.xp % 500, max = lvlMax();
+    if (isAdminMode()) { $("#sideMe").innerHTML = `<button type="button" class="side-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(48)}<span class="min-w-0"><b>${esc(p.name)}</b><span class="side-role">${esc(t("adm.role"))}</span><span class="side-lvl">${svg("shield")}${esc(t("adm.badge"))}</span></span></button>`; return; }
     $("#sideMe").innerHTML = `<button type="button" class="side-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(48)}<span class="min-w-0"><b>${esc(p.name)}</b><span class="side-role">${esc(IND[A.ind].role)}</span><span class="side-lvl">${lvlBadge(lvl(), 18)}Nv ${lvl()} · ${lvlName()}</span><span class="side-xp"><i style="width:${max ? 100 : into / 5}%"></i></span><span class="side-xp-t tabular">${fmt(A.xp)} XP${max ? "" : ` · faltan ${fmt(500 - into)}`}</span></span></button>`;
   }
   function tabHead(tab) {
     const p = PERSONAS[A.ind], d = IND[A.ind], into = A.xp % 500, max = lvlMax(), [title, desc] = TAB_DESC[tab], num = (TABS.find(x => x[0] === tab) || [])[1];
+    if (isAdminMode()) return `<header class="th">
+      <div class="th-me-wrap"><button type="button" class="th-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(58)}<span class="th-id"><b>${esc(p.name)}</b><span class="th-role">${esc(t("adm.role"))}</span><span class="th-lvl">${svg("shield")}${esc(t("adm.badge"))}</span></span></button></div>
+      <div class="th-tab"><span class="th-n mono">${num}</span><div class="min-w-0"><h1 class="th-t">${esc(t(tab === "perfil" ? "adm.perfil" : "adm.tab"))}</h1><p class="th-d">${esc(t(tab === "perfil" ? "adm.perfilDesc" : "adm.tabDesc"))}</p></div></div>
+    </header>`;
     return `<header class="th">
       <div class="th-me-wrap"><button type="button" class="th-me" data-goprofile aria-label="Ir a Mi perfil">${meAvatar(58)}<span class="th-id"><b>${esc(p.name)}</b><span class="th-role">${esc(d.role)} · ${esc(p.company)}</span><span class="th-lvl">${lvlBadge(lvl(), 20)}Nivel ${lvl()} · ${lvlName()}<span class="th-xp-t tabular">${fmt(A.xp)} XP</span></span><span class="th-xp"><i style="width:${max ? 100 : into / 5}%"></i></span></span></button>${tab === "perfil" ? `<button type="button" class="btn btn-ghost btn-sm" data-avedit>${svg(A.avatar ? "spark" : "users")}${A.avatar ? "Editar avatar" : "Crear avatar"}</button>` : ""}</div>
       <div class="th-tab"><span class="th-n mono">${num}</span><div class="min-w-0"><h1 class="th-t">${title}</h1><p class="th-d">${desc}</p></div>${tab === "red" ? `<button type="button" class="btn btn-primary btn-sm th-act" data-act="${qrLiveMode() ? "qrcam" : "qrscan"}" data-v="">${svg("qr")}Escanear credencial</button>` : ""}${tab === "perfil" ? `<button type="button" class="btn btn-ghost btn-sm th-edit-desk" data-avedit>${svg(A.avatar ? "spark" : "users")}${A.avatar ? "Editar avatar" : "Crear avatar"}</button>` : ""}</div>
@@ -1059,9 +1068,10 @@ export function bootKnetApp() {
   function renderTabs() {
     const n = activeMissions().length, rw = FRAMES.filter(f => A.xp >= f.xp && !(A.frames || []).includes(f.id)).length + AV_XHAIR.concat(AV_XACC).filter(x => A.xp >= x[2] && !ownsItem(x[0])).length;
     const inv = invPending(), badge = { quests: n, red: A.connections.length, recompensas: rw, miseventos: inv };
-    { const cur = TABS.find(x => x[0] === curTab) || TABS[0], tg = $("#sideToggle");
-      if (tg) tg.innerHTML = `<span class="st-n">${cur[1]}</span><span class="st-l">${t(cur[2])}</span><span class="st-m">Menú</span><span class="st-i" aria-hidden="true"><i></i><i></i><i></i></span>`; }
-    $("#appTabs").innerHTML = TABS.map(([id, num, key, ic]) => `<button type="button" class="app-tab" data-tab="${id}" ${id === curTab ? 'aria-current="page"' : ""}><span class="app-tab-n">${num}</span>${svg(ic)}<span class="app-tab-l">${t(key)}</span>${badge[id] ? `<span class="app-tab-dot ${id === "recompensas" ? "gold" : id === "red" ? "cyan" : id === "miseventos" ? "inv" : ""}" aria-label="${id === "miseventos" ? tf("inv.tabDot", inv) : badge[id]}">${badge[id]}</span>` : ""}</button>`).join("");
+    const adm = isAdminMode(), tabs = adm ? TABS.filter(x => ADMIN_TABS.includes(x[0])) : TABS, lbl = (id, key) => adm ? t(id === "perfil" ? "adm.perfil" : "adm.tab") : t(key);
+    { const cur = tabs.find(x => x[0] === curTab) || tabs[0], tg = $("#sideToggle");
+      if (tg) tg.innerHTML = `<span class="st-n">${cur[1]}</span><span class="st-l">${lbl(cur[0], cur[2])}</span><span class="st-m">Menú</span><span class="st-i" aria-hidden="true"><i></i><i></i><i></i></span>`; }
+    $("#appTabs").innerHTML = tabs.map(([id, num, key, ic]) => `<button type="button" class="app-tab" data-tab="${id}" ${id === curTab ? 'aria-current="page"' : ""}><span class="app-tab-n">${num}</span>${svg(adm && id === "miseventos" ? "pen" : ic)}<span class="app-tab-l">${lbl(id, key)}</span>${!adm && badge[id] ? `<span class="app-tab-dot ${id === "recompensas" ? "gold" : id === "red" ? "cyan" : id === "miseventos" ? "inv" : ""}" aria-label="${id === "miseventos" ? tf("inv.tabDot", inv) : badge[id]}">${badge[id]}</span>` : ""}</button>`).join("");
   }
 
   /* ---- Exp 01 · Perfil + grafo ---- */
@@ -1911,7 +1921,7 @@ export function bootKnetApp() {
         ${speakersHTML(id)}
         <section><h4>${svg("clock")}Así es el evento</h4><ol class="evm-tl">${I.agenda.map(([t, k, x]) => `<li><span class="evm-t mono">${t}</span><b>${k}</b><span class="text-mute">${x}</span></li>`).join("")}</ol></section>
         <section><h4>${svg("bolt")}Te llevas</h4><ul class="evm-take">${I.llevas.map(x => `<li>${svg("star")}<span>${x}</span></li>`).join("")}</ul></section>
-        <div class="av-foot">${ev.lvl ? `<span class="xev-lvl">${lvlBadge(ev.lvl, 24, isLockedEv(ev))}<span>Exclusivo nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</span></span>` : `<button type="button" class="btn btn-ghost btn-sm" data-eact="map" data-v="${id}">${svg("map")}Ver en el mapa</button>`}${isLockedEv(ev) ? `<button type="button" class="btn btn-ghost" disabled>${svg("lock")}Se desbloquea en nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</button>` : `${saved && getSel("main").ev !== id ? `<button type="button" class="btn btn-ghost btn-sm" data-eact="active" data-v="${id}">${svg("calendar")}Usar como evento activo</button>` : ""}<button type="button" class="btn ${saved ? "btn-ghost is-saved" : "btn-primary"}" data-eact="save" data-v="${id}">${saved ? `${svg("check")}Inscrito` : `${svg("calendar")}Inscribirse`}</button>`}</div>
+        <div class="av-foot">${ev.lvl ? `<span class="xev-lvl">${lvlBadge(ev.lvl, 24, isLockedEv(ev))}<span>Exclusivo nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</span></span>` : `<button type="button" class="btn btn-ghost btn-sm" data-eact="map" data-v="${id}">${svg("map")}Ver en el mapa</button>`}${isAdminMode() ? "" : isLockedEv(ev) ? `<button type="button" class="btn btn-ghost" disabled>${svg("lock")}Se desbloquea en nivel ${ev.lvl} · ${LEVELS[ev.lvl - 1]}</button>` : `${saved && getSel("main").ev !== id ? `<button type="button" class="btn btn-ghost btn-sm" data-eact="active" data-v="${id}">${svg("calendar")}Usar como evento activo</button>` : ""}<button type="button" class="btn ${saved ? "btn-ghost is-saved" : "btn-primary"}" data-eact="save" data-v="${id}">${saved ? `${svg("check")}Inscrito` : `${svg("calendar")}Inscribirse`}</button>`}</div>
       </div>`;
     if ($("#m-event").hidden) openModal("event");
   }
@@ -2699,7 +2709,7 @@ export function bootKnetApp() {
   vnBuildZones(MAIN_EV);
   const VN = { ev: null, mode: "overview", target: null, you: [0, 19.5], yaw: 0.78, pitch: 0.66, dist: 108, walk: { x: 0, z: 19.5, yaw: 0, pitch: -0.05 }, people: null, tourT: 0, hf: null, xr: null, arRot: 0, voice: false };
   let vnRaf = 0, vnStopFn = null;
-  function vnEvList() { const ids = myEvIds().filter(id => VENUES[id]); return ids.length ? ids : EVENTS.filter(e => VENUES[e.id]).map(e => e.id); }
+  function vnEvList() { const ids = isAdminMode() ? [] : myEvIds().filter(id => VENUES[id]); return ids.length ? ids : EVENTS.filter(e => VENUES[e.id]).map(e => e.id); }
   function vnEnsureEv() { const list = vnEvList(), m = myEvIds().length ? getSel("main").ev : null; let ev = list.includes(m) ? m : list.includes(VN.ev) ? VN.ev : list[0];
     if (ev !== VN.ev || !VZ.length || VZ._ev !== ev) { VN.ev = ev; vnBuildZones(ev); VZ._ev = ev; VN.people = null; VN.target = null; VN.you = vnEnt(); VN.dist = Math.max(48, 1.7 * Math.max(VV.floor[1] - VV.floor[0], VV.floor[3] - VV.floor[2])); VN.yaw = 0.78; } return evById(ev); }
   function vnStatus(ev) { const today = new Date(), iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
@@ -3120,7 +3130,7 @@ export function bootKnetApp() {
      (caduca en segundos, sirve una sola vez y se pide otro cada `refreshIn` s). Sin API, sin cuenta o con un
      backend que aún no tiene el endpoint (404) el QR es decorativo y «Escanear» explica cómo activar el real. */
   let qrLive = null, qrLiveErr = "", qrNextAt = 0, qrFetching = false, qrApiMissing = false;
-  const qrLiveMode = () => apiEnabled && A.connected && accountReady() && !!A.apiLinked && !qrApiMissing;
+  const qrLiveMode = () => apiEnabled && A.connected && accountReady() && !!A.apiLinked && !qrApiMissing && A.accountRole !== "admin"; // admin: sin QR de asistente (403 admin_account)
   async function renewQr() {
     if (qrFetching) return; qrFetching = true;
     try {
@@ -3452,9 +3462,9 @@ export function bootKnetApp() {
 
   /* ---- Render + routing ---- */
   const VIEWS = {
-    perfil: () => { const P = perfilParts(); return `<div class="app-grid-2"><div class="stack">${P.data}</div><div class="stack">${permisosHTML()}</div></div>`; },
+    perfil: () => { if (isAdminMode()) return adminPerfilHTML(); const P = perfilParts(); return `<div class="app-grid-2"><div class="stack">${P.data}</div><div class="stack">${permisosHTML()}</div></div>`; },
     quests: tabQuests,
-    miseventos: () => `<div class="me-seg" role="tablist" aria-label="Vista de Mis eventos"><button type="button" role="tab" class="me-seg-b" data-meview="mine" aria-selected="${meView === "mine"}">${svg("calendar")}Mis inscripciones y meetups</button><button type="button" role="tab" class="me-seg-b" data-meview="venue" aria-selected="${meView === "venue"}">${svg("layers")}Recinto</button><button type="button" role="tab" class="me-seg-b" data-meview="explore" aria-selected="${meView === "explore"}">${svg("map")}Explorar próximos eventos</button>${invSegHTML()}${isOrganizer() ? `<button type="button" role="tab" class="me-seg-b" id="orgTab" data-meview="creator" aria-selected="${meView === "creator"}">${svg("pen")}${t("org.tab")}</button>` : ""}</div>${meView === "creator" && isOrganizer() ? `<div class="stack">${org.html()}</div>` : meView === "explore" ? tabEventos() : meView === "invites" ? `<div class="stack">${invitesHTML()}</div>` : meView === "venue" ? `${myEvIds().length ? evDayBar("main") : ""}${venueHTML()}` : tabMisEventos()}`,
+    miseventos: () => isAdminMode() ? adminEventsHTML() : `<div class="me-seg" role="tablist" aria-label="Vista de Mis eventos"><button type="button" role="tab" class="me-seg-b" data-meview="mine" aria-selected="${meView === "mine"}">${svg("calendar")}Mis inscripciones y meetups</button><button type="button" role="tab" class="me-seg-b" data-meview="venue" aria-selected="${meView === "venue"}">${svg("layers")}Recinto</button><button type="button" role="tab" class="me-seg-b" data-meview="explore" aria-selected="${meView === "explore"}">${svg("map")}Explorar próximos eventos</button>${invSegHTML()}${isOrganizer() ? `<button type="button" role="tab" class="me-seg-b" id="orgTab" data-meview="creator" aria-selected="${meView === "creator"}">${svg("pen")}${t("org.tab")}</button>` : ""}</div>${meView === "creator" && isOrganizer() ? `<div class="stack">${org.html()}</div>` : meView === "explore" ? tabEventos() : meView === "invites" ? `<div class="stack">${invitesHTML()}</div>` : meView === "venue" ? `${myEvIds().length ? evDayBar("main") : ""}${venueHTML()}` : tabMisEventos()}`,
     agenda: () => `<div class="stack">${agendaHTML()}</div>`,
     concierge: tabConcierge,
     red: () => { const P = perfilParts(); return `<div class="stack red-view"><div class="red-grid"><div class="stack">${P.net}${redChipsHTML()}</div><div class="stack">${redCredHTML()}${connsInlineHTML()}</div></div>${redMatchesHTML()}</div>`; },
@@ -3464,6 +3474,29 @@ export function bootKnetApp() {
   let meView = "mine";
   /* Panel de creador de eventos (src/lib/engine/organizer.js): solo con cuenta sincronizada y rol organizer/admin */
   function isOrganizer() { return apiEnabled && A.connected && A.apiLinked && accountReady() && ["organizer", "admin"].includes(A.accountRole); }
+  /* Cuenta admin = cuenta de gestión: solo «Mi perfil» (datos mínimos, privacidad y sesión) y «Panel de eventos»
+     (panel de creador, recintos y catálogo en solo lectura). Sin red, misiones, agenda, Concierge, recompensas ni Dossier. */
+  function isAdminMode() { try { return A.accountRole === "admin" && isOrganizer(); } catch (e) { return false; } } // try: se llama desde la cabecera antes de que existan algunas const (TDZ)
+  function adminRoute() { // corrige pestaña/vista si la cuenta pasó a admin con otra abierta
+    if (!isAdminMode()) return;
+    if (!ADMIN_TABS.includes(curTab)) { curTab = "miseventos"; meView = "creator"; setHash("creador"); }
+    if (curTab === "miseventos" && !ADMIN_VIEWS.includes(meView)) meView = "creator";
+    if (curTab === "miseventos" && meView === "creator") org.open();
+  }
+  function adminEventsHTML() {
+    const seg = [["creator", "pen", t("adm.seg.panel")], ["venue", "layers", t("adm.seg.venue")], ["explore", "map", t("adm.seg.explore")]];
+    return `<div class="me-seg" role="tablist" aria-label="${esc(t("adm.tab"))}">${seg.map(([k, ic, l]) => `<button type="button" role="tab" class="me-seg-b" ${k === "creator" ? 'id="orgTab"' : ""} data-meview="${k}" aria-selected="${meView === k}">${svg(ic)}${esc(l)}</button>`).join("")}</div>${meView === "explore" ? tabEventos() : meView === "venue" ? venueHTML() : `<div class="stack">${org.html()}</div>`}`;
+  }
+  function adminPerfilHTML() {
+    const p = PERSONAS[A.ind], mail = A.accountEmail || sessionEmail() || "";
+    const row = (k, v) => `<div class="kv-wrap"><div class="kv"><span class="kv-k">${esc(t(k))}</span><span class="kv-v">${esc(v)}</span></div></div>`;
+    return `<div class="app-grid-2"><div class="stack"><article class="pcard" id="adminCard">
+        <header class="pcard-h"><div><span class="pcard-k">${esc(t("adm.kicker"))}</span><h2 class="pcard-t">${esc(t("adm.account"))}</h2></div><span class="chip chip-accent">${svg("shield")}${esc(t("adm.badge"))}</span></header>
+        <div class="kv-list">${row("adm.name", p.name)}${mail ? row("adm.email", mail) : ""}${row("adm.roleLbl", t("adm.badge"))}</div>
+        <p class="text-mute text-[13px]" style="margin-top:12px">${esc(t("adm.note"))}</p>
+        <div class="flex flex-wrap gap-2" style="margin-top:12px"><button type="button" class="btn btn-primary btn-sm" data-act="goto" data-v="creador">${svg("pen")}${esc(t("adm.go"))}</button></div>
+      </article></div><div class="stack">${permisosHTML()}</div></div>`;
+  }
   const org = createOrganizer({
     api, ApiError, isOffline, t, tf, esc, svg, toast, avatarSVG, initialsOf, dayTxt,
     isAdmin: () => A.accountRole === "admin",
@@ -3488,7 +3521,7 @@ export function bootKnetApp() {
   onApiEvent("session-changed", (d) => { const u = d ? d.userId : null; if (u !== orgUid) { orgUid = u; org.reset(); } }); // otra cuenta (no un refresh del token)
   panel.addEventListener("click", (e) => { const b = e.target.closest("[data-meview]"); if (b && meView !== b.dataset.meview) { meView = b.dataset.meview; if (meView === "creator") org.open(); renderTab(true); const nb = panel.querySelector(`[data-meview="${meView}"]`); if (nb) nb.focus({ preventScroll: true }); } });
   function renderTab(animate) {
-    cancelAnimationFrame(graphRaf);
+    cancelAnimationFrame(graphRaf); adminRoute();
     panel.innerHTML = `<div class="${animate ? "reveal-in" : ""}">${tabHead(curTab)}${VIEWS[curTab]()}</div>`;
     const log = $("#chatLog"); if (log) log.scrollTop = log.scrollHeight;
     if ($("#netGraph")) startGraph();
@@ -3511,6 +3544,7 @@ export function bootKnetApp() {
     if (tab === "eventos") { tab = "miseventos"; meView = "explore"; }
     if (tab === "recinto") { tab = "miseventos"; meView = "venue"; }
     if (tab === "creador") { tab = "miseventos"; meView = "creator"; }
+    if (isAdminMode()) { if (!ADMIN_TABS.includes(tab)) { tab = "miseventos"; meView = "creator"; } else if (tab === "miseventos" && !ADMIN_VIEWS.includes(meView)) meView = "creator"; }
     if (tab === "miseventos" && meView === "creator") { if (isOrganizer()) org.open(); else meView = "mine"; }
     if (tab === "perfil" && target === "agendaCard") tab = "agenda";
     if (tab === "perfil" && (target === "networkCard" || target === "qrCard")) tab = "red";
@@ -3571,7 +3605,7 @@ export function bootKnetApp() {
   function tourClose() { if (!tourEl) return; A.tourSeen = true; save(); tourEl.remove(); tourEl = null; tourI = -1; document.removeEventListener("keydown", tourKey, true); window.removeEventListener("resize", tourPlace); window.removeEventListener("scroll", tourPlace, true); const b = document.getElementById("tourBtn"); if (b) b.focus({ preventScroll: true }); }
   function tourKey(e) { if (!tourEl) return; if (e.key === "Escape") { e.preventDefault(); tourClose(); } else if (e.key === "ArrowRight" && tourI <= TOUR.length) { e.preventDefault(); tourGo(tourI + 1); } else if (e.key === "ArrowLeft" && tourI > 1 && tourI <= TOUR.length) { e.preventDefault(); tourGo(tourI - 1); } }
   function startTour(fromStart) {
-    if (!A.connected) return; if (tourEl) tourClose();
+    if (!A.connected || isAdminMode()) return; if (tourEl) tourClose();
     tourEl = document.createElement("div"); tourEl.className = "tour"; tourEl.setAttribute("role", "dialog"); tourEl.setAttribute("aria-modal", "true"); tourEl.setAttribute("aria-label", "Tour guiado por KNET");
     tourEl.innerHTML = `<div class="tour-dim"></div><div class="tour-spot" aria-hidden="true"></div><div class="tour-card is-center" aria-live="polite"></div>`;
     document.body.appendChild(tourEl);
@@ -3580,7 +3614,7 @@ export function bootKnetApp() {
     document.addEventListener("keydown", tourKey, true); window.addEventListener("resize", tourPlace); window.addEventListener("scroll", tourPlace, true);
     tourGo(fromStart ? 1 : 0);
   }
-  function offerTourWhenIdle() { let n = 0; const tick = () => { if (A.tourSeen || tourEl || ++n > 120) return; const open = document.querySelector(".modal:not([hidden])"); if (inApp && !open) { setTimeout(() => { if (!document.querySelector(".modal:not([hidden])") && !tourEl && !A.tourSeen) startTour(false); else setTimeout(tick, 700); }, 600); return; } setTimeout(tick, 700); }; setTimeout(tick, 1500); }
+  function offerTourWhenIdle() { let n = 0; const tick = () => { if (A.tourSeen || tourEl || ++n > 120 || isAdminMode()) return; const open = document.querySelector(".modal:not([hidden])"); if (inApp && !open) { setTimeout(() => { if (!document.querySelector(".modal:not([hidden])") && !tourEl && !A.tourSeen) startTour(false); else setTimeout(tick, 700); }, 600); return; } setTimeout(tick, 700); }; setTimeout(tick, 1500); }
   document.getElementById("tourBtn").addEventListener("click", () => startTour(false));
   function showLanding(anchor) {
     const was = inApp; inApp = false; applyView(); setHash(anchor || "top");
@@ -4419,6 +4453,7 @@ export function bootKnetApp() {
   let genBusy = false;
   const onAct = async (b) => {
     const a = b.dataset.act, v = b.dataset.v;
+    if (ADMIN_NO_ACTS.includes(a) && isAdminMode()) { toast(`<b>${esc(t("adm.noAttendee"))}</b>`, "shield"); return; }
     if (a === "goto") { goTo(v); return; }
     if (a === "vnopen") { VN.ev = v; if (myEvIds().includes(v)) { A.sel = A.sel || {}; A.sel.main = { ev: v, day: (A.sel.main && A.sel.main.ev === v) ? A.sel.main.day : 0 }; save(); } meView = "venue"; showTab("miseventos"); return; }
     if (a === "ask") { ask(v); return; }
@@ -4482,10 +4517,10 @@ export function bootKnetApp() {
   /* ---- Permisos MCP: tarjeta compacta en Mi perfil que abre una ventana ---- */
   
   function permisosHTML() {
-    const sc = A.scopes, scopes = PERM_SCOPES;
+    const sc = A.scopes, scopes = PERM_SCOPES, adm = isAdminMode();
     return `<article class="pcard perm-full">
-          <header class="pcard-h"><div><span class="pcard-k">Privacidad</span><h2 class="pcard-t">Permisos MCP</h2></div><span class="chip">${svg("shield")}Revocables</span></header>
-          <div class="grid gap-2">${scopes.map(([key, ttl, h]) => `<label class="switch-row" for="scope-${key}"><span><b class="font-semibold">${ttl}</b><span class="block text-mute text-[13px]">${h}</span></span><input type="checkbox" role="switch" class="switch" id="scope-${key}" data-scope="${key}" ${sc[key] ? "checked" : ""} ${key === "profile" ? "disabled" : ""}></label>`).join("")}</div>
+          ${adm ? `<header class="pcard-h"><div><span class="pcard-k">Privacidad</span><h2 class="pcard-t">${esc(t("adm.privacy"))}</h2></div></header>` : `<header class="pcard-h"><div><span class="pcard-k">Privacidad</span><h2 class="pcard-t">Permisos MCP</h2></div><span class="chip">${svg("shield")}Revocables</span></header>`}
+          ${adm ? "" : `<div class="grid gap-2">${scopes.map(([key, ttl, h]) => `<label class="switch-row" for="scope-${key}"><span><b class="font-semibold">${ttl}</b><span class="block text-mute text-[13px]">${h}</span></span><input type="checkbox" role="switch" class="switch" id="scope-${key}" data-scope="${key}" ${sc[key] ? "checked" : ""} ${key === "profile" ? "disabled" : ""}></label>`).join("")}</div>`}
           <div class="resync">
             <span class="pcard-k" style="color:var(--muted)">Tus autorizaciones</span>
             <div class="grid gap-2">${readLocal().filter(r => r.tipo === "aceptacion" || r.tipo === "cambio_permiso").slice(-3).reverse().map(r => `<div class="auth-row">${svg(r.tipo === "aceptacion" ? "check" : "shield")}<span><b>${esc(r.tipo === "aceptacion" ? "Aceptaste " + (r.documentos || []).map(d => d.documento.split(" ")[0] + " v" + d.version).join(" y ") : r.detalle || "")}</b><span class="block text-mute text-[12px]">${esc(r.fechaLocal)} · ${esc(r.formulario)} · ${r.almacenamiento === "servidor" ? "registrado en el servidor" : "registrado en este navegador"}</span></span></div>`).join("") || `<div class="text-[13px] text-mute">No hay aceptaciones guardadas en este navegador.</div>`}</div>
