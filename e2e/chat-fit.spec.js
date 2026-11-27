@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { installMockApi, seedSession, catalogConnection } from "./support/mock-api.js";
+import { installMockApi, seedSession, catalogConnection, peerConnection } from "./support/mock-api.js";
 
 /* Issue #39: el avatar de una conexión abre su perfil y el chat 1:1 se ajusta a la pantalla */
 const MATCH = "Laura M.";
@@ -63,3 +63,47 @@ for (const [w, h] of [[360, 640], [768, 1024], [1280, 720]]) {
     if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/chat-${w}x${h}.png` });
   });
 }
+
+/* Conexión por QR (usuario real, sin ficha de catálogo): el avatar y la cabecera del chat abren su ficha básica */
+test("conexión por QR: el avatar y el nombre del chat abren la ficha básica; «Enviar» no se recorta", async ({ page }) => {
+  const PEER = "Diego R.";
+  const api = await installMockApi(page, { connections: [peerConnection(5, PEER)] });
+  await seedSession(page, { extra: { connections: [PEER], xpSynced: [`conn:${PEER}`] } });
+  await page.goto("/#red");
+  await expect.poll(() => api.log.filter((r) => r.path === "/api/me/connections").length).toBeGreaterThanOrEqual(1);
+
+  await page.locator(`#connsCard [data-avprof="${PEER}"]`).click();
+  await expect(page.locator("#m-person")).toBeVisible();
+  await expect(page.locator("#personName")).toHaveText(PEER);
+  await expect(page.locator("#m-person .peer-note")).toBeVisible();
+  await expect(page.locator('#m-person [data-pact="chat"]')).toBeVisible();
+
+  await page.locator('#m-person [data-pact="chat"]').click();
+  await expect(page.locator("#m-dm")).toBeVisible();
+  await page.locator("#m-dm .dm-who").click();
+  await expect(page.locator("#m-person")).toBeVisible();
+  await expect(page.locator("#personName")).toHaveText(PEER);
+
+  for (const [w, h] of [[360, 640], [1280, 720]]) {
+    await page.keyboard.press("Escape");
+    await page.setViewportSize({ width: w, height: h });
+    await page.locator(`#connsCard [data-cmsg="${PEER}"]`).click();
+    await expect(page.locator("#m-dm")).toBeVisible();
+    await page.locator("#m-dm .dm-card").evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+    // «Enviar» y su sombra (3px) caben dentro del área visible de la tarjeta
+    const fits = await page.locator("#dmForm button[type=submit]").evaluate((b) => {
+      const card = b.closest(".dm-card"), r = b.getBoundingClientRect(), c = card.getBoundingClientRect(), cs = getComputedStyle(card);
+      return r.right + 3 <= c.right - parseFloat(cs.borderRightWidth) && r.bottom + 3 <= c.bottom && r.left >= c.left;
+    });
+    expect(fits).toBe(true);
+    if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/qr-chat-${w}x${h}.png` });
+  }
+});
+
+test("sin perfil disponible: el clic muestra un aviso en vez de no hacer nada", async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => { const b = document.createElement("button"); b.dataset.avprof = "Nadie Conocido"; b.id = "ghost"; b.textContent = "x"; document.body.append(b); });
+  await page.locator("#ghost").click();
+  await expect(page.locator("#m-person")).toBeHidden();
+  await expect(page.getByText("No hay un perfil disponible para Nadie Conocido")).toBeVisible();
+});

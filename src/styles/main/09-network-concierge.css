@@ -40,12 +40,25 @@
 .av-prof:hover { transform: scale(1.06); box-shadow: 0 0 0 2px rgba(161,0,255,.55); }
 .av-prof:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) { .av-prof { transition: none; } .av-prof:hover { transform: none; } }
+/* Ficha básica de una conexión sin perfil en la API (QR, directorio) */
+.peer-av { width: 60px; height: 60px; font-size: 20px; flex: none; grid-row: auto; }
+.peer-cols { margin-top: 18px; }
+@media (min-width: 640px) { .peer-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.peer-o { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.peer-o svg { width: 15px; height: 15px; flex: none; color: var(--accent-soft); }
+.peer-note { display: flex; gap: 8px; align-items: flex-start; margin: 18px 0 16px; padding: 10px 12px; border-radius: 12px; font-size: 13px; color: var(--muted); background: rgba(var(--w-rgb), .04); }
+.peer-note svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
 
 /* ---- Chat 1:1 ajustado a la pantalla: cabecera fija, solo la lista hace scroll · issue #39 ---- */
 .dm-card { display: flex; flex-direction: column; gap: 12px; overflow: hidden; max-height: min(720px, 90vh); max-height: min(720px, 90dvh); }
 .dm-card > * { flex: none; min-width: 0; }
 .dm-card > .dm-head { position: sticky; top: 0; z-index: 1; }
 .dm-card > .dm-log { flex: 1 1 360px; height: auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* Caja de texto: hueco para la sombra desplazada y el hover de «Enviar» (la tarjeta recorta con overflow: hidden) */
+.dm-card > .chat-form { align-items: center; padding: 2px 6px 6px 2px; }
+.dm-card > .chat-form .btn { flex: none; white-space: nowrap; }
+/* 16px: con menos, iOS amplía la página al enfocar el campo y «Enviar» queda fuera del borde derecho */
+.dm-card > .chat-form input { font-size: 16px; }
 .dm-head .person-id { flex-direction: row; align-items: center; }
 .dm-head .avatar { flex: none; }
 #m-dm { overscroll-behavior: contain; }
